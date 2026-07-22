@@ -52,6 +52,21 @@ test("comma inside a string is untouched", () => {
   expect(parse(`{ "a": "x,}" }`)).toEqual({ a: "x,}" });
 });
 
+test("a block comment splitting a token does not fuse it into valid JSON", () => {
+  expect(() => parse(`{ "a": 60/* seconds */000 }`)).toThrow();
+  expect(() => parse(`{ "a": tr/*x*/ue }`)).toThrow();
+});
+
+test("a block comment between tokens still leaves valid JSON", () => {
+  expect(parse(`{ "a"/* key */: 1 }`)).toEqual({ a: 1 });
+});
+
+test("leading commas in empty containers are rejected, not stripped", () => {
+  expect(() => parse(`{ "a": {,} }`)).toThrow();
+  expect(() => parse(`{ "a": [,] }`)).toThrow();
+  expect(() => parse(`[1,,]`)).toThrow();
+});
+
 test("nested combinations", () => {
   expect(
     parse(`{
