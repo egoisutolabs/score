@@ -1,4 +1,4 @@
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 
 import { requireSuccess } from "@/adapters/command-runner";
 import type { CommandRunner } from "@/shared/command-runner";
@@ -19,13 +19,11 @@ export async function discoverLegacyRuntime(
   runner: CommandRunner,
   preflight: LegacyPreflight,
 ): Promise<LegacyRuntimeContext> {
-  // Source lives at score/src/shared; the bundle lives at score/dist.
-  const repositoryHint =
-    basename(import.meta.dir) === "dist"
-      ? resolve(import.meta.dir, "../..")
-      : resolve(import.meta.dir, "../../..");
+  // git already walks up to the enclosing repository, so ask it from wherever
+  // this code lives (score/src/shared, or score/dist when bundled). Guessing a
+  // fixed number of "../" broke the moment score became its own repository.
   const repositoryRoot = requireSuccess(
-    await runner.run(["git", "rev-parse", "--show-toplevel"], { cwd: repositoryHint }),
+    await runner.run(["git", "rev-parse", "--show-toplevel"], { cwd: import.meta.dir }),
   ).stdout.trim();
   if (preflight.requireGhAuth) {
     requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: repositoryRoot }));
