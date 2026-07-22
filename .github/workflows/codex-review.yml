@@ -1,0 +1,64 @@
+name: codex-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  codex:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/review.md
+          output-file: codex-output.md
+          sandbox: read-only
+          model: gpt-5.6-sol
+          effort: high
+
+      # A BLOCK verdict fails this check. That is the whole integration:
+      # checks-red blocks landing AND triggers shepherd to ping the agent.
+      - name: Gate on verdict
+        run: |
+          tail -3 codex-output.md
+          grep -q "^VERDICT: PASS" codex-output.md \
+            || { echo "::error::Codex review blocked this PR — see the PR comment for findings"; exit 1; }
+
+  post_feedback:
+    runs-on: ubuntu-latest
+    needs: codex
+    if: ${{ always() && needs.codex.outputs.final_message != '' }}
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Post Codex feedback
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## Codex review\n\n${process.env.CODEX_FINAL_MESSAGE}`,
+            });
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
