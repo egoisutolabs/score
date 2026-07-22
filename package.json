@@ -1,0 +1,27 @@
+{
+  "name": "score",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dev": "bun --hot src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "biome check . && tsc --noEmit",
+    "check:fix": "biome check --write . && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
+    "@types/bun": "latest",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {}
+}
