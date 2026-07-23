@@ -575,7 +575,9 @@ async function runDaemonLoop(
           interruptible: true,
           onStopRequested: () => {
             stopping = true;
-            void status?.write({ state: "stopping" });
+            // Fire-and-forget from a signal handler: a failed write must not
+            // become an unhandled rejection that crashes the clean shutdown.
+            void status?.write({ state: "stopping" }).catch(() => {});
           },
         }
       : {},

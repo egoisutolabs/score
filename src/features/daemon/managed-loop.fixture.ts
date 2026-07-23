@@ -44,7 +44,7 @@ await runPollingLoop(
     interruptible: true,
     onStopRequested: () => {
       stopping = true;
-      void status.write({ state: "stopping" });
+      void status.write({ state: "stopping" }).catch(() => {});
     },
   },
 );
