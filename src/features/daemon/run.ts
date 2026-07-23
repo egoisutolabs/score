@@ -16,6 +16,7 @@ import { renderLandingTick } from "@/features/landing/render";
 import { LandingService } from "@/features/landing/service";
 import { renderMaintenanceTick } from "@/features/maintenance/render";
 import { LegacyWorkflowService } from "@/features/maintenance/service";
+import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
 import { renderRepairRun } from "@/features/repair/run";
 import { RepairService } from "@/features/repair/service";
 import {
@@ -147,7 +148,7 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
     {
       agentCommand: process.env.AGENT_CMD || "claude",
       verificationCommands: process.env.VERIFY_CMDS || "cd daemon && bun run check && bun test",
-      sessionSuffix: process.env.SESSION_SUFFIX || "-issue-%N",
+      sessionSuffix: process.env.SESSION_SUFFIX || DEFAULT_SESSION_SUFFIX,
       includeClean: false,
       onlyPullRequests: new Set<string>(),
       noSpawn: false,

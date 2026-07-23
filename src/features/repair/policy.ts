@@ -1,3 +1,11 @@
+/**
+ * Must match the session names dispatch creates (`issue-N` in identity.ts).
+ * Legacy defaulted to "-issue-%N", which never matched its own "issue-N"
+ * sessions, so repair silently always spawned instead of pinging. Anchored so
+ * an unrelated session like "my-issue-1" can't be pinged by mistake.
+ */
+export const DEFAULT_SESSION_SUFFIX = "^issue-%N";
+
 export interface RepairDefects {
   readonly conflicting: boolean;
   readonly unresolvedThreads: number;

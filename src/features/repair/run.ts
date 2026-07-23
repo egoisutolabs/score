@@ -2,6 +2,7 @@ import { BunCommandRunner, LoggingCommandRunner } from "@/adapters/command-runne
 import { GitService } from "@/adapters/git";
 import { GitHubService } from "@/adapters/github";
 import { TmuxService } from "@/adapters/tmux";
+import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
 import type { RepairResult } from "@/features/repair/result";
 import { RepairService } from "@/features/repair/service";
 import { discoverLegacyRuntime } from "@/shared/legacy-runtime";
@@ -78,7 +79,7 @@ export async function runRepair(args: readonly string[]): Promise<void> {
     {
       agentCommand: process.env.AGENT_CMD || "claude",
       verificationCommands: process.env.VERIFY_CMDS || "cd daemon && bun run check && bun test",
-      sessionSuffix: process.env.SESSION_SUFFIX || "-issue-%N",
+      sessionSuffix: process.env.SESSION_SUFFIX || DEFAULT_SESSION_SUFFIX,
       includeClean: parsed.includeClean,
       onlyPullRequests: parsed.only,
       noSpawn: parsed.noSpawn,

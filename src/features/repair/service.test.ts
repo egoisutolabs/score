@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
 
+import { createWorkIdentity } from "@/features/dispatch/identity";
 import type { WorkIdentity, WorktreeObservation } from "@/features/dispatch/work";
 import type { PullRequestObservation } from "@/features/landing/change";
 import type { ChangeHost } from "@/features/landing/port";
+import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
 import { RepairService } from "@/features/repair/service";
 import type { AgentRuntime } from "@/shared/agent-runtime";
 import type { PrimaryCheckoutObservation, WorkspaceDriver } from "@/shared/workspace-driver";
@@ -160,4 +162,22 @@ test("review-thread query failure retains shepherd's fail-open zero", async () =
   };
   const result = await new RepairService(options, host, workspace, agents).run();
   expect(result[0]?.action).toBe("NOT_NEEDED");
+});
+
+test("default session suffix matches the sessions dispatch creates, and only those", () => {
+  const identity = createWorkIdentity("/tmp/worktrees", {
+    number: 1,
+    title: "Port models",
+    body: "",
+    labels: [],
+    state: "OPEN",
+    url: "https://github.com/example/score/issues/1",
+    comments: [],
+  });
+  // Same construction as RepairService: suffix with %N substituted, anchored at the end.
+  const pattern = new RegExp(`${DEFAULT_SESSION_SUFFIX.replace("%N", "1")}$`);
+  expect(pattern.test(identity.sessionName)).toBe(true);
+  expect(pattern.test("my-issue-1")).toBe(false);
+  expect(pattern.test("shepherd-pr-1")).toBe(false);
+  expect(pattern.test("issue-11")).toBe(false);
 });
