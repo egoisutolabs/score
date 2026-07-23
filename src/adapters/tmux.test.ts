@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -76,10 +76,16 @@ test("implementation launch refuses to clobber an existing issue session", async
 test("implementation launch starts the restored interactive Claude command", async () => {
   const runner = new RecordingRunner();
   runner.responses = [1, 0];
-  const service = new TmuxService(runner, { repositoryPath: "/repo" });
   const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, { repositoryPath: "/repo", trustConfigPath });
 
   await service.startImplementation(work, "Read TASK.md and don't merge.");
+
+  // The trust dialog would stall a detached session, so launch pre-seeds it.
+  const trust = JSON.parse(await readFile(trustConfigPath, "utf8"));
+  expect(trust.projects[work.worktreePath]).toEqual({ hasTrustDialogAccepted: true });
 
   expect(runner.commands).toEqual([
     ["tmux", "has-session", "-t", "issue-7"],

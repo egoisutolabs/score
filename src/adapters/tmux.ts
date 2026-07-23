@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 
+import { defaultClaudeConfigPath, preseedWorktreeTrust } from "@/adapters/claude-trust";
 import { requireSuccess } from "@/adapters/command-runner";
 import type { WorkIdentity } from "@/features/dispatch/work";
 import type { AgentRuntime } from "@/shared/agent-runtime";
@@ -10,6 +11,8 @@ interface TmuxServiceOptions {
   readonly executable?: string;
   readonly timeoutMs?: number;
   readonly dryRun?: boolean;
+  /** Overridden in tests so they never touch the real ~/.claude.json. */
+  readonly trustConfigPath?: string;
 }
 
 /** Durable local process adapter using argv-safe tmux commands. */
@@ -51,6 +54,7 @@ export class TmuxService implements AgentRuntime {
       );
     }
 
+    await this.#preseedTrust(identity.worktreePath);
     requireSuccess(
       await this.#run(
         [
@@ -85,6 +89,7 @@ export class TmuxService implements AgentRuntime {
     const sessionName = `shepherd-pr-${pullRequestNumber}`;
     const promptPath = `/tmp/shepherd-pr-${pullRequestNumber}.prompt`;
     await Bun.write(promptPath, `${message}\n`);
+    await this.#preseedTrust(worktreePath);
     await this.#run(["kill-session", "-t", sessionName], true);
     const shell = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; export GITHUB_TOKEN="$(gh auth token)"; ${agentCommand} "$(cat '${promptPath}')" --permission-mode bypassPermissions; echo EXIT:$?; echo '--- done; press enter to close ---'; read`;
     requireSuccess(
@@ -97,6 +102,14 @@ export class TmuxService implements AgentRuntime {
 
   async stop(sessionName: string): Promise<void> {
     await this.#run(["kill-session", "-t", sessionName], true);
+  }
+
+  async #preseedTrust(worktreePath: string): Promise<void> {
+    if (this.options.dryRun) return;
+    await preseedWorktreeTrust(
+      worktreePath,
+      this.options.trustConfigPath ?? defaultClaudeConfigPath(),
+    );
   }
 
   #run(args: readonly string[], mutates = false) {
