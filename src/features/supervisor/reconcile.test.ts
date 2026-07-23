@@ -109,6 +109,24 @@ test("two fresh projects sharing a checkout: only the first starts", () => {
   ]);
 });
 
+test("a loaded job with unreadable resolved.json still claims its checkout via config", () => {
+  // b listed before a in config, a loaded but its resolved.json unreadable:
+  // b must be refused (blocking a), a restarts — never the inverse.
+  const decided = plan(
+    [
+      project("b", { mainLocation: "/repos/shared" }),
+      project("a", { mainLocation: "/repos/shared" }),
+    ],
+    [loaded("a")],
+    existing(),
+  );
+  expect(decided.refused).toEqual([
+    { project: expect.objectContaining({ key: "b" }), blockingKey: "a" },
+  ]);
+  expect(decided.start).toEqual([]);
+  expect(decided.restart.map((entry) => entry.key)).toEqual(["a"]);
+});
+
 test("distinct checkouts never collide", () => {
   const decided = plan([project("a"), project("b")], [loaded("a")], existing(project("a")));
   expect(decided.refused).toEqual([]);

@@ -33,8 +33,12 @@ export function plan(
   // decide to run — so a copy-pasted second project on one checkout is refused
   // even when neither is running yet (the double-dispatch edge decision 12 closes).
   const claims = new Map<string, string>();
+  const desiredByKey = new Map(desired.map((project) => [project.key, project]));
   for (const key of loaded) {
-    const location = existing.get(key)?.mainLocation;
+    // A loaded job with an unreadable resolved.json must still claim its
+    // checkout, or the guard fails open — fall back to its desired config
+    // entry so a fresh key on the same mainLocation is refused, not started.
+    const location = existing.get(key)?.mainLocation ?? desiredByKey.get(key)?.mainLocation;
     if (location !== undefined && !claims.has(location)) claims.set(location, key);
   }
   const result: Plan = { start: [], restart: [], unchanged: [], removed: [], refused: [] };
