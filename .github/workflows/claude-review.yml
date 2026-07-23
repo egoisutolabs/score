@@ -28,7 +28,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # A review-infra failure (missing token, API hiccup) must not redden the
+      # PR: repair treats failing checks as agent-fixable defects and would
+      # ping agents about a failure they can't fix. Threads are the signal.
       - uses: anthropics/claude-code-action@v1
+        continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
