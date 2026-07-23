@@ -50,6 +50,23 @@ Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
 `ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `src/features/daemon/run.ts` and
 `src/features/repair/run.ts`.
 
+## Supervisor platforms
+
+`score up / down / tui` pick the supervisor by platform: launchd
+(`~/Library/LaunchAgents`) on macOS, systemd user units
+(`~/.config/systemd/user/score-<key>.service`) on Linux. Other platforms are
+unsupported and fail before touching anything.
+
+On Linux, systemd user units are killed at logout unless lingering is enabled.
+Run this once per operator account, or the daemons die with your SSH session:
+
+```sh
+loginctl enable-linger $USER
+```
+
+`score doctor` deliberately does not check this — it is documented, not
+enforced.
+
 ## Verify
 
 ```sh

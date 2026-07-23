@@ -7,8 +7,11 @@ import { loadConfig, PROJECT_KEY_PATTERN } from "@/features/config/load";
 import type { ResolvedProject } from "@/features/config/model";
 import { resolveProjects } from "@/features/config/resolve";
 import { readResolvedProject } from "@/features/config/resolved";
-import type { SupervisorAdapter } from "@/features/supervisor/adapter";
-import { LaunchdSupervisor } from "@/features/supervisor/launchd";
+import {
+  type DefinitionRenderer,
+  type SupervisorAdapter,
+  supervisorForPlatform,
+} from "@/features/supervisor/adapter";
 import { jobLabel, renderPlist } from "@/features/supervisor/plist";
 import { plan } from "@/features/supervisor/reconcile";
 
@@ -24,8 +27,9 @@ function managedInvocation(key: string): readonly string[] {
   ];
 }
 
-function defaultAdapter(): SupervisorAdapter {
-  return new LaunchdSupervisor(new BunCommandRunner());
+function defaultSupervisor(): { adapter: SupervisorAdapter; render: DefinitionRenderer } {
+  const { adapter, renderDefinition } = supervisorForPlatform(new BunCommandRunner());
+  return { adapter, render: renderDefinition };
 }
 
 /**
@@ -90,14 +94,22 @@ function installedDefinitionPath(key: string): string {
 export interface UpDependencies {
   readonly adapter: SupervisorAdapter;
   readonly invocationFor: (key: string) => readonly string[];
+  /** Defaults to renderPlist — the injected-adapter tests are launchd-shaped. */
+  readonly renderDefinition?: DefinitionRenderer;
 }
 
 export async function runUp(args: readonly string[], deps?: UpDependencies): Promise<void> {
   const only = parseSingleKey(args, "up");
-  const adapter = deps?.adapter ?? defaultAdapter();
-  const invocationFor = deps?.invocationFor ?? managedInvocation;
+  const { adapter, invocationFor, render } =
+    deps === undefined
+      ? { ...defaultSupervisor(), invocationFor: managedInvocation }
+      : {
+          adapter: deps.adapter,
+          invocationFor: deps.invocationFor,
+          render: deps.renderDefinition ?? renderPlist,
+        };
   const renderFor = (project: ResolvedProject): string =>
-    renderPlist(project, invocationFor(project.key), jobEnvironment());
+    render(project, invocationFor(project.key), jobEnvironment());
 
   // Invalid config fails closed here — no launchctl call has happened yet.
   const config = await loadConfig();
@@ -188,7 +200,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
 
 export async function runDown(
   args: readonly string[],
-  adapter: SupervisorAdapter = defaultAdapter(),
+  adapter: SupervisorAdapter = defaultSupervisor().adapter,
 ): Promise<void> {
   const only = parseSingleKey(args, "down");
   const keys = only !== undefined ? [only] : (await adapter.status()).map((job) => job.key);

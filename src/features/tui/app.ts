@@ -9,8 +9,7 @@ import { BunCommandRunner } from "@/adapters/command-runner";
 import { logsDir } from "@/features/config/layout";
 import { loadConfig } from "@/features/config/load";
 import type { ScoreConfig } from "@/features/config/model";
-import type { SupervisorAdapter } from "@/features/supervisor/adapter";
-import { LaunchdSupervisor } from "@/features/supervisor/launchd";
+import { type SupervisorAdapter, supervisorForPlatform } from "@/features/supervisor/adapter";
 import { restartProject, startProject, stopProject } from "@/features/tui/actions";
 import type { Dot } from "@/features/tui/dots";
 import { fleetSnapshot, type ProjectView } from "@/features/tui/snapshot";
@@ -296,7 +295,7 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
 export async function runTui(args: readonly string[]): Promise<void> {
   if (args.length > 0) throw new Error("usage: score tui");
   const config = await loadConfig();
-  const adapter: SupervisorAdapter = new LaunchdSupervisor(new BunCommandRunner());
+  const adapter: SupervisorAdapter = supervisorForPlatform(new BunCommandRunner()).adapter;
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
   const app = buildTui(renderer, { adapter, config });
   renderer.keyInput.on("keypress", (key: KeyEvent) => app.handleKey(key));
