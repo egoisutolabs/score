@@ -57,13 +57,11 @@ test("the example config (comments, trailing commas) loads from disk", async () 
   expect(config.log_retention_days).toBe(30);
 });
 
-test("invalid JSON after stripping fails with the stripping message", async () => {
+test("invalid JSONC fails with the parse message", async () => {
   const dir = await mkdtemp(join(tmpdir(), "score-config-"));
   const path = join(dir, "config.jsonc");
   await writeFile(path, "{ not json // comment\n");
-  await expect(loadConfig(path)).rejects.toThrow(
-    /config\.jsonc is not valid JSON after comment stripping/,
-  );
+  await expect(loadConfig(path)).rejects.toThrow(/config\.jsonc is not valid JSONC/);
 });
 
 test("unknown config field names the field and its path", () => {

@@ -1,13 +1,10 @@
 import { expect, test } from "vitest";
-import { stripJsonc } from "@/features/config/jsonc";
 
-function parse(text: string): unknown {
-  return JSON.parse(stripJsonc(text));
-}
+import { parseJsonc } from "@/features/config/jsonc";
 
 test("strips line comments at line end and line start", () => {
   expect(
-    parse(`// leading comment
+    parseJsonc(`// leading comment
 {
   "a": 1, // trailing comment
   "b": 2
@@ -17,59 +14,55 @@ test("strips line comments at line end and line start", () => {
 
 test("strips block comments, including multi-line", () => {
   expect(
-    parse(`{ /* one */ "a": /* two
+    parseJsonc(`{ /* one */ "a": /* two
   lines */ 1 }`),
   ).toEqual({ a: 1 });
 });
 
-test("// inside a string survives stripping", () => {
-  expect(parse(`{ "a": "// not a comment" }`)).toEqual({ a: "// not a comment" });
-});
-
-test("block-comment markers inside strings survive stripping", () => {
-  expect(parse(`{ "a": "/* nope */", "b": "*/" }`)).toEqual({ a: "/* nope */", b: "*/" });
+test("comment markers inside strings survive parsing", () => {
+  expect(parseJsonc(`{ "a": "// not a comment" }`)).toEqual({ a: "// not a comment" });
+  expect(parseJsonc(`{ "a": "/* nope */", "b": "*/" }`)).toEqual({ a: "/* nope */", b: "*/" });
 });
 
 test("escaped quote inside a string does not end the string", () => {
-  expect(parse(`{ "a": "quote \\" then // still string" }`)).toEqual({
+  expect(parseJsonc(`{ "a": "quote \\" then // still string" }`)).toEqual({
     a: 'quote " then // still string',
   });
 });
 
-test("removes trailing commas in objects and arrays", () => {
-  expect(parse(`{ "a": [1, 2, 3,], "b": { "c": 1, }, }`)).toEqual({ a: [1, 2, 3], b: { c: 1 } });
+test("allows trailing commas in objects and arrays", () => {
+  expect(parseJsonc(`{ "a": [1, 2, 3,], "b": { "c": 1, }, }`)).toEqual({
+    a: [1, 2, 3],
+    b: { c: 1 },
+  });
 });
 
 test("trailing comma before a comment before the closing brace", () => {
   expect(
-    parse(`{
+    parseJsonc(`{
   "a": 1, // last entry
 }`),
   ).toEqual({ a: 1 });
 });
 
-test("comma inside a string is untouched", () => {
-  expect(parse(`{ "a": "x,}" }`)).toEqual({ a: "x,}" });
+test("a block comment splitting a token does not fuse it into a valid value", () => {
+  expect(() => parseJsonc(`{ "a": 60/* seconds */000 }`)).toThrow();
+  expect(() => parseJsonc(`{ "a": tr/*x*/ue }`)).toThrow();
 });
 
-test("a block comment splitting a token does not fuse it into valid JSON", () => {
-  expect(() => parse(`{ "a": 60/* seconds */000 }`)).toThrow();
-  expect(() => parse(`{ "a": tr/*x*/ue }`)).toThrow();
+test("a block comment between tokens still leaves valid JSONC", () => {
+  expect(parseJsonc(`{ "a"/* key */: 1 }`)).toEqual({ a: 1 });
 });
 
-test("a block comment between tokens still leaves valid JSON", () => {
-  expect(parse(`{ "a"/* key */: 1 }`)).toEqual({ a: 1 });
-});
-
-test("leading commas in empty containers are rejected, not stripped", () => {
-  expect(() => parse(`{ "a": {,} }`)).toThrow();
-  expect(() => parse(`{ "a": [,] }`)).toThrow();
-  expect(() => parse(`[1,,]`)).toThrow();
+test("leading and doubled commas are rejected, not tolerated", () => {
+  expect(() => parseJsonc(`{ "a": {,} }`)).toThrow();
+  expect(() => parseJsonc(`{ "a": [,] }`)).toThrow();
+  expect(() => parseJsonc(`[1,,]`)).toThrow();
 });
 
 test("nested combinations", () => {
   expect(
-    parse(`{
+    parseJsonc(`{
   /* header */
   "outer": {
     "list": [
@@ -80,11 +73,11 @@ test("nested combinations", () => {
   ).toEqual({ outer: { list: [{ url: "https://example.com//path" }] } });
 });
 
-test("an unclosed block comment is a truncated file and must fail fast", () => {
-  expect(() => stripJsonc('{ "version": 1, "projects": {} } /* cut off')).toThrow(
-    /unclosed block comment/,
+test("a truncated file fails fast instead of loading the recoverable prefix", () => {
+  expect(() => parseJsonc('{ "version": 1, "projects": {} } /* cut off')).toThrow(
+    /UnexpectedEndOfComment/,
   );
-  expect(() => stripJsonc("/* never closed")).toThrow(/unclosed block comment/);
-  // A properly closed comment in the same position still strips cleanly.
-  expect(JSON.parse(stripJsonc('{ "version": 1 } /* closed */'))).toEqual({ version: 1 });
+  expect(() => parseJsonc('{ "version": 1, "projects": {')).toThrow();
+  // A properly closed comment in the same position still parses cleanly.
+  expect(parseJsonc('{ "version": 1 } /* closed */')).toEqual({ version: 1 });
 });

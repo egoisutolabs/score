@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { stripJsonc } from "@/features/config/jsonc";
+import { parseJsonc } from "@/features/config/jsonc";
 import { configPath } from "@/features/config/layout";
 import type { ProjectConfig, ProjectRuntimeConfig, ScoreConfig } from "@/features/config/model";
 import {
@@ -17,10 +17,10 @@ export async function loadConfig(path: string = configPath()): Promise<ScoreConf
   const text = await readFile(path, "utf8");
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripJsonc(text));
+    parsed = parseJsonc(text);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`config.jsonc is not valid JSON after comment stripping: ${detail}`);
+    throw new Error(`config.jsonc is not valid JSONC: ${detail}`);
   }
   return validateScoreConfig(parsed);
 }
