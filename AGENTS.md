@@ -1,7 +1,8 @@
 # Score guidance
 
 - Use Bun and TypeScript.
-- Keep models as interfaces and types; do not add Zod.
+- Keep models as interfaces and types; do not add Zod or any schema-builder
+  DSL — interfaces read as the shape directly, schema objects are indirection.
 - Keep code feature-first under `src/features/`.
 - Preserve the three separate legacy boundaries: autopilot, repair, and landing.
 - Do not add policy that is absent from `legacy/` when working on parity.
