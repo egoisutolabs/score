@@ -152,14 +152,19 @@ async function preflightManagedRuntime(
   // github_repo is hand-editable config: prove it against the checkout's git
   // origin, not gh defaults — GH_REPO or `gh repo set-default` can make gh
   // report the configured repo even when the checkout belongs to another.
-  const origin = requireSuccess(
-    await runner.run(["git", "remote", "get-url", "origin"], { cwd: project.mainLocation }),
-  ).stdout.trim();
-  const observed = origin.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
-  if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
-    throw new Error(
-      `projects.${project.key}.github_repo ${project.githubRepo} does not match origin ${origin} at ${project.mainLocation}`,
-    );
+  // Check the push URL too: remote.origin.pushurl can diverge from the fetch
+  // URL, and landing pushes the default branch back through origin.
+  for (const [kind, args] of [
+    ["origin", ["git", "remote", "get-url", "origin"]],
+    ["origin push URL", ["git", "remote", "get-url", "--push", "origin"]],
+  ] as const) {
+    const url = requireSuccess(await runner.run(args, { cwd: project.mainLocation })).stdout.trim();
+    const observed = url.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
+    if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
+      throw new Error(
+        `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation}`,
+      );
+    }
   }
   // gh repo set-default persists in the checkout's git config and redirects
   // issue/PR commands even when origin matches; refuse to run under one that

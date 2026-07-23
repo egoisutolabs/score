@@ -148,6 +148,7 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
         "git",
         "git",
         "git",
+        "git",
         "gh",
         "tmux",
         "git",
@@ -168,6 +169,23 @@ test("managed bootstrap fails when github_repo does not match the checkout's ori
     const parsed = parseDaemonArguments(["--project", "demo"]);
     await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
       /projects\.demo\.github_repo egoisutolabs\/demo does not match origin https:\/\/github\.com\/someone\/else\.git/,
+    );
+  });
+});
+
+test("managed bootstrap fails when the push URL diverges from github_repo", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "remote" && command.includes("--push")) {
+        return { stdout: "git@github.com:someone/fork.git\n" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /does not match origin push URL git@github\.com:someone\/fork\.git/,
     );
   });
 });
