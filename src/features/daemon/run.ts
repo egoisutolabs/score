@@ -147,6 +147,21 @@ async function preflightManagedRuntime(
     );
   }
   requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: project.mainLocation }));
+  // github_repo is hand-editable config: prove it matches the checkout's
+  // origin, or cwd-scoped gh calls would act on a different repository than
+  // the configured one (same check as GitHubService.preflight).
+  const observed = JSON.parse(
+    requireSuccess(
+      await runner.run(["gh", "repo", "view", "--json", "nameWithOwner"], {
+        cwd: project.mainLocation,
+      }),
+    ).stdout,
+  ).nameWithOwner;
+  if (observed !== project.githubRepo) {
+    throw new Error(
+      `projects.${project.key}.github_repo ${project.githubRepo} does not match gh repository ${observed} at ${project.mainLocation}`,
+    );
+  }
   requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {

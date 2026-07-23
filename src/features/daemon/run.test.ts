@@ -114,6 +114,7 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       const runner = new FakeRunner((command) => {
         if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
         if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
+        if (command[1] === "repo") return { stdout: '{"nameWithOwner":"egoisutolabs/demo"}\n' };
         return {};
       });
       const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
@@ -129,7 +130,13 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       expect(boot.runtime.defaultBranch).toBe("develop");
       // Every preflight runs inside main_location, so cwd never matters.
       for (const call of runner.calls) expect(call.cwd).toBe(repo);
-      expect(runner.calls.map((call) => call.command[0])).toEqual(["git", "gh", "tmux", "git"]);
+      expect(runner.calls.map((call) => call.command[0])).toEqual([
+        "git",
+        "gh",
+        "gh",
+        "tmux",
+        "git",
+      ]);
     },
   );
 });
@@ -146,6 +153,22 @@ test("managed bootstrap fails when main_location is not the git toplevel", async
     const parsed = parseDaemonArguments(["--project", "demo"]);
     await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
       /projects\.demo\.main_location .* is not a git toplevel/,
+    );
+  });
+});
+
+test("managed bootstrap fails when github_repo does not match the checkout's origin", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
+      if (command[1] === "repo") return { stdout: '{"nameWithOwner":"someone/else"}\n' };
+      return {};
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /projects\.demo\.github_repo egoisutolabs\/demo does not match gh repository someone\/else/,
     );
   });
 });
