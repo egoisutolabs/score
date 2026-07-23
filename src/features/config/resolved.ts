@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolvedPath } from "@/features/config/layout";
 import type { ResolvedProject } from "@/features/config/model";
 import { configHash } from "@/features/config/resolve";
+import { KNOWN_HARNESSES } from "@/shared/agent-command";
 import {
   assertNoUnknownKeys,
   booleanValue,
@@ -78,7 +79,7 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
     tickIntervalMs: positiveIntegerValue(record.tickIntervalMs, `${path}.tickIntervalMs`),
     maxParallel: positiveIntegerValue(record.maxParallel, `${path}.maxParallel`),
     agent: {
-      harness: enumValue(agent.harness, ["claude"], `${path}.agent.harness`),
+      harness: enumValue(agent.harness, KNOWN_HARNESSES, `${path}.agent.harness`),
       model: stringValue(agent.model, `${path}.agent.model`),
     },
     autoMerge: booleanValue(record.autoMerge, `${path}.autoMerge`),

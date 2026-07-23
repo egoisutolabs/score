@@ -7,7 +7,8 @@ import { GitService } from "@/adapters/git";
 import { GitHubService } from "@/adapters/github";
 import { TmuxService } from "@/adapters/tmux";
 import { CleanupService } from "@/features/cleanup/service";
-import type { ResolvedProject } from "@/features/config/model";
+import { promptsDir } from "@/features/config/layout";
+import type { AgentConfig, ResolvedProject } from "@/features/config/model";
 import { readResolvedProject } from "@/features/config/resolved";
 import { PassCachedChangeHost } from "@/features/daemon/observations";
 import { RepairLedger } from "@/features/daemon/repair-ledger";
@@ -19,9 +20,10 @@ import { renderLandingTick } from "@/features/landing/render";
 import { LandingService } from "@/features/landing/service";
 import { renderMaintenanceTick } from "@/features/maintenance/render";
 import { LegacyWorkflowService } from "@/features/maintenance/service";
-import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
+import { sessionSuffixForNamespace } from "@/features/repair/policy";
 import { renderRepairRun } from "@/features/repair/run";
 import { RepairService } from "@/features/repair/service";
+import { agentConfigFromCommand } from "@/shared/agent-command";
 import type { CommandRunner } from "@/shared/command-runner";
 import type { LegacyRuntimeContext } from "@/shared/legacy-runtime";
 import {
@@ -91,6 +93,10 @@ export interface DaemonBootstrap {
   readonly maxParallelIssues: number;
   readonly noMerge: boolean;
   readonly managed: boolean;
+  readonly agent: AgentConfig;
+  /** Managed mode: the project key namespacing sessions and prompt files. */
+  readonly namespace?: string;
+  readonly promptsDir?: string;
 }
 
 /**
@@ -117,6 +123,7 @@ export async function bootstrapDaemon(
       maxParallelIssues: positiveEnvironment("MAX_PARALLEL", 1),
       noMerge: parsed.noMerge,
       managed: false,
+      agent: agentConfigFromCommand(process.env.AGENT_CMD),
     };
   }
   const project = await readResolvedProject(parsed.project, parsed.resolvedPath);
@@ -133,6 +140,9 @@ export async function bootstrapDaemon(
     maxParallelIssues: project.maxParallel,
     noMerge: parsed.noMerge || !project.autoMerge,
     managed: true,
+    agent: project.agent,
+    namespace: project.key,
+    promptsDir: promptsDir(project.key),
   };
 }
 
@@ -272,8 +282,17 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
   const { dryRun } = parsed;
   const log = createLogger(parsed.verbose);
   const runner = new LoggingCommandRunner(new BunCommandRunner(), log);
-  const { runtime, workspaceRoot, tickIntervalMs, maxParallelIssues, noMerge, managed } =
-    await bootstrapDaemon(parsed, runner);
+  const {
+    runtime,
+    workspaceRoot,
+    tickIntervalMs,
+    maxParallelIssues,
+    noMerge,
+    managed,
+    agent,
+    namespace,
+    promptsDir: projectPromptsDir,
+  } = await bootstrapDaemon(parsed, runner);
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
   const tuning = (name: string): string | undefined => (managed ? undefined : process.env[name]);
@@ -304,7 +323,12 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
     workspaceRoot,
     dryRun,
   });
-  const tmux = new TmuxService(runner, { repositoryPath: runtime.repositoryRoot, dryRun });
+  const tmux = new TmuxService(runner, {
+    repositoryPath: runtime.repositoryRoot,
+    dryRun,
+    namespace,
+    promptsDir: projectPromptsDir,
+  });
   const observations = new PassCachedChangeHost(github);
 
   const maintenance = new LegacyWorkflowService(
@@ -314,6 +338,7 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
         workspaceRoot,
         harnessOwnedPaths: ["TASK.md", ".claude/"],
         autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
+        namespace,
       },
       github,
       git,
@@ -328,6 +353,8 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
           holdLabel: "hold",
           umbrellaLabel: "umbrella",
         },
+        agent,
+        namespace,
       },
       github,
       observations,
@@ -355,9 +382,9 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
   const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10));
   const repair = new RepairService(
     {
-      agentCommand: tuning("AGENT_CMD") || "claude",
+      agent,
       verificationCommands: tuning("VERIFY_CMDS") || "cd daemon && bun run check && bun test",
-      sessionSuffix: tuning("SESSION_SUFFIX") || DEFAULT_SESSION_SUFFIX,
+      sessionSuffix: tuning("SESSION_SUFFIX") || sessionSuffixForNamespace(namespace),
       includeClean: false,
       onlyPullRequests: new Set<string>(),
       noSpawn: false,

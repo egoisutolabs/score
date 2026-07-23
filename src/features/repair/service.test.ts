@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 
+import type { AgentConfig } from "@/features/config/model";
 import { createWorkIdentity } from "@/features/dispatch/identity";
 import type { WorkIdentity, WorktreeObservation } from "@/features/dispatch/work";
 import type { PullRequestObservation } from "@/features/landing/change";
@@ -55,6 +56,7 @@ class RepairAgents implements AgentRuntime {
   sessions: string[] = [];
   pinged: string[] = [];
   spawned: number[] = [];
+  spawnedWith: AgentConfig[] = [];
   async sessionExists() {
     return false;
   }
@@ -65,8 +67,14 @@ class RepairAgents implements AgentRuntime {
   async ping(sessionName: string) {
     this.pinged.push(sessionName);
   }
-  async startRepair(pullRequestNumber: number) {
+  async startRepair(
+    pullRequestNumber: number,
+    _worktree: string,
+    _message: string,
+    agent: AgentConfig,
+  ) {
     this.spawned.push(pullRequestNumber);
+    this.spawnedWith.push(agent);
   }
   async stop() {}
 }
@@ -92,7 +100,7 @@ function changes(): ChangeHost {
 }
 
 const options = {
-  agentCommand: "claude",
+  agent: { harness: "claude", model: "opus-4.6" } as AgentConfig,
   verificationCommands: "bun test",
   sessionSuffix: "-issue-%N",
   includeClean: false,
@@ -137,6 +145,8 @@ test("repair spawns shepherd-pr work in the exact existing PR worktree", async (
   const result = await new RepairService(options, changes(), workspace, agents).run();
   expect(result[0]?.action).toBe("SPAWNED");
   expect(agents.spawned).toEqual([9]);
+  // The agent config flows through to the spawn untouched.
+  expect(agents.spawnedWith).toEqual([{ harness: "claude", model: "opus-4.6" }]);
 });
 
 test("review-thread query failure retains shepherd's fail-open zero", async () => {

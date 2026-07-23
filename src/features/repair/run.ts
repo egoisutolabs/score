@@ -5,6 +5,7 @@ import { TmuxService } from "@/adapters/tmux";
 import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
 import type { RepairResult } from "@/features/repair/result";
 import { RepairService } from "@/features/repair/service";
+import { agentConfigFromCommand } from "@/shared/agent-command";
 import { discoverLegacyRuntime } from "@/shared/legacy-runtime";
 import type { LogLine } from "@/shared/log";
 import { createLogger } from "@/shared/log";
@@ -77,7 +78,7 @@ export async function runRepair(args: readonly string[]): Promise<void> {
   const tmux = new TmuxService(runner, { repositoryPath: runtime.repositoryRoot });
   const service = new RepairService(
     {
-      agentCommand: process.env.AGENT_CMD || "claude",
+      agent: agentConfigFromCommand(process.env.AGENT_CMD),
       verificationCommands: process.env.VERIFY_CMDS || "cd daemon && bun run check && bun test",
       sessionSuffix: process.env.SESSION_SUFFIX || DEFAULT_SESSION_SUFFIX,
       includeClean: parsed.includeClean,

@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import type { AgentConfig } from "@/features/config/model";
 import type { IssueObservation } from "@/features/dispatch/issue";
 import { DispatchService, type DispatchServiceOptions } from "@/features/dispatch/service";
 import type { TaskBriefingWriter } from "@/features/dispatch/task-briefing-port";
@@ -17,6 +18,7 @@ const options: DispatchServiceOptions = {
     holdLabel: "hold",
     umbrellaLabel: "umbrella",
   },
+  agent: { harness: "claude", model: "opus-4.6" },
 };
 
 function issue(number: number): IssueObservation {
@@ -99,17 +101,24 @@ class FakeWorkspace implements WorkspaceDriver {
 
 class FakeAgents implements AgentRuntime {
   readonly started: number[] = [];
+  readonly launches: { sessionName: string; agent: AgentConfig }[] = [];
+  sessions: string[] = [];
 
-  async sessionExists(): Promise<boolean> {
-    return false;
+  async sessionExists(sessionName: string): Promise<boolean> {
+    return this.sessions.includes(sessionName);
   }
 
   async listSessions(): Promise<readonly string[]> {
-    return [];
+    return this.sessions;
   }
 
-  async startImplementation(identity: WorkIdentity): Promise<void> {
+  async startImplementation(
+    identity: WorkIdentity,
+    _prompt: string,
+    agent: AgentConfig,
+  ): Promise<void> {
     this.started.push(identity.issueNumber);
+    this.launches.push({ sessionName: identity.sessionName, agent });
   }
 
   async ping(): Promise<void> {}
@@ -160,6 +169,40 @@ test("a failed task preparation does not suppress the next deterministic candida
   expect(workspace.created).toEqual([2]);
   expect(written).toEqual([2]);
   expect(agents.started).toEqual([2]);
+  // The configured agent reaches the launch untouched — the model pin is wired.
+  expect(agents.launches).toEqual([
+    { sessionName: "issue-2", agent: { harness: "claude", model: "opus-4.6" } },
+  ]);
+});
+
+test("a namespaced dispatch launches namespaced sessions and finds them in flight", async () => {
+  const namespaced = { ...options, maxParallelIssues: 1, namespace: "demo" };
+  const first = new FakeAgents();
+  const firstRun = new DispatchService(
+    namespaced,
+    new FakeWorkSource(),
+    changes,
+    new FakeWorkspace(),
+    first,
+    { async write(): Promise<void> {} },
+  );
+  expect((await firstRun.run()).started).toEqual([2]);
+  expect(first.launches[0]?.sessionName).toBe("score-demo-issue-2");
+
+  // A live namespaced session is an in-flight witness for the same issue.
+  const second = new FakeAgents();
+  second.sessions = ["score-demo-issue-2"];
+  const secondRun = new DispatchService(
+    namespaced,
+    new FakeWorkSource(),
+    changes,
+    new FakeWorkspace(),
+    second,
+    { async write(): Promise<void> {} },
+  );
+  const result = await secondRun.run();
+  expect(result.blocked).toContainEqual({ issueNumber: 2, reasons: ["ALREADY_IN_FLIGHT"] });
+  expect(second.started).toEqual([]);
 });
 
 test("successful preparation preserves create, briefing, then launch order", async () => {
@@ -171,9 +214,13 @@ test("successful preparation preserves create, briefing, then launch order", asy
     }
   }
   class OrderedAgents extends FakeAgents {
-    override async startImplementation(identity: WorkIdentity): Promise<void> {
+    override async startImplementation(
+      identity: WorkIdentity,
+      prompt: string,
+      agent: AgentConfig,
+    ): Promise<void> {
       events.push("launch-session");
-      await super.startImplementation(identity);
+      await super.startImplementation(identity, prompt, agent);
     }
   }
   const workspace = new OrderedWorkspace();

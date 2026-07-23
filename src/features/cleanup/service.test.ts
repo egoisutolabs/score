@@ -67,18 +67,23 @@ const host: ChangeHost = {
     return 0;
   },
 };
-const agents: AgentRuntime = {
-  async sessionExists() {
-    return false;
-  },
-  async listSessions() {
-    return [];
-  },
-  async startImplementation() {},
-  async ping() {},
-  async startRepair() {},
-  async stop() {},
-};
+function makeAgents(): AgentRuntime & { stopped: string[] } {
+  return {
+    stopped: [],
+    async sessionExists() {
+      return false;
+    },
+    async listSessions() {
+      return [];
+    },
+    async startImplementation() {},
+    async ping() {},
+    async startRepair() {},
+    async stop(sessionName: string) {
+      this.stopped.push(sessionName);
+    },
+  };
+}
 
 test("dry-run safe cleanup still plans the legacy pull-main observation", async () => {
   const workspace = new CleanupWorkspace();
@@ -91,7 +96,7 @@ test("dry-run safe cleanup still plans the legacy pull-main observation", async 
     },
     host,
     workspace,
-    agents,
+    makeAgents(),
   ).run(true);
   expect(result[0]?.action).toBe("PLANNED");
   expect(workspace.fastForwards).toBe(1);
@@ -99,6 +104,7 @@ test("dry-run safe cleanup still plans the legacy pull-main observation", async 
 
 test("local branch deletion failure remains nonfatal after worktree removal", async () => {
   const workspace = new CleanupWorkspace();
+  const agents = makeAgents();
   const result = await new CleanupService(
     {
       defaultBranch: "main",
@@ -111,6 +117,25 @@ test("local branch deletion failure remains nonfatal after worktree removal", as
     agents,
   ).run(false);
   expect(result[0]?.action).toBe("CLEANED");
+  expect(agents.stopped).toEqual(["issue-1"]);
   expect(workspace.deleted).toBe(1);
   expect(workspace.fastForwards).toBe(1);
+});
+
+test("namespaced cleanup stops the exact session its dispatch created", async () => {
+  const agents = makeAgents();
+  const result = await new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: false,
+      namespace: "demo",
+    },
+    host,
+    new CleanupWorkspace(),
+    agents,
+  ).run(false);
+  expect(result[0]?.action).toBe("CLEANED");
+  expect(agents.stopped).toEqual(["score-demo-issue-1"]);
 });

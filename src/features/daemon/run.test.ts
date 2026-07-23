@@ -152,6 +152,10 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       expect(boot.tickIntervalMs).toBe(5000);
       expect(boot.maxParallelIssues).toBe(2);
       expect(boot.managed).toBe(true);
+      // Namespace, agent, and durable prompt home flow out of resolved.json.
+      expect(boot.namespace).toBe("demo");
+      expect(boot.agent).toEqual({ harness: "claude", model: "claude-sonnet-5" });
+      expect(boot.promptsDir).toBe(join(home, "projects", "demo", "prompts"));
       expect(boot.runtime.repository).toBe("egoisutolabs/demo");
       expect(boot.runtime.repositoryRoot).toBe(repo);
       expect(boot.runtime.defaultBranch).toBe("develop");
@@ -341,6 +345,7 @@ test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
       TICK_INTERVAL_MS: "5000",
       MAX_PARALLEL: "3",
       WORKTREE_ROOT: "/tmp/wtroot",
+      AGENT_CMD: "",
     },
     async () => {
       const runner = new FakeRunner((command) => {
@@ -355,6 +360,10 @@ test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
       expect(boot.maxParallelIssues).toBe(3);
       expect(boot.workspaceRoot).toBe("/tmp/wtroot/score");
       expect(boot.runtime.defaultBranch).toBe("main");
+      // Unmanaged mode stays bare: no namespace, no prompt dir, default agent.
+      expect(boot.namespace).toBeUndefined();
+      expect(boot.promptsDir).toBeUndefined();
+      expect(boot.agent).toEqual({ harness: "claude" });
     },
   );
 });

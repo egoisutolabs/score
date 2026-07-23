@@ -1,8 +1,12 @@
-import { stat } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { defaultClaudeConfigPath, preseedWorktreeTrust } from "@/adapters/claude-trust";
 import { requireSuccess } from "@/adapters/command-runner";
+import type { AgentConfig } from "@/features/config/model";
+import { repairSessionName } from "@/features/dispatch/identity";
 import type { WorkIdentity } from "@/features/dispatch/work";
+import { agentArgv } from "@/shared/agent-command";
 import type { AgentRuntime } from "@/shared/agent-runtime";
 import type { CommandRunner } from "@/shared/command-runner";
 
@@ -13,6 +17,10 @@ interface TmuxServiceOptions {
   readonly dryRun?: boolean;
   /** Overridden in tests so they never touch the real ~/.claude.json. */
   readonly trustConfigPath?: string;
+  /** Managed mode: project key namespacing the repair sessions this adapter creates. */
+  readonly namespace?: string;
+  /** Managed mode: durable home for repair prompt files; /tmp otherwise. */
+  readonly promptsDir?: string;
 }
 
 /** Durable local process adapter using argv-safe tmux commands. */
@@ -44,7 +52,11 @@ export class TmuxService implements AgentRuntime {
   }
 
   /** TypeScript port of legacy/launch_session.sh's active Claude path. */
-  async startImplementation(identity: WorkIdentity, prompt: string): Promise<void> {
+  async startImplementation(
+    identity: WorkIdentity,
+    prompt: string,
+    agent: AgentConfig,
+  ): Promise<void> {
     if (!(await isDirectory(identity.worktreePath))) {
       throw new Error(`worktree not found: ${identity.worktreePath}`);
     }
@@ -64,7 +76,7 @@ export class TmuxService implements AgentRuntime {
           identity.sessionName,
           "-c",
           identity.worktreePath,
-          encodeTmuxShellCommand(["claude", prompt]),
+          encodeTmuxShellCommand(agentArgv(agent, prompt)),
         ],
         true,
       ),
@@ -84,13 +96,21 @@ export class TmuxService implements AgentRuntime {
     pullRequestNumber: number,
     worktreePath: string,
     message: string,
-    agentCommand: string,
+    agent: AgentConfig,
   ): Promise<void> {
-    const sessionName = `shepherd-pr-${pullRequestNumber}`;
-    const promptPath = `/tmp/shepherd-pr-${pullRequestNumber}.prompt`;
-    await Bun.write(promptPath, `${message}\n`);
+    const sessionName = repairSessionName(this.options.namespace, pullRequestNumber);
+    // /tmp dies on reboot; a managed project parks prompts in its prompts/ dir.
+    const promptPath = join(
+      this.options.promptsDir ?? "/tmp",
+      `shepherd-pr-${pullRequestNumber}.prompt`,
+    );
+    await mkdir(dirname(promptPath), { recursive: true });
+    await writeFile(promptPath, `${message}\n`);
     await this.#preseedTrust(worktreePath);
     await this.#run(["kill-session", "-t", sessionName], true);
+    // The prompt reaches the agent via $(cat) inside the preserved legacy
+    // wrapper, so agentArgv's copy of it is dropped (it is always last).
+    const agentCommand = encodeTmuxShellCommand(agentArgv(agent, message).slice(0, -1));
     const shell = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; export GITHUB_TOKEN="$(gh auth token)"; ${agentCommand} "$(cat '${promptPath}')" --permission-mode bypassPermissions; echo EXIT:$?; echo '--- done; press enter to close ---'; read`;
     requireSuccess(
       await this.#run(

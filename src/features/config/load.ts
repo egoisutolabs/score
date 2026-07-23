@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { parseJsonc } from "@/features/config/jsonc";
 import { configPath } from "@/features/config/layout";
 import type { ProjectConfig, ProjectRuntimeConfig, ScoreConfig } from "@/features/config/model";
+import { KNOWN_HARNESSES } from "@/shared/agent-command";
 import {
   assertNoUnknownKeys,
   booleanValue,
@@ -78,7 +79,7 @@ function validateRuntimeConfig(value: unknown, path: string): ProjectRuntimeConf
       max_parallel: positiveIntegerValue(config.max_parallel, `${path}.max_parallel`),
     }),
     agent: {
-      harness: enumValue(agent.harness, ["claude"], `${path}.agent.harness`),
+      harness: enumValue(agent.harness, KNOWN_HARNESSES, `${path}.agent.harness`),
       model: stringValue(agent.model, `${path}.agent.model`),
     },
     ...(config.auto_merge !== undefined && {
