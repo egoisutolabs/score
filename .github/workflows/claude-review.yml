@@ -1,0 +1,61 @@
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request following the Code Review Rules in AGENTS.md
+            exactly: real defects only — wrong behavior, unhandled failure paths,
+            races, state corruption, tests that would pass even if the behavior
+            were wrong, violations of the AGENTS.md rules, and scope creep beyond
+            the PR's stated issue. No style, formatting, naming, or hypothetical
+            future-proofing comments.
+
+            Process:
+            1. Read the PR description and the issue it implements (gh issue view).
+            2. Read the full diff AND the surrounding code it touches — judge the
+               change against how it is actually called, not in isolation.
+            3. Run the repo gates (bun run check, bun run test, bun run build)
+               and exercise any behavior you suspect is wrong before claiming it is.
+            4. For each confirmed defect, post an inline comment on the exact
+               lines using mcp__github_inline_comment__create_inline_comment,
+               stating the failure scenario concretely (input/state -> wrong
+               outcome). One thread per defect.
+            5. Finish with one summary comment: either the list of defects found,
+               or an explicit "no defects found" with what you verified.
+
+            Do not push commits, do not approve/request-changes, do not merge.
+            If you are not sure a finding is real, verify it or drop it.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment,Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(bun install),Bash(bun run check),Bash(bun run test),Bash(bun run build),Bash(bun test:*),Read,Grep,Glob"
