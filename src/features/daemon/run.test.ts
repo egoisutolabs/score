@@ -42,7 +42,12 @@ test("--project takes a value; --managed and --config require --project", () => 
 });
 
 class FakeRunner implements CommandRunner {
-  readonly calls: { command: readonly string[]; cwd: string }[] = [];
+  readonly calls: {
+    command: readonly string[];
+    cwd: string;
+    mutates: boolean | undefined;
+    dryRun: boolean | undefined;
+  }[] = [];
 
   constructor(
     private readonly respond: (command: readonly string[]) => {
@@ -52,7 +57,12 @@ class FakeRunner implements CommandRunner {
   ) {}
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
-    this.calls.push({ command, cwd: options.cwd });
+    this.calls.push({
+      command,
+      cwd: options.cwd,
+      mutates: options.mutates,
+      dryRun: options.dryRun,
+    });
     const response = this.respond(command);
     return {
       command,
@@ -147,6 +157,14 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       expect(process.env.GH_REPO).toBeUndefined();
       // Every preflight runs inside main_location, so cwd never matters.
       for (const call of runner.calls) expect(call.cwd).toBe(repo);
+      // The tmux env scrub mutates a live server, so it must carry the
+      // dry-run mutation gate BunCommandRunner short-circuits on.
+      const scrub = runner.calls.find((call) => call.command[1] === "set-environment");
+      expect(scrub).toMatchObject({ mutates: true, dryRun: true });
+      // Read-only preflights must NOT be gated, or dry-run could not verify.
+      for (const call of runner.calls.filter((c) => c.command[1] !== "set-environment")) {
+        expect(call.mutates).toBeUndefined();
+      }
       expect(runner.calls.map((call) => call.command[0])).toEqual([
         "git",
         "git",

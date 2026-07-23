@@ -123,7 +123,7 @@ export async function bootstrapDaemon(
   // GH_REPO redirects every cwd-scoped gh call away from the checkout's
   // origin; a supervised daemon must only act on the verified checkout.
   delete process.env.GH_REPO;
-  const runtime = await preflightManagedRuntime(runner, project);
+  const runtime = await preflightManagedRuntime(runner, project, parsed.dryRun);
   return {
     runtime,
     // worktree_location IS the worktree directory — never append the repo
@@ -140,6 +140,7 @@ export async function bootstrapDaemon(
 async function preflightManagedRuntime(
   runner: CommandRunner,
   project: ResolvedProject,
+  dryRun: boolean,
 ): Promise<LegacyRuntimeContext> {
   const toplevel = requireSuccess(
     await runner.run(["git", "rev-parse", "--show-toplevel"], { cwd: project.mainLocation }),
@@ -209,9 +210,13 @@ async function preflightManagedRuntime(
   // A tmux server that predates this daemon keeps the env it started with;
   // agents in new sessions would inherit a stale GH_REPO and act on the
   // wrong repo. Failure is fine — with no server running, the one our
-  // sessions start later inherits this process's already-cleaned env.
+  // sessions start later inherits this process's already-cleaned env. This
+  // mutates the live server, so it honors the dry-run gate like every other
+  // mutation in the codebase.
   await runner.run(["tmux", "set-environment", "-g", "-r", "GH_REPO"], {
     cwd: project.mainLocation,
+    mutates: true,
+    dryRun,
   });
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {
