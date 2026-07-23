@@ -213,6 +213,24 @@ test("managed bootstrap fails when the push URL diverges from github_repo", asyn
   });
 });
 
+test("managed bootstrap fails when a push URL is the same repo path on another host", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "remote" && command.includes("--push")) {
+        // Same owner/repo path, different host — a mirror, not the repo.
+        return { stdout: "git@gitlab.com:egoisutolabs/demo.git\n" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /does not match origin push URL git@gitlab\.com:egoisutolabs\/demo\.git/,
+    );
+  });
+});
+
 test("managed bootstrap fails when any extra push URL points elsewhere", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
   const { home } = await managedFixture(repo);

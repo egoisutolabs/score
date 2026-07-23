@@ -163,10 +163,14 @@ async function preflightManagedRuntime(
       .stdout.trim()
       .split("\n");
     for (const url of urls) {
-      const observed = url.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
+      // The host is part of the identity: a mirror with the same owner/repo
+      // path on another host must not pass. github.com only, like gh itself.
+      const observed = url
+        .replace(/\.git$/, "")
+        .match(/(?:^|[/@])github\.com[/:]([^/:]+\/[^/:]+)$/)?.[1];
       if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
         throw new Error(
-          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation}`,
+          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation} (github.com URLs only)`,
         );
       }
     }
