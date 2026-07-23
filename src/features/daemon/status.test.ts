@@ -22,7 +22,7 @@ function landing(tag: LandingResult["tag"], note: string): LandingResult {
   return { pullRequestNumber: 7, tag, note };
 }
 
-test("gateFailureFrom carries the latest build-red tail and clears on a green tick", () => {
+test("gateFailureFrom carries the latest build-red tail and clears only on a green tick", () => {
   expect(gateFailureFrom([landing("merged", "ok"), landing("soaking", "green")])).toBeNull();
   expect(
     gateFailureFrom([
@@ -31,7 +31,17 @@ test("gateFailureFrom carries the latest build-red tail and clears on a green ti
       landing("build-red", "daemon:test — 2 failed last"),
     ]),
   ).toBe("daemon:test — 2 failed last");
-  expect(gateFailureFrom([])).toBeNull();
+  // Ticks where local gates never ran must not erase the last known failure.
+  expect(gateFailureFrom([])).toBeUndefined();
+  expect(
+    gateFailureFrom([
+      landing("skipped", "not processed"),
+      landing("checks-pending", "waiting on CI"),
+      landing("conflict", "git merge hit conflicts (aborted)"),
+    ]),
+  ).toBeUndefined();
+  // ready = soak complete under --no-merge; gates ran green.
+  expect(gateFailureFrom([landing("skipped", "not processed"), landing("ready", "ok")])).toBeNull();
 });
 
 test("writes merge into a full schema snapshot and round-trip as JSON", async () => {

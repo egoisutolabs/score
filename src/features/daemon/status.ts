@@ -20,9 +20,19 @@ export interface StatusFile {
   readonly updated_at: string;
 }
 
-/** The latest build-red note from a landing tick, or null when the tick was green. */
-export function gateFailureFrom(results: readonly LandingResult[]): string | null {
-  return results.filter((result) => result.tag === "build-red").at(-1)?.note ?? null;
+/** Tags that only appear after #runGates ran the local gates and they passed. */
+const GREEN_GATE_TAGS: ReadonlySet<string> = new Set(["soaking", "ready", "merged"]);
+
+/**
+ * The gate verdict a landing tick produced, if any: the latest build-red
+ * tail, null when local gates ran and were green, undefined when no gates ran
+ * this tick — skipped/conflict/checks-pending ticks never supersede the last
+ * known failure, so callers keep the previous value on undefined.
+ */
+export function gateFailureFrom(results: readonly LandingResult[]): string | null | undefined {
+  const failure = results.filter((result) => result.tag === "build-red").at(-1)?.note;
+  if (failure !== undefined) return failure;
+  return results.some((result) => GREEN_GATE_TAGS.has(result.tag)) ? null : undefined;
 }
 
 /**

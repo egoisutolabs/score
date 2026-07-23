@@ -117,6 +117,18 @@ export class GitService implements WorkspaceDriver {
     return (await this.#run(["rev-parse", "-q", "--verify", "MERGE_HEAD"])).exitCode === 0;
   }
 
+  /** Subject lines of local commits the default branch has that origin does not. */
+  async unpushedCommitSubjects(defaultBranch: string): Promise<readonly string[]> {
+    const output = requireSuccess(
+      await this.#run(["log", `origin/${defaultBranch}..HEAD`, "--format=%s"]),
+    ).stdout;
+    return output.split("\n").filter(Boolean);
+  }
+
+  async resetToOriginDefaultBranch(defaultBranch: string): Promise<void> {
+    requireSuccess(await this.#run(["reset", "--hard", `origin/${defaultBranch}`], true));
+  }
+
   async abortMerge(): Promise<void> {
     await this.#run(["merge", "--abort"], true);
   }

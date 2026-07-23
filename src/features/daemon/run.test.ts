@@ -7,7 +7,11 @@ import { expect, test } from "vitest";
 import { GitService } from "@/adapters/git";
 import type { ScoreConfig } from "@/features/config/model";
 import { resolveProjects } from "@/features/config/resolve";
-import { bootstrapDaemon, parseDaemonArguments, selfHealStagedMerge } from "@/features/daemon/run";
+import {
+  bootstrapDaemon,
+  parseDaemonArguments,
+  selfHealInterruptedLanding,
+} from "@/features/daemon/run";
 import type { CommandResult } from "@/shared/command";
 import type { CommandRunner, RunCommandOptions } from "@/shared/command-runner";
 import type { Logger, LogLine } from "@/shared/log";
@@ -421,32 +425,40 @@ class CaptureLogger implements Logger {
   }
 }
 
-/** git repo with one commit; when staged, a synthetic MERGE_HEAD points at HEAD. */
-async function fixtureRepo(stagedMerge: boolean): Promise<string> {
-  const repo = await mkdtemp(join(tmpdir(), "score-selfheal-"));
+/** Local clone with a bare origin; main tracks origin/main and starts in sync. */
+async function fixtureRepo(): Promise<{ repo: string; git: (...args: string[]) => string }> {
+  const root = await mkdtemp(join(tmpdir(), "score-selfheal-"));
+  const origin = join(root, "origin.git");
+  const repo = join(root, "repo");
+  execFileSync("git", ["init", "--bare", "--initial-branch=main", origin], { encoding: "utf8" });
+  execFileSync("git", ["init", "--initial-branch=main", repo], { encoding: "utf8" });
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
-  git("init", "--initial-branch=main");
   git("config", "user.email", "score@test.invalid");
   git("config", "user.name", "score");
   git("config", "commit.gpgsign", "false");
   await writeFile(join(repo, "README.md"), "fixture\n");
   git("add", "README.md");
   git("commit", "-m", "initial");
-  if (stagedMerge)
-    await writeFile(join(repo, ".git", "MERGE_HEAD"), `${git("rev-parse", "HEAD")}\n`);
-  return repo;
+  git("remote", "add", "origin", origin);
+  git("push", "-u", "origin", "main");
+  return { repo, git };
 }
 
-test("self-heal aborts a staged merge left in the checkout and logs one recovery line", async () => {
-  const repo = await fixtureRepo(true);
-  const git = new GitService(new ExecRunner(), {
+function gitService(repo: string): GitService {
+  return new GitService(new ExecRunner(), {
     repositoryPath: repo,
     workspaceRoot: join(repo, "wt"),
   });
+}
+
+test("self-heal aborts a staged merge left in the checkout and logs one recovery line", async () => {
+  const { repo, git } = await fixtureRepo();
+  // Synthetic staged merge: MERGE_HEAD pointing at HEAD, per the acceptance fixture.
+  await writeFile(join(repo, ".git", "MERGE_HEAD"), `${git("rev-parse", "HEAD")}\n`);
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, false);
+  await selfHealInterruptedLanding(gitService(repo), log, false, "main");
 
   expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
   expect(log.logged).toEqual([
@@ -454,46 +466,101 @@ test("self-heal aborts a staged merge left in the checkout and logs one recovery
   ]);
 });
 
-test("self-heal is silent when no merge is in progress", async () => {
-  const repo = await fixtureRepo(false);
-  const git = new GitService(new ExecRunner(), {
-    repositoryPath: repo,
-    workspaceRoot: join(repo, "wt"),
-  });
+test("self-heal is silent when the checkout is clean and in sync with origin", async () => {
+  const { repo } = await fixtureRepo();
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, false);
+  await selfHealInterruptedLanding(gitService(repo), log, false, "main");
 
   expect(log.logged).toEqual([]);
+});
+
+test("self-heal resets a landing merge committed but never pushed", async () => {
+  const { repo, git } = await fixtureRepo();
+  // The state a SIGKILL between commitMerge and pushDefaultBranch leaves behind.
+  await writeFile(join(repo, "feature.txt"), "merged change\n");
+  git("add", "feature.txt");
+  git(
+    "commit",
+    "-m",
+    "Merge pull request #7 from egoisutolabs/issue-7-port-scripts\n\nPort scripts",
+  );
+  const log = new CaptureLogger();
+
+  await selfHealInterruptedLanding(gitService(repo), log, false, "main");
+
+  // Back on origin's tip: the next landing tick redoes the merge through gates.
+  expect(git("rev-parse", "HEAD")).toBe(git("rev-parse", "origin/main"));
+  expect(existsSync(join(repo, "feature.txt"))).toBe(false);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: "recovered 1 unpushed landing merge commit(s) left by a previous run (reset to origin/main; landing will redo the merge)",
+    },
+  ]);
+});
+
+test("self-heal never touches ahead commits that landing did not author", async () => {
+  const { repo, git } = await fixtureRepo();
+  await writeFile(join(repo, "hotfix.txt"), "operator work\n");
+  git("add", "hotfix.txt");
+  git("commit", "-m", "operator hotfix");
+  const head = git("rev-parse", "HEAD");
+  const log = new CaptureLogger();
+
+  await selfHealInterruptedLanding(gitService(repo), log, false, "main");
+
+  expect(git("rev-parse", "HEAD")).toBe(head);
+  expect(existsSync(join(repo, "hotfix.txt"))).toBe(true);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: "main is ahead of origin/main with 1 commit(s) landing did not author; leaving them untouched",
+    },
+  ]);
 });
 
 test("self-heal fails closed when the abort leaves MERGE_HEAD behind", async () => {
   const stuck = {
     mergeInProgress: async () => true,
     abortMerge: async () => {},
+    observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
+    unpushedCommitSubjects: async () => [],
+    resetToOriginDefaultBranch: async () => {},
   };
-  await expect(selfHealStagedMerge(stuck, new CaptureLogger(), false)).rejects.toThrow(
-    /failed to abort the staged merge/,
-  );
+  await expect(
+    selfHealInterruptedLanding(stuck, new CaptureLogger(), false, "main"),
+  ).rejects.toThrow(/failed to abort the staged merge/);
 });
 
-test("self-heal under dry-run only announces the abort it would run", async () => {
+test("self-heal under dry-run only announces the recoveries it would run", async () => {
   let aborted = false;
+  let reset = false;
   const git = {
     mergeInProgress: async () => true,
     abortMerge: async () => {
       aborted = true;
     },
+    observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
+    unpushedCommitSubjects: async () => ["Merge pull request #7 from egoisutolabs/issue-7-x"],
+    resetToOriginDefaultBranch: async () => {
+      reset = true;
+    },
   };
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, true);
+  await selfHealInterruptedLanding(git, log, true, "main");
 
   expect(aborted).toBe(false);
+  expect(reset).toBe(false);
   expect(log.logged).toEqual([
     {
       level: "warn",
       text: "staged merge left by a previous run (MERGE_HEAD present); would abort",
+    },
+    {
+      level: "warn",
+      text: "1 unpushed landing merge commit(s) left by a previous run; would reset to origin/main",
     },
   ]);
 });

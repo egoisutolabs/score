@@ -279,29 +279,62 @@ async function preflightManagedRuntime(
   };
 }
 
+/** The subject line commitMerge writes; the only commits self-heal may discard. */
+const LANDING_MERGE_SUBJECT = /^Merge pull request #\d+ from /;
+
 /**
- * A SIGKILL mid-landing leaves MERGE_HEAD in the primary checkout, wedging
- * every later landing tick. The managed daemon owns that checkout's merges
- * (epic decision 9), so startup may safely abort a leftover one — before any
- * phase runs, so landing's own staging/abort logic is untouched. Fail-closed:
- * if the abort does not clear MERGE_HEAD, throw so the supervisor restarts
- * with the repository untouched beyond git's own state.
+ * A SIGKILL mid-landing leaves the primary checkout in one of two states the
+ * daemon must recover, because it owns that checkout's merges (epic decision
+ * 9) and both wedge every later landing tick. Killed mid-stage: MERGE_HEAD is
+ * present — abort it. Killed between commitMerge and pushDefaultBranch: no
+ * MERGE_HEAD, but the default branch is ahead of origin with landing's own
+ * merge commits — reset to origin so the next landing tick redoes the merge
+ * through gates and soak (heal rolls back, phases do the real work; same
+ * philosophy as the abort). Ahead commits that landing did not author are
+ * never touched. Runs before any phase, so landing's own staging/abort logic
+ * is untouched. Fail-closed: if a probe or recovery fails, throw so the
+ * supervisor restarts with the repository untouched beyond git's own state.
  */
-export async function selfHealStagedMerge(
-  git: Pick<GitService, "mergeInProgress" | "abortMerge">,
+export async function selfHealInterruptedLanding(
+  git: Pick<
+    GitService,
+    | "mergeInProgress"
+    | "abortMerge"
+    | "observePrimaryCheckout"
+    | "unpushedCommitSubjects"
+    | "resetToOriginDefaultBranch"
+  >,
   log: Logger,
   dryRun: boolean,
+  defaultBranch: string,
 ): Promise<void> {
-  if (!(await git.mergeInProgress())) return;
-  if (dryRun) {
-    log.warn("staged merge left by a previous run (MERGE_HEAD present); would abort");
+  if (await git.mergeInProgress()) {
+    if (dryRun) {
+      log.warn("staged merge left by a previous run (MERGE_HEAD present); would abort");
+    } else {
+      await git.abortMerge();
+      if (await git.mergeInProgress()) {
+        throw new Error("failed to abort the staged merge left by a previous run");
+      }
+      log.warn("recovered staged merge left by a previous run");
+    }
+  }
+  if ((await git.observePrimaryCheckout()).branch !== defaultBranch) return;
+  const unpushed = await git.unpushedCommitSubjects(defaultBranch);
+  if (unpushed.length === 0) return;
+  if (!unpushed.every((subject) => LANDING_MERGE_SUBJECT.test(subject))) {
+    log.warn(
+      `${defaultBranch} is ahead of origin/${defaultBranch} with ${unpushed.length} commit(s) landing did not author; leaving them untouched`,
+    );
     return;
   }
-  await git.abortMerge();
-  if (await git.mergeInProgress()) {
-    throw new Error("failed to abort the staged merge left by a previous run");
+  const recovery = `${unpushed.length} unpushed landing merge commit(s) left by a previous run`;
+  if (dryRun) {
+    log.warn(`${recovery}; would reset to origin/${defaultBranch}`);
+    return;
   }
-  log.warn("recovered staged merge left by a previous run");
+  await git.resetToOriginDefaultBranch(defaultBranch);
+  log.warn(`recovered ${recovery} (reset to origin/${defaultBranch}; landing will redo the merge)`);
 }
 
 interface ManagedRuntime {
@@ -346,6 +379,9 @@ async function runDaemonLoop(
 ): Promise<void> {
   const { dryRun } = parsed;
   const status = managedRuntime?.status;
+  // Heartbeat lands before the bootstrap preflight: a stalled gh/tmux/git
+  // probe must not leave the supervisor staring at a stale pid.
+  await status?.write({ state: "starting" });
   const runner = new LoggingCommandRunner(new BunCommandRunner(), log);
   const {
     runtime,
@@ -362,7 +398,6 @@ async function runDaemonLoop(
   if (managedRuntime && logRetentionDays !== undefined) {
     managedRuntime.fileLog.enableRetention(logRetentionDays);
   }
-  await status?.write({ state: "starting" });
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
   const tuning = (name: string): string | undefined => (managed ? undefined : process.env[name]);
@@ -401,7 +436,7 @@ async function runDaemonLoop(
   });
   const observations = new PassCachedChangeHost(github);
 
-  if (managedRuntime) await selfHealStagedMerge(git, log, dryRun);
+  if (managedRuntime) await selfHealInterruptedLanding(git, log, dryRun, runtime.defaultBranch);
 
   const maintenance = new LegacyWorkflowService(
     new CleanupService(
@@ -493,7 +528,9 @@ async function runDaemonLoop(
       everyTicks: 2,
       run: async () => {
         const results = await landing.runTick();
-        lastGateFailure = gateFailureFrom(results);
+        // undefined = no gate verdict this tick; the last known failure stands.
+        const gateVerdict = gateFailureFrom(results);
+        if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
         log.lines(renderLandingTick(results));
         pass.merged += results.filter(
           (result) => result.tag === "merged" || result.tag === "would-merge",
