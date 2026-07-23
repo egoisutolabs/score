@@ -1,11 +1,14 @@
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
-import { BunCommandRunner, LoggingCommandRunner } from "@/adapters/command-runner";
+import { BunCommandRunner, LoggingCommandRunner, requireSuccess } from "@/adapters/command-runner";
 import { GitService } from "@/adapters/git";
 import { GitHubService } from "@/adapters/github";
 import { TmuxService } from "@/adapters/tmux";
 import { CleanupService } from "@/features/cleanup/service";
+import type { ResolvedProject } from "@/features/config/model";
+import { readResolvedProject } from "@/features/config/resolved";
 import { PassCachedChangeHost } from "@/features/daemon/observations";
 import { RepairLedger } from "@/features/daemon/repair-ledger";
 import type { DaemonPhase } from "@/features/daemon/service";
@@ -19,6 +22,8 @@ import { LegacyWorkflowService } from "@/features/maintenance/service";
 import { DEFAULT_SESSION_SUFFIX } from "@/features/repair/policy";
 import { renderRepairRun } from "@/features/repair/run";
 import { RepairService } from "@/features/repair/service";
+import type { CommandRunner } from "@/shared/command-runner";
+import type { LegacyRuntimeContext } from "@/shared/legacy-runtime";
 import {
   discoverLegacyRuntime,
   positiveEnvironment,
@@ -26,27 +31,234 @@ import {
 } from "@/shared/legacy-runtime";
 import { createLogger } from "@/shared/log";
 
-const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge"] as const;
+const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
+const VALUE_FLAGS = ["--project", "--config"] as const;
 
 export interface DaemonArguments {
   readonly once: boolean;
   readonly dryRun: boolean;
   readonly verbose: boolean;
   readonly noMerge: boolean;
+  readonly managed: boolean;
+  /** Managed mode: run against this configured project instead of discovery. */
+  readonly project?: string;
+  /** Test override for the resolved.json path; defaults to the layout path. */
+  readonly resolvedPath?: string;
 }
 
 export function parseDaemonArguments(args: readonly string[]): DaemonArguments {
-  for (const argument of args) {
+  const flags = new Set<string>();
+  const values = new Map<string, string>();
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index] as string;
+    if ((VALUE_FLAGS as readonly string[]).includes(argument)) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error(`${argument} requires a value`);
+      }
+      values.set(argument, value);
+      index++;
+      continue;
+    }
     if (!KNOWN_FLAGS.includes(argument as (typeof KNOWN_FLAGS)[number])) {
       throw new Error(`unknown flag: ${argument}`);
     }
+    flags.add(argument);
   }
-  const flags = new Set(args);
+  const project = values.get("--project");
+  if (project === undefined && flags.has("--managed")) {
+    throw new Error("--managed requires --project");
+  }
+  if (project === undefined && values.has("--config")) {
+    throw new Error("--config requires --project");
+  }
+  const resolvedPath = values.get("--config");
   return {
     once: flags.has("--once"),
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     noMerge: flags.has("--no-merge"),
+    managed: flags.has("--managed"),
+    ...(project !== undefined && { project }),
+    ...(resolvedPath !== undefined && { resolvedPath }),
+  };
+}
+
+export interface DaemonBootstrap {
+  readonly runtime: LegacyRuntimeContext;
+  readonly workspaceRoot: string;
+  readonly tickIntervalMs: number;
+  readonly maxParallelIssues: number;
+  readonly noMerge: boolean;
+  readonly managed: boolean;
+}
+
+/**
+ * Managed mode reads only resolved.json: repository root, GitHub repo, and
+ * worktree root come from config, and env tuning is ignored so a stray shell
+ * export cannot skew a supervised daemon. Unmanaged keeps discovery unchanged.
+ */
+export async function bootstrapDaemon(
+  parsed: DaemonArguments,
+  runner: CommandRunner,
+): Promise<DaemonBootstrap> {
+  if (parsed.project === undefined) {
+    const runtime = await discoverLegacyRuntime(runner, {
+      requireGhAuth: true,
+      requireTmux: true,
+    });
+    return {
+      runtime,
+      workspaceRoot: join(
+        process.env.WORKTREE_ROOT || join(homedir(), "wt"),
+        runtime.repositoryName,
+      ),
+      tickIntervalMs: positiveEnvironment("TICK_INTERVAL_MS", 60_000),
+      maxParallelIssues: positiveEnvironment("MAX_PARALLEL", 1),
+      noMerge: parsed.noMerge,
+      managed: false,
+    };
+  }
+  const project = await readResolvedProject(parsed.project, parsed.resolvedPath);
+  // GH_REPO redirects every cwd-scoped gh call away from the checkout's
+  // origin; a supervised daemon must only act on the verified checkout.
+  delete process.env.GH_REPO;
+  const runtime = await preflightManagedRuntime(runner, project, parsed.dryRun);
+  return {
+    runtime,
+    // worktree_location IS the worktree directory — never append the repo
+    // name; that nesting made legacy autopilot see 0 worktrees and re-dispatch.
+    workspaceRoot: project.worktreeLocation,
+    tickIntervalMs: project.tickIntervalMs,
+    maxParallelIssues: project.maxParallel,
+    noMerge: parsed.noMerge || !project.autoMerge,
+    managed: true,
+  };
+}
+
+/**
+ * owner/repo from a remote URL, but only when github.com is the actual HOST,
+ * anchored per canonical form — substring scans accepted mirrors carrying
+ * "github.com" as a path segment (gitlab.com/github.com/owner/repo).
+ */
+function githubRepoFromRemoteUrl(url: string): string | undefined {
+  const stripped = url.replace(/\.git$/, "");
+  // scp-like: [user@]github.com:owner/repo
+  const scp = stripped.match(/^(?:[^@/]+@)?github\.com:([^/]+\/[^/]+)$/);
+  if (scp) return scp[1];
+  // URL forms: https|ssh|git://[user@]github.com/owner/repo
+  return stripped.match(/^(?:https|ssh|git):\/\/(?:[^@/]+@)?github\.com\/([^/]+\/[^/]+)$/)?.[1];
+}
+
+/** Same preflights as discovery — gh auth, tmux — plus proof that main_location really is a git toplevel. */
+async function preflightManagedRuntime(
+  runner: CommandRunner,
+  project: ResolvedProject,
+  dryRun: boolean,
+): Promise<LegacyRuntimeContext> {
+  const toplevel = requireSuccess(
+    await runner.run(["git", "rev-parse", "--show-toplevel"], { cwd: project.mainLocation }),
+  ).stdout.trim();
+  if ((await realpath(toplevel)) !== (await realpath(project.mainLocation))) {
+    throw new Error(
+      `projects.${project.key}.main_location ${project.mainLocation} is not a git toplevel (git reports ${toplevel})`,
+    );
+  }
+  // github_repo is hand-editable config: prove it against the checkout's git
+  // origin, not gh defaults — GH_REPO or `gh repo set-default` can make gh
+  // report the configured repo even when the checkout belongs to another.
+  // Check ALL fetch and push URLs: a remote can carry several, and git push
+  // sends the default branch to every one of them.
+  for (const [kind, args] of [
+    ["origin", ["git", "remote", "get-url", "--all", "origin"]],
+    ["origin push URL", ["git", "remote", "get-url", "--push", "--all", "origin"]],
+  ] as const) {
+    const urls = requireSuccess(await runner.run(args, { cwd: project.mainLocation }))
+      .stdout.trim()
+      .split("\n");
+    for (const url of urls) {
+      const observed = githubRepoFromRemoteUrl(url);
+      if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
+        throw new Error(
+          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation} (canonical github.com URLs only)`,
+        );
+      }
+    }
+  }
+  // gh repo set-default persists in the checkout's git config and redirects
+  // issue/PR commands even when origin matches; refuse to run under one that
+  // points anywhere but origin itself.
+  const setDefault = await runner.run(
+    ["git", "config", "--get-regexp", "^remote\\..*\\.gh-resolved$"],
+    { cwd: project.mainLocation },
+  );
+  if (setDefault.exitCode === 0) {
+    const foreign = setDefault.stdout
+      .trim()
+      .split("\n")
+      .filter((line) => line.trim() !== "remote.origin.gh-resolved base");
+    if (foreign.length > 0) {
+      throw new Error(
+        `gh repo set-default in ${project.mainLocation} points away from origin (${foreign.join("; ")}) — run: gh repo set-default ${project.githubRepo}`,
+      );
+    }
+  }
+  requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: project.mainLocation }));
+  // Even with no set-default entry, gh resolves its base repo by remote sort
+  // order (upstream before origin) when it cannot prompt. Prove gh's own
+  // resolution lands on the configured repo, so issue/PR observation reads
+  // the same repository git pushes to.
+  const ghResolved = JSON.parse(
+    requireSuccess(
+      await runner.run(["gh", "repo", "view", "--json", "nameWithOwner"], {
+        cwd: project.mainLocation,
+      }),
+    ).stdout,
+  ).nameWithOwner as string;
+  if (ghResolved.toLowerCase() !== project.githubRepo.toLowerCase()) {
+    throw new Error(
+      `gh resolves ${project.mainLocation} to ${ghResolved}, not projects.${project.key}.github_repo ${project.githubRepo} — run: gh repo set-default ${project.githubRepo}`,
+    );
+  }
+  requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
+  // A tmux server that predates this daemon keeps the env it started with;
+  // agents in new sessions would inherit a stale GH_REPO and act on the
+  // wrong repo. Failure is fine — with no server running, the one our
+  // sessions start later inherits this process's already-cleaned env. This
+  // mutates the live server, so it honors the dry-run gate like every other
+  // mutation in the codebase.
+  await runner.run(["tmux", "set-environment", "-g", "-r", "GH_REPO"], {
+    cwd: project.mainLocation,
+    mutates: true,
+    dryRun,
+  });
+  let defaultBranch = "main";
+  const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {
+    cwd: project.mainLocation,
+  });
+  if (branch.exitCode === 0) {
+    defaultBranch = branch.stdout.trim().replace("refs/remotes/origin/", "");
+  }
+  // Cleanup's auto-pull runs `git pull --ff-only` with no remote, which pulls
+  // from the branch's configured upstream — commits from a fork or mirror
+  // would then be pushed back to origin by landing. Require origin's own
+  // branch as the upstream.
+  const upstream = await runner.run(
+    ["git", "rev-parse", "--abbrev-ref", `${defaultBranch}@{upstream}`],
+    { cwd: project.mainLocation },
+  );
+  const expectedUpstream = `origin/${defaultBranch}`;
+  const observedUpstream = upstream.exitCode === 0 ? upstream.stdout.trim() : "no upstream";
+  if (observedUpstream !== expectedUpstream) {
+    throw new Error(
+      `default branch ${defaultBranch} in ${project.mainLocation} must track ${expectedUpstream} (found ${observedUpstream}) — run: git branch --set-upstream-to=${expectedUpstream} ${defaultBranch}`,
+    );
+  }
+  return {
+    repositoryRoot: project.mainLocation,
+    repository: project.githubRepo,
+    repositoryName: basename(project.mainLocation),
+    defaultBranch,
   };
 }
 
@@ -57,28 +269,25 @@ export function parseDaemonArguments(args: readonly string[]): DaemonArguments {
  */
 export async function runDaemon(args: readonly string[]): Promise<void> {
   const parsed = parseDaemonArguments(args);
-  const { dryRun, noMerge } = parsed;
+  const { dryRun } = parsed;
   const log = createLogger(parsed.verbose);
   const runner = new LoggingCommandRunner(new BunCommandRunner(), log);
-  const runtime = await discoverLegacyRuntime(runner, {
-    requireGhAuth: true,
-    requireTmux: true,
-  });
-  const workspaceRoot = join(
-    process.env.WORKTREE_ROOT || join(homedir(), "wt"),
-    runtime.repositoryName,
-  );
-  const tickIntervalMs = positiveEnvironment("TICK_INTERVAL_MS", 60_000);
-  const maxParallelIssues = positiveEnvironment("MAX_PARALLEL", 1);
-  const maxMerges = positiveEnvironment("MAX_MERGES", 5);
-  const soakTicks = positiveEnvironment("SOAK_TICKS", 2);
-  const skipLabels = (process.env.SKIP_LABELS || "hold,wip,do-not-merge")
+  const { runtime, workspaceRoot, tickIntervalMs, maxParallelIssues, noMerge, managed } =
+    await bootstrapDaemon(parsed, runner);
+  // Managed daemons read tuning from resolved.json only; the rest of the env
+  // knobs fall back to their built-in defaults instead of the shell.
+  const tuning = (name: string): string | undefined => (managed ? undefined : process.env[name]);
+  const positiveTuning = (name: string, fallback: number): number =>
+    managed ? fallback : positiveEnvironment(name, fallback);
+  const maxMerges = positiveTuning("MAX_MERGES", 5);
+  const soakTicks = positiveTuning("SOAK_TICKS", 2);
+  const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
     .split(",")
     .map((label) => label.trim().toLowerCase())
     .filter(Boolean);
 
   log.info(
-    `daemon ${runtime.repository} | tick ${Math.round(tickIntervalMs / 1_000)}s | max ${maxParallelIssues} | max-merges ${maxMerges} | soak ${soakTicks} ticks${dryRun ? " | dry-run" : ""}${noMerge ? " | no-merge" : ""}`,
+    `daemon ${runtime.repository}${parsed.project ? ` | project ${parsed.project}` : ""} | tick ${Math.round(tickIntervalMs / 1_000)}s | max ${maxParallelIssues} | max-merges ${maxMerges} | soak ${soakTicks} ticks${dryRun ? " | dry-run" : ""}${noMerge ? " | no-merge" : ""}`,
   );
   log.info("phases: cleanup+dispatch every tick | landing every 2 ticks | repair every tick");
   log.debug(`repo root ${runtime.repositoryRoot} | worktrees ${workspaceRoot}`);
@@ -104,7 +313,7 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
         defaultBranch: runtime.defaultBranch,
         workspaceRoot,
         harnessOwnedPaths: ["TASK.md", ".claude/"],
-        autoPullMain: process.env.AUTO_PULL_MAIN !== "0",
+        autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
       },
       github,
       git,
@@ -115,7 +324,7 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
         workspaceRoot,
         maxParallelIssues,
         issues: {
-          eligibleLabelPrefix: process.env.EPIC_LABEL_PREFIX || "epic:",
+          eligibleLabelPrefix: tuning("EPIC_LABEL_PREFIX") || "epic:",
           holdLabel: "hold",
           umbrellaLabel: "umbrella",
         },
@@ -137,18 +346,18 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
       maxMerges,
       soakTicks,
       skipLabels,
-      onlyIssueBranches: process.env.ONLY_ISSUE_BRANCHES === "1",
+      onlyIssueBranches: tuning("ONLY_ISSUE_BRANCHES") === "1",
     },
     github,
     git,
     runner,
   );
-  const ledger = new RepairLedger(positiveEnvironment("REPAIR_STALE_TICKS", 10));
+  const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10));
   const repair = new RepairService(
     {
-      agentCommand: process.env.AGENT_CMD || "claude",
-      verificationCommands: process.env.VERIFY_CMDS || "cd daemon && bun run check && bun test",
-      sessionSuffix: process.env.SESSION_SUFFIX || DEFAULT_SESSION_SUFFIX,
+      agentCommand: tuning("AGENT_CMD") || "claude",
+      verificationCommands: tuning("VERIFY_CMDS") || "cd daemon && bun run check && bun test",
+      sessionSuffix: tuning("SESSION_SUFFIX") || DEFAULT_SESSION_SUFFIX,
       includeClean: false,
       onlyPullRequests: new Set<string>(),
       noSpawn: false,
