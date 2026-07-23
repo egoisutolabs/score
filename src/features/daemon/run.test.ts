@@ -110,6 +110,9 @@ function managedResponses(repo: string) {
     if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
     if (command[1] === "remote") return { stdout: "git@github.com:egoisutolabs/demo.git\n" };
     if (command[1] === "config") return { exitCode: 1 };
+    if (command[1] === "repo") return { stdout: '{"nameWithOwner":"egoisutolabs/demo"}\n' };
+    // No tmux server running yet: the env scrub fails and that must be fine.
+    if (command[1] === "set-environment") return { exitCode: 1 };
     if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
     return {};
   };
@@ -150,6 +153,8 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
         "git",
         "git",
         "gh",
+        "gh",
+        "tmux",
         "tmux",
         "git",
       ]);
@@ -186,6 +191,40 @@ test("managed bootstrap fails when the push URL diverges from github_repo", asyn
     const parsed = parseDaemonArguments(["--project", "demo"]);
     await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
       /does not match origin push URL git@github\.com:someone\/fork\.git/,
+    );
+  });
+});
+
+test("managed bootstrap fails when any extra push URL points elsewhere", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "remote" && command.includes("--push")) {
+        return {
+          stdout: "git@github.com:egoisutolabs/demo.git\ngit@github.com:someone/mirror.git\n",
+        };
+      }
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /does not match origin push URL git@github\.com:someone\/mirror\.git/,
+    );
+  });
+});
+
+test("managed bootstrap fails when gh resolves the checkout to another repo", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "repo") return { stdout: '{"nameWithOwner":"someone/upstream"}\n' };
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /gh resolves .* to someone\/upstream, not projects\.demo\.github_repo egoisutolabs\/demo/,
     );
   });
 });

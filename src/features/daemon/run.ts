@@ -152,18 +152,22 @@ async function preflightManagedRuntime(
   // github_repo is hand-editable config: prove it against the checkout's git
   // origin, not gh defaults — GH_REPO or `gh repo set-default` can make gh
   // report the configured repo even when the checkout belongs to another.
-  // Check the push URL too: remote.origin.pushurl can diverge from the fetch
-  // URL, and landing pushes the default branch back through origin.
+  // Check ALL fetch and push URLs: a remote can carry several, and git push
+  // sends the default branch to every one of them.
   for (const [kind, args] of [
-    ["origin", ["git", "remote", "get-url", "origin"]],
-    ["origin push URL", ["git", "remote", "get-url", "--push", "origin"]],
+    ["origin", ["git", "remote", "get-url", "--all", "origin"]],
+    ["origin push URL", ["git", "remote", "get-url", "--push", "--all", "origin"]],
   ] as const) {
-    const url = requireSuccess(await runner.run(args, { cwd: project.mainLocation })).stdout.trim();
-    const observed = url.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
-    if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
-      throw new Error(
-        `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation}`,
-      );
+    const urls = requireSuccess(await runner.run(args, { cwd: project.mainLocation }))
+      .stdout.trim()
+      .split("\n");
+    for (const url of urls) {
+      const observed = url.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
+      if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
+        throw new Error(
+          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation}`,
+        );
+      }
     }
   }
   // gh repo set-default persists in the checkout's git config and redirects
@@ -185,7 +189,30 @@ async function preflightManagedRuntime(
     }
   }
   requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: project.mainLocation }));
+  // Even with no set-default entry, gh resolves its base repo by remote sort
+  // order (upstream before origin) when it cannot prompt. Prove gh's own
+  // resolution lands on the configured repo, so issue/PR observation reads
+  // the same repository git pushes to.
+  const ghResolved = JSON.parse(
+    requireSuccess(
+      await runner.run(["gh", "repo", "view", "--json", "nameWithOwner"], {
+        cwd: project.mainLocation,
+      }),
+    ).stdout,
+  ).nameWithOwner as string;
+  if (ghResolved.toLowerCase() !== project.githubRepo.toLowerCase()) {
+    throw new Error(
+      `gh resolves ${project.mainLocation} to ${ghResolved}, not projects.${project.key}.github_repo ${project.githubRepo} — run: gh repo set-default ${project.githubRepo}`,
+    );
+  }
   requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
+  // A tmux server that predates this daemon keeps the env it started with;
+  // agents in new sessions would inherit a stale GH_REPO and act on the
+  // wrong repo. Failure is fine — with no server running, the one our
+  // sessions start later inherits this process's already-cleaned env.
+  await runner.run(["tmux", "set-environment", "-g", "-r", "GH_REPO"], {
+    cwd: project.mainLocation,
+  });
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {
     cwd: project.mainLocation,
