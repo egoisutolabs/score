@@ -279,62 +279,32 @@ async function preflightManagedRuntime(
   };
 }
 
-/** The subject line commitMerge writes; the only commits self-heal may discard. */
-const LANDING_MERGE_SUBJECT = /^Merge pull request #\d+ from /;
-
 /**
- * A SIGKILL mid-landing leaves the primary checkout in one of two states the
- * daemon must recover, because it owns that checkout's merges (epic decision
- * 9) and both wedge every later landing tick. Killed mid-stage: MERGE_HEAD is
- * present — abort it. Killed between commitMerge and pushDefaultBranch: no
- * MERGE_HEAD, but the default branch is ahead of origin with landing's own
- * merge commits — reset to origin so the next landing tick redoes the merge
- * through gates and soak (heal rolls back, phases do the real work; same
- * philosophy as the abort). Ahead commits that landing did not author are
- * never touched. Runs before any phase, so landing's own staging/abort logic
- * is untouched. Fail-closed: if a probe or recovery fails, throw so the
- * supervisor restarts with the repository untouched beyond git's own state.
+ * A SIGKILL mid-landing leaves MERGE_HEAD in the primary checkout, wedging
+ * every later landing tick. The managed daemon owns that checkout's merges
+ * (epic decision 9), so startup may safely abort a leftover one — before any
+ * phase runs, so landing's own staging/abort logic is untouched. Fail-closed:
+ * if the abort does not clear MERGE_HEAD, throw so the supervisor restarts
+ * with the repository untouched beyond git's own state. (A kill between
+ * commitMerge and push leaves a different wedge — committed-but-unpushed
+ * merge, no MERGE_HEAD; recovering that is a policy decision outside locked
+ * decision 9, tracked on issue #4.)
  */
-export async function selfHealInterruptedLanding(
-  git: Pick<
-    GitService,
-    | "mergeInProgress"
-    | "abortMerge"
-    | "observePrimaryCheckout"
-    | "unpushedCommitSubjects"
-    | "resetToOriginDefaultBranch"
-  >,
+export async function selfHealStagedMerge(
+  git: Pick<GitService, "mergeInProgress" | "abortMerge">,
   log: Logger,
   dryRun: boolean,
-  defaultBranch: string,
 ): Promise<void> {
-  if (await git.mergeInProgress()) {
-    if (dryRun) {
-      log.warn("staged merge left by a previous run (MERGE_HEAD present); would abort");
-    } else {
-      await git.abortMerge();
-      if (await git.mergeInProgress()) {
-        throw new Error("failed to abort the staged merge left by a previous run");
-      }
-      log.warn("recovered staged merge left by a previous run");
-    }
-  }
-  if ((await git.observePrimaryCheckout()).branch !== defaultBranch) return;
-  const unpushed = await git.unpushedCommitSubjects(defaultBranch);
-  if (unpushed.length === 0) return;
-  if (!unpushed.every((subject) => LANDING_MERGE_SUBJECT.test(subject))) {
-    log.warn(
-      `${defaultBranch} is ahead of origin/${defaultBranch} with ${unpushed.length} commit(s) landing did not author; leaving them untouched`,
-    );
-    return;
-  }
-  const recovery = `${unpushed.length} unpushed landing merge commit(s) left by a previous run`;
+  if (!(await git.mergeInProgress())) return;
   if (dryRun) {
-    log.warn(`${recovery}; would reset to origin/${defaultBranch}`);
+    log.warn("staged merge left by a previous run (MERGE_HEAD present); would abort");
     return;
   }
-  await git.resetToOriginDefaultBranch(defaultBranch);
-  log.warn(`recovered ${recovery} (reset to origin/${defaultBranch}; landing will redo the merge)`);
+  await git.abortMerge();
+  if (await git.mergeInProgress()) {
+    throw new Error("failed to abort the staged merge left by a previous run");
+  }
+  log.warn("recovered staged merge left by a previous run");
 }
 
 interface ManagedRuntime {
@@ -436,7 +406,7 @@ async function runDaemonLoop(
   });
   const observations = new PassCachedChangeHost(github);
 
-  if (managedRuntime) await selfHealInterruptedLanding(git, log, dryRun, runtime.defaultBranch);
+  if (managedRuntime) await selfHealStagedMerge(git, log, dryRun);
 
   const maintenance = new LegacyWorkflowService(
     new CleanupService(
