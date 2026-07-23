@@ -101,10 +101,9 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
 
   // Invalid config fails closed here — no launchctl call has happened yet.
   const config = await loadConfig();
-  let desired = resolveProjects(config);
-  if (only !== undefined) {
-    desired = desired.filter((project) => project.key === only);
-    if (desired.length === 0) throw new Error(`no enabled project '${only}' in config`);
+  const desired = resolveProjects(config);
+  if (only !== undefined && !desired.some((project) => project.key === only)) {
+    throw new Error(`no enabled project '${only}' in config`);
   }
 
   const actual = await adapter.status();
@@ -119,9 +118,22 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     }
   }
 
-  const decided = plan(desired, actual, existing, canonicalizer());
-  // Single-project up must not report every other supervised job as removed.
-  const removed = only === undefined ? decided.removed : [];
+  // Plan over the FULL config even for a single-project up — pre-filtering
+  // desired would blind the collision guard's config fallback and falsely mark
+  // unrelated loaded jobs as unknown. Only the plan's output is narrowed.
+  const full = plan(desired, actual, existing, canonicalizer());
+  const decided =
+    only === undefined
+      ? full
+      : {
+          start: full.start.filter((project) => project.key === only),
+          restart: full.restart.filter((project) => project.key === only),
+          unchanged: full.unchanged.filter((project) => project.key === only),
+          // Single-project up must not report every other supervised job as removed.
+          removed: [],
+          refused: full.refused.filter((refusal) => refusal.project.key === only),
+        };
+  const removed = decided.removed;
 
   for (const { project, blockingKey, unknownState } of decided.refused) {
     const because = unknownState

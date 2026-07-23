@@ -247,6 +247,23 @@ test("single-project up only reconciles that key and reports no removals", async
   await expect(runUp(["missing"], deps)).rejects.toThrow("no enabled project 'missing'");
 });
 
+test("single-project up still resolves other configured jobs' checkouts from config", async () => {
+  // beta is loaded with unreadable state but IS in config — its location is
+  // knowable, so it must not falsely block `up alpha` as an unknown job.
+  await writeConfig([
+    projectBlock("alpha", "/repos/alpha", 5000),
+    projectBlock("beta", "/repos/beta", 7000),
+  ]);
+  runner.listOutput = "2\t0\tdev.score.beta";
+  await runUp(["alpha"], deps);
+  expect(errors).toEqual([]);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
 test("a loaded job with no readable state blocks new starts (fail closed)", async () => {
   await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
   runner.listOutput = "1\t0\tdev.score.ghost";
