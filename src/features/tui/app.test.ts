@@ -1,8 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTestRenderer } from "@opentui/core/testing";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectConfig, ScoreConfig } from "@/features/config/model";
 import type { JobStatus, SupervisorAdapter } from "@/features/supervisor/adapter";
 import { buildTui } from "@/features/tui/app";
@@ -96,10 +95,21 @@ async function writeFixtures(home: string): Promise<void> {
   await writeFile(join(home, "projects", "alpha", "job.plist"), "<plist alpha/>\n");
 }
 
-describe("tui app", () => {
+// OpenTUI's test renderer needs native FFI; vitest.config.ts only passes the
+// flag on Node >= 26.4. Without it these tests skip instead of crashing the
+// worker — the pure TUI logic (dots, tail, boundary) still runs everywhere.
+const hasFfi = process.execArgv.includes("--experimental-ffi");
+
+describe.skipIf(!hasFfi)("tui app", () => {
+  let createTestRenderer: typeof import("@opentui/core/testing").createTestRenderer;
   let home: string;
   let adapter: FakeAdapter;
   let destroy: (() => void) | null = null;
+
+  beforeAll(async () => {
+    // Dynamic so a skipped run never loads OpenTUI's native bindings.
+    ({ createTestRenderer } = await import("@opentui/core/testing"));
+  });
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), "score-tui-"));

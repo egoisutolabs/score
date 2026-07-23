@@ -17,6 +17,7 @@ export class LogTail {
   #offset = 0;
   #partial = "";
   #lines: string[] = [];
+  #chain: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dir: string,
@@ -32,7 +33,19 @@ export class LogTail {
     return this.#lines;
   }
 
-  async poll(): Promise<void> {
+  /**
+   * Polls are chained: the interval poll and a keypress-triggered poll can
+   * overlap, and two concurrent reads of the same unread byte range would
+   * both append it. A failed poll surfaces to its caller without poisoning
+   * later polls.
+   */
+  poll(): Promise<void> {
+    const next = this.#chain.then(() => this.#poll());
+    this.#chain = next.catch(() => {});
+    return next;
+  }
+
+  async #poll(): Promise<void> {
     const file = `${this.now().toISOString().slice(0, 10)}.log`;
     const fresh = file !== this.#file;
     if (fresh) {

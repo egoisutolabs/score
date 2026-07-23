@@ -78,6 +78,16 @@ describe("LogTail", () => {
     expect([...tail.lines]).toEqual(["new day"]);
   });
 
+  it("does not duplicate lines when polls overlap", async () => {
+    await writeFile(file(DAY_ONE), "line 0\n");
+    await tail.poll();
+    await writeFile(file(DAY_ONE), "line 0\nline 1\nline 2\n");
+    // Interval poll and keypress poll landing together must not both read
+    // the same unread byte range.
+    await Promise.all([tail.poll(), tail.poll(), tail.poll()]);
+    expect([...tail.lines]).toEqual(["line 0", "line 1", "line 2"]);
+  });
+
   it("shows nothing when today's file does not exist yet", async () => {
     await tail.poll();
     expect(tail.lines.length).toBe(0);
