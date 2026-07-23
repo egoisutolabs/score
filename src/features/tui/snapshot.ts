@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolvedPath, statusPath } from "@/features/config/layout";
 import type { ScoreConfig } from "@/features/config/model";
-import { DEFAULT_TICK_INTERVAL_MS } from "@/features/config/resolve";
+import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@/features/config/resolve";
 import type { StatusFile } from "@/features/daemon/status";
 import type { JobStatus, SupervisorAdapter } from "@/features/supervisor/adapter";
 import { type Dot, deriveDot } from "@/features/tui/dots";
@@ -98,6 +98,6 @@ async function readResolvedView(path: string): Promise<ResolvedView | null> {
     agent: `${typeof agent.harness === "string" ? agent.harness : "?"}${model}`,
     tickIntervalMs:
       typeof raw.tickIntervalMs === "number" ? raw.tickIntervalMs : DEFAULT_TICK_INTERVAL_MS,
-    maxParallel: typeof raw.maxParallel === "number" ? raw.maxParallel : 0,
+    maxParallel: typeof raw.maxParallel === "number" ? raw.maxParallel : DEFAULT_MAX_PARALLEL,
   };
 }
