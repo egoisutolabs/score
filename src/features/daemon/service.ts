@@ -21,6 +21,8 @@ export class DaemonService {
   constructor(
     private readonly phases: readonly DaemonPhase[],
     private readonly onPhaseError: (name: string, error: unknown) => void,
+    /** Managed shutdown: checked between phases only, never interrupting one mid-flight. */
+    private readonly shouldStop: () => boolean = () => false,
   ) {}
 
   get tick(): number {
@@ -29,6 +31,7 @@ export class DaemonService {
 
   async runPass(): Promise<void> {
     for (const phase of duePhases(this.phases, this.#tick)) {
+      if (this.shouldStop()) break;
       try {
         await phase.run();
       } catch (error) {
