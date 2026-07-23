@@ -24,6 +24,30 @@ test("GitHub issue parser normalizes provider JSON into interfaces", () => {
   expect(issue.comments[0]?.author?.login).toBe("operator");
 });
 
+test("gh's empty-string stateReason on open issues reads as no reason, not an enum error", () => {
+  const issue = parseGithubIssue({
+    number: 2,
+    title: "Open issue",
+    body: "",
+    labels: [],
+    state: "OPEN",
+    stateReason: "",
+    url: "https://github.com/example/score/issues/2",
+  });
+  expect(issue.stateReason).toBeNull();
+  expect(() =>
+    parseGithubIssue({
+      number: 2,
+      title: "Bad reason",
+      body: "",
+      labels: [],
+      state: "CLOSED",
+      stateReason: "MAYBE",
+      url: "https://github.com/example/score/issues/2",
+    }),
+  ).toThrow("github.issue.stateReason must be one of");
+});
+
 test("missing review-thread connection is empty but malformed non-null evidence throws", () => {
   expect(parseUnresolvedThreadCount({ data: { repository: { pullRequest: null } } })).toBe(0);
   expect(() =>

@@ -15,6 +15,15 @@ import {
 const ISSUE_STATES = ["OPEN", "CLOSED"] as const;
 const ISSUE_STATE_REASONS = ["COMPLETED", "NOT_PLANNED", "REOPENED"] as const;
 
+/** gh serializes "no state reason" on open issues as "", not null; treat both as absent. */
+export function issueStateReason(
+  value: unknown,
+  path: string,
+): (typeof ISSUE_STATE_REASONS)[number] | null {
+  if (value === null || value === undefined || value === "") return null;
+  return enumValue(value, ISSUE_STATE_REASONS, path);
+}
+
 /** Converts untrusted `gh issue` JSON into the issue model. */
 export function parseGithubIssue(value: unknown, path = "github.issue"): IssueObservation {
   const issue = objectValue(value, path);
@@ -27,10 +36,7 @@ export function parseGithubIssue(value: unknown, path = "github.issue"): IssueOb
       parseLabel(label, `${path}.labels[${index}]`),
     ),
     state: enumValue(issue.state, ISSUE_STATES, `${path}.state`),
-    stateReason:
-      issue.stateReason === null || issue.stateReason === undefined
-        ? issue.stateReason
-        : enumValue(issue.stateReason, ISSUE_STATE_REASONS, `${path}.stateReason`),
+    stateReason: issueStateReason(issue.stateReason, `${path}.stateReason`),
     url: urlValue(issue.url, `${path}.url`),
     comments: optionalArray(issue.comments, `${path}.comments`).map((comment, index) =>
       parseComment(comment, `${path}.comments[${index}]`),

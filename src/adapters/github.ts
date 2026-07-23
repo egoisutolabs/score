@@ -1,5 +1,6 @@
 import { requireSuccess } from "@/adapters/command-runner";
 import {
+  issueStateReason,
   parseGithubIssue,
   parseGithubIssues,
   parseGithubPullRequests,
@@ -15,13 +16,7 @@ import type {
 } from "@/features/landing/change";
 import type { ChangeHost } from "@/features/landing/port";
 import type { CommandRunner } from "@/shared/command-runner";
-import {
-  arrayValue,
-  nullableStringValue,
-  objectValue,
-  positiveIntegerValue,
-  stringValue,
-} from "@/shared/validation";
+import { arrayValue, objectValue, positiveIntegerValue, stringValue } from "@/shared/validation";
 
 interface GitHubServiceOptions {
   readonly repositoryPath: string;
@@ -94,7 +89,7 @@ export class GitHubService implements WorkSource, ChangeHost {
       "github.dependency",
     );
     const state = stringValue(value.state, "github.dependency.state");
-    const reason = nullableStringValue(value.stateReason, "github.dependency.stateReason");
+    const reason = issueStateReason(value.stateReason, "github.dependency.stateReason");
     return {
       number: positiveIntegerValue(value.number, "github.dependency.number"),
       state,
