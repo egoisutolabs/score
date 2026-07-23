@@ -8,6 +8,7 @@ try {
   // No subcommand = the daemon. `repair` stays as the "go fix PR 12 now" escape
   // hatch; autopilot and landing are phases of the daemon now.
   if (command === "repair") await runRepair(args);
+  else if (command === "daemon") await runDaemon(args);
   else await runDaemon(command === undefined ? args : [command, ...args]);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
