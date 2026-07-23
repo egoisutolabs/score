@@ -69,10 +69,18 @@ export class LogTail {
     if (size === this.#offset) return;
     const buffer = Buffer.alloc(size - this.#offset);
     const handle = await open(join(this.dir, file), "r");
+    let bytesRead: number;
     try {
-      await handle.read(buffer, 0, buffer.length, this.#offset);
+      ({ bytesRead } = await handle.read(buffer, 0, buffer.length, this.#offset));
     } finally {
       await handle.close();
+    }
+    if (bytesRead < buffer.length) {
+      // The file shrank between stat and read (truncation/recreation race):
+      // decoding the zero-filled remainder would inject NUL garbage and skip
+      // the new contents. Reset and let the next poll read the real file.
+      this.#reset();
+      return;
     }
     this.#offset = size;
     const parts = (this.#partial + buffer.toString("utf8")).split("\n");

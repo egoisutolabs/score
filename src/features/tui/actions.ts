@@ -10,15 +10,23 @@ function jobDefinitionPath(key: string): string {
 
 /**
  * `stop()` deregisters the job (keeping its definition file), so starting a
- * stopped project re-registers it from the saved copy before starting — the
- * same install-then-start sequence `score up` performs, adapter-only.
+ * booted-out project re-registers it from the saved copy before starting —
+ * the same install-then-start sequence `score up` performs, adapter-only.
+ * A crashed job is still registered, so re-installing would fail; it only
+ * needs a start.
  */
-export async function startProject(adapter: SupervisorAdapter, key: string): Promise<void> {
-  const definition = await readFile(jobDefinitionPath(key), "utf8").catch(() => null);
-  if (definition === null) {
-    throw new Error(`no job definition for '${key}' — run: score up ${key}`);
+export async function startProject(
+  adapter: SupervisorAdapter,
+  key: string,
+  stillRegistered = false,
+): Promise<void> {
+  if (!stillRegistered) {
+    const definition = await readFile(jobDefinitionPath(key), "utf8").catch(() => null);
+    if (definition === null) {
+      throw new Error(`no job definition for '${key}' — run: score up ${key}`);
+    }
+    await adapter.install(key, definition);
   }
-  await adapter.install(key, definition);
   await adapter.start(key);
 }
 

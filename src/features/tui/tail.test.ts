@@ -1,8 +1,22 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogTail } from "@/features/tui/tail";
+
+// stat sizes can be inflated per-test to force the truncation race where the
+// file shrinks between stat() and read(); everything else passes through.
+const fsMock = vi.hoisted(() => ({ inflateStat: 0 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    stat: async (path: Parameters<typeof actual.stat>[0]) => {
+      const result = await actual.stat(path);
+      return { ...result, size: result.size + fsMock.inflateStat };
+    },
+  };
+});
 
 const DAY_ONE = new Date("2026-07-01T12:00:00.000Z");
 const DAY_TWO = new Date("2026-07-02T00:00:05.000Z");
@@ -22,7 +36,10 @@ describe("LogTail", () => {
     tail = new LogTail(dir, () => clock);
   });
 
-  afterEach(() => rm(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    fsMock.inflateStat = 0;
+    return rm(dir, { recursive: true, force: true });
+  });
 
   it("reads the tail of today's file on first poll, capped at ~200 lines", async () => {
     await writeFile(file(DAY_ONE), `${lines(0, 300).join("\n")}\n`);
@@ -76,6 +93,20 @@ describe("LogTail", () => {
     await tail.poll();
     expect(tail.file).toBe("2026-07-02.log");
     expect([...tail.lines]).toEqual(["new day"]);
+  });
+
+  it("resets on a short read instead of decoding NUL garbage", async () => {
+    await writeFile(file(DAY_ONE), "line 0\n");
+    await tail.poll();
+    await writeFile(file(DAY_ONE), "line 0\nline 1\nline 2\n");
+    // stat reports more bytes than the file holds by read time — the same
+    // shape as truncation/recreation between stat() and read().
+    fsMock.inflateStat = 10;
+    await tail.poll();
+    expect(tail.lines.some((line) => line.includes("\0"))).toBe(false);
+    fsMock.inflateStat = 0;
+    await tail.poll();
+    expect([...tail.lines]).toEqual(["line 0", "line 1", "line 2"]);
   });
 
   it("does not duplicate lines when polls overlap", async () => {

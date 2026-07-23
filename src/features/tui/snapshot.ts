@@ -71,7 +71,19 @@ async function readStatusFile(path: string): Promise<StatusFile | null> {
   if (raw === null || typeof raw.state !== "string" || typeof raw.updated_at !== "string") {
     return null;
   }
-  return raw as unknown as StatusFile;
+  // Absent optional fields (older schema, hand edits) normalize to null so a
+  // missing last_error never reads as an error and a missing tick renders "-".
+  const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  return {
+    state: raw.state as StatusFile["state"],
+    pid: typeof raw.pid === "number" ? raw.pid : 0,
+    tick: typeof raw.tick === "number" ? raw.tick : null,
+    last_pass_started_at: text(raw.last_pass_started_at),
+    last_pass_completed_at: text(raw.last_pass_completed_at),
+    last_error: text(raw.last_error),
+    last_gate_failure: text(raw.last_gate_failure),
+    updated_at: raw.updated_at,
+  };
 }
 
 async function readResolvedView(path: string): Promise<ResolvedView | null> {

@@ -14,8 +14,9 @@ class FakeAdapter implements SupervisorAdapter {
   jobs: JobStatus[] = [];
   stopGate: Promise<void> | null = null;
 
-  async install(key: string): Promise<void> {
-    this.calls.push(`install ${key}`);
+  async install(key: string, definition: string): Promise<void> {
+    // The definition is part of the contract: x/r must pass the saved plist.
+    this.calls.push(`install ${key} ${JSON.stringify(definition)}`);
   }
 
   async uninstall(key: string): Promise<void> {
@@ -92,8 +93,11 @@ async function writeFixtures(home: string): Promise<void> {
       .map((line) => `${line}\n`)
       .join(""),
   );
-  await writeFile(join(home, "projects", "alpha", "job.plist"), "<plist alpha/>\n");
+  await writeFile(join(home, "projects", "alpha", "job.plist"), PLIST);
 }
+
+const PLIST = "<plist alpha/>\n";
+const INSTALL_ALPHA = `install alpha ${JSON.stringify(PLIST)}`;
 
 // OpenTUI's test renderer needs native FFI; vitest.config.ts only passes the
 // flag on Node >= 26.4. Without it these tests skip instead of crashing the
@@ -178,14 +182,24 @@ describe.skipIf(!hasFfi)("tui app", () => {
     ];
     const { app } = await setup(80, 24);
     app.handleKey({ name: "x" });
-    await vi.waitFor(() => expect(adapter.calls).toEqual(["install alpha", "start alpha"]));
+    await vi.waitFor(() => expect(adapter.calls).toEqual([INSTALL_ALPHA, "start alpha"]));
+  });
+
+  it("x on a crashed job (registered, no pid) starts without re-installing", async () => {
+    adapter.jobs = [
+      { key: "alpha", loaded: true },
+      { key: "beta", loaded: true, pid: 222 },
+    ];
+    const { app } = await setup(80, 24);
+    app.handleKey({ name: "x" });
+    await vi.waitFor(() => expect(adapter.calls).toEqual(["start alpha"]));
   });
 
   it("r restarts: stop, then install + start from the saved definition", async () => {
     const { app } = await setup(80, 24);
     app.handleKey({ name: "r" });
     await vi.waitFor(() =>
-      expect(adapter.calls).toEqual(["stop alpha", "install alpha", "start alpha"]),
+      expect(adapter.calls).toEqual(["stop alpha", INSTALL_ALPHA, "start alpha"]),
     );
   });
 

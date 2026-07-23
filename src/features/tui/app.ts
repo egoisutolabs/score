@@ -249,7 +249,14 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     } else if (key.name === "f") follow = !follow;
     else if (key.name === "?") help = !help;
     else if (key.name === "x") {
-      runAction(selectedView()?.job?.pid !== undefined ? stopProject : startProject);
+      const job = selectedView()?.job;
+      // A crashed job is still registered with the supervisor: start alone.
+      // A booted-out or definition-only job needs install-then-start.
+      runAction(
+        job?.pid !== undefined
+          ? stopProject
+          : (adapter, projectKey) => startProject(adapter, projectKey, job?.loaded === true),
+      );
     } else if (key.name === "r") runAction(restartProject);
     else return;
     render();
