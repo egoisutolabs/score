@@ -136,6 +136,20 @@ export async function bootstrapDaemon(
   };
 }
 
+/**
+ * owner/repo from a remote URL, but only when github.com is the actual HOST,
+ * anchored per canonical form — substring scans accepted mirrors carrying
+ * "github.com" as a path segment (gitlab.com/github.com/owner/repo).
+ */
+function githubRepoFromRemoteUrl(url: string): string | undefined {
+  const stripped = url.replace(/\.git$/, "");
+  // scp-like: [user@]github.com:owner/repo
+  const scp = stripped.match(/^(?:[^@/]+@)?github\.com:([^/]+\/[^/]+)$/);
+  if (scp) return scp[1];
+  // URL forms: https|ssh|git://[user@]github.com/owner/repo
+  return stripped.match(/^(?:https|ssh|git):\/\/(?:[^@/]+@)?github\.com\/([^/]+\/[^/]+)$/)?.[1];
+}
+
 /** Same preflights as discovery — gh auth, tmux — plus proof that main_location really is a git toplevel. */
 async function preflightManagedRuntime(
   runner: CommandRunner,
@@ -163,14 +177,10 @@ async function preflightManagedRuntime(
       .stdout.trim()
       .split("\n");
     for (const url of urls) {
-      // The host is part of the identity: a mirror with the same owner/repo
-      // path on another host must not pass. github.com only, like gh itself.
-      const observed = url
-        .replace(/\.git$/, "")
-        .match(/(?:^|[/@])github\.com[/:]([^/:]+\/[^/:]+)$/)?.[1];
+      const observed = githubRepoFromRemoteUrl(url);
       if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
         throw new Error(
-          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation} (github.com URLs only)`,
+          `projects.${project.key}.github_repo ${project.githubRepo} does not match ${kind} ${url} at ${project.mainLocation} (canonical github.com URLs only)`,
         );
       }
     }
@@ -228,6 +238,21 @@ async function preflightManagedRuntime(
   });
   if (branch.exitCode === 0) {
     defaultBranch = branch.stdout.trim().replace("refs/remotes/origin/", "");
+  }
+  // Cleanup's auto-pull runs `git pull --ff-only` with no remote, which pulls
+  // from the branch's configured upstream — commits from a fork or mirror
+  // would then be pushed back to origin by landing. Require origin's own
+  // branch as the upstream.
+  const upstream = await runner.run(
+    ["git", "rev-parse", "--abbrev-ref", `${defaultBranch}@{upstream}`],
+    { cwd: project.mainLocation },
+  );
+  const expectedUpstream = `origin/${defaultBranch}`;
+  const observedUpstream = upstream.exitCode === 0 ? upstream.stdout.trim() : "no upstream";
+  if (observedUpstream !== expectedUpstream) {
+    throw new Error(
+      `default branch ${defaultBranch} in ${project.mainLocation} must track ${expectedUpstream} (found ${observedUpstream}) — run: git branch --set-upstream-to=${expectedUpstream} ${defaultBranch}`,
+    );
   }
   return {
     repositoryRoot: project.mainLocation,

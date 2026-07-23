@@ -117,6 +117,9 @@ async function managedFixture(mainLocation: string): Promise<{ home: string; wor
 
 function managedResponses(repo: string) {
   return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
+    if (command[1] === "rev-parse" && command.includes("--abbrev-ref")) {
+      return { stdout: "origin/develop\n" };
+    }
     if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
     if (command[1] === "remote") return { stdout: "git@github.com:egoisutolabs/demo.git\n" };
     if (command[1] === "config") return { exitCode: 1 };
@@ -175,6 +178,7 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
         "tmux",
         "tmux",
         "git",
+        "git",
       ]);
     },
   );
@@ -209,6 +213,40 @@ test("managed bootstrap fails when the push URL diverges from github_repo", asyn
     const parsed = parseDaemonArguments(["--project", "demo"]);
     await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
       /does not match origin push URL git@github\.com:someone\/fork\.git/,
+    );
+  });
+});
+
+test("managed bootstrap rejects github.com as a path segment on a foreign host", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "remote" && command.includes("--push")) {
+        return { stdout: "https://gitlab.com/github.com/egoisutolabs/demo.git\n" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /does not match origin push URL https:\/\/gitlab\.com\/github\.com\/egoisutolabs\/demo\.git/,
+    );
+  });
+});
+
+test("managed bootstrap fails when the default branch tracks a non-origin upstream", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "rev-parse" && command.includes("--abbrev-ref")) {
+        return { stdout: "fork/develop\n" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /default branch develop .* must track origin\/develop \(found fork\/develop\)/,
     );
   });
 });
