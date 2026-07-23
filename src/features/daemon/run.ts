@@ -120,6 +120,9 @@ export async function bootstrapDaemon(
     };
   }
   const project = await readResolvedProject(parsed.project, parsed.resolvedPath);
+  // GH_REPO redirects every cwd-scoped gh call away from the checkout's
+  // origin; a supervised daemon must only act on the verified checkout.
+  delete process.env.GH_REPO;
   const runtime = await preflightManagedRuntime(runner, project);
   return {
     runtime,
@@ -146,22 +149,37 @@ async function preflightManagedRuntime(
       `projects.${project.key}.main_location ${project.mainLocation} is not a git toplevel (git reports ${toplevel})`,
     );
   }
-  requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: project.mainLocation }));
-  // github_repo is hand-editable config: prove it matches the checkout's
-  // origin, or cwd-scoped gh calls would act on a different repository than
-  // the configured one (same check as GitHubService.preflight).
-  const observed = JSON.parse(
-    requireSuccess(
-      await runner.run(["gh", "repo", "view", "--json", "nameWithOwner"], {
-        cwd: project.mainLocation,
-      }),
-    ).stdout,
-  ).nameWithOwner;
-  if (observed !== project.githubRepo) {
+  // github_repo is hand-editable config: prove it against the checkout's git
+  // origin, not gh defaults — GH_REPO or `gh repo set-default` can make gh
+  // report the configured repo even when the checkout belongs to another.
+  const origin = requireSuccess(
+    await runner.run(["git", "remote", "get-url", "origin"], { cwd: project.mainLocation }),
+  ).stdout.trim();
+  const observed = origin.replace(/\.git$/, "").match(/([^/:]+\/[^/:]+)$/)?.[1];
+  if (observed?.toLowerCase() !== project.githubRepo.toLowerCase()) {
     throw new Error(
-      `projects.${project.key}.github_repo ${project.githubRepo} does not match gh repository ${observed} at ${project.mainLocation}`,
+      `projects.${project.key}.github_repo ${project.githubRepo} does not match origin ${origin} at ${project.mainLocation}`,
     );
   }
+  // gh repo set-default persists in the checkout's git config and redirects
+  // issue/PR commands even when origin matches; refuse to run under one that
+  // points anywhere but origin itself.
+  const setDefault = await runner.run(
+    ["git", "config", "--get-regexp", "^remote\\..*\\.gh-resolved$"],
+    { cwd: project.mainLocation },
+  );
+  if (setDefault.exitCode === 0) {
+    const foreign = setDefault.stdout
+      .trim()
+      .split("\n")
+      .filter((line) => line.trim() !== "remote.origin.gh-resolved base");
+    if (foreign.length > 0) {
+      throw new Error(
+        `gh repo set-default in ${project.mainLocation} points away from origin (${foreign.join("; ")}) — run: gh repo set-default ${project.githubRepo}`,
+      );
+    }
+  }
+  requireSuccess(await runner.run(["gh", "auth", "status"], { cwd: project.mainLocation }));
   requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {

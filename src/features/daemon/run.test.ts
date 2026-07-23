@@ -105,18 +105,29 @@ async function managedFixture(mainLocation: string): Promise<{ home: string; wor
   return { home, worktree };
 }
 
+function managedResponses(repo: string) {
+  return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
+    if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
+    if (command[1] === "remote") return { stdout: "git@github.com:egoisutolabs/demo.git\n" };
+    if (command[1] === "config") return { exitCode: 1 };
+    if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
+    return {};
+  };
+}
+
 test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuning", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
   const { home, worktree } = await managedFixture(repo);
   await withEnv(
-    { SCORE_HOME: home, TICK_INTERVAL_MS: "999999", MAX_PARALLEL: "9", WORKTREE_ROOT: "/nope" },
+    {
+      SCORE_HOME: home,
+      TICK_INTERVAL_MS: "999999",
+      MAX_PARALLEL: "9",
+      WORKTREE_ROOT: "/nope",
+      GH_REPO: "someone/else",
+    },
     async () => {
-      const runner = new FakeRunner((command) => {
-        if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
-        if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
-        if (command[1] === "repo") return { stdout: '{"nameWithOwner":"egoisutolabs/demo"}\n' };
-        return {};
-      });
+      const runner = new FakeRunner(managedResponses(repo));
       const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
       const boot = await bootstrapDaemon(parsed, runner);
 
@@ -128,17 +139,52 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       expect(boot.runtime.repository).toBe("egoisutolabs/demo");
       expect(boot.runtime.repositoryRoot).toBe(repo);
       expect(boot.runtime.defaultBranch).toBe("develop");
+      // GH_REPO would redirect every later cwd-scoped gh call; managed mode
+      // clears it so gh only ever sees the verified checkout.
+      expect(process.env.GH_REPO).toBeUndefined();
       // Every preflight runs inside main_location, so cwd never matters.
       for (const call of runner.calls) expect(call.cwd).toBe(repo);
       expect(runner.calls.map((call) => call.command[0])).toEqual([
         "git",
-        "gh",
+        "git",
+        "git",
         "gh",
         "tmux",
         "git",
       ]);
     },
   );
+});
+
+test("managed bootstrap fails when github_repo does not match the checkout's origin", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
+      if (command[1] === "remote") return { stdout: "https://github.com/someone/else.git\n" };
+      return {};
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /projects\.demo\.github_repo egoisutolabs\/demo does not match origin https:\/\/github\.com\/someone\/else\.git/,
+    );
+  });
+});
+
+test("managed bootstrap fails when gh repo set-default points away from origin", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[1] === "config") return { stdout: "remote.upstream.gh-resolved base\n" };
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
+      /gh repo set-default .* points away from origin/,
+    );
+  });
 });
 
 test("managed bootstrap fails when main_location is not the git toplevel", async () => {
@@ -153,22 +199,6 @@ test("managed bootstrap fails when main_location is not the git toplevel", async
     const parsed = parseDaemonArguments(["--project", "demo"]);
     await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
       /projects\.demo\.main_location .* is not a git toplevel/,
-    );
-  });
-});
-
-test("managed bootstrap fails when github_repo does not match the checkout's origin", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedFixture(repo);
-  await withEnv({ SCORE_HOME: home }, async () => {
-    const runner = new FakeRunner((command) => {
-      if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
-      if (command[1] === "repo") return { stdout: '{"nameWithOwner":"someone/else"}\n' };
-      return {};
-    });
-    const parsed = parseDaemonArguments(["--project", "demo"]);
-    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(
-      /projects\.demo\.github_repo egoisutolabs\/demo does not match gh repository someone\/else/,
     );
   });
 });
