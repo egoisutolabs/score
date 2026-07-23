@@ -12,7 +12,7 @@ import {
   stringValue,
 } from "@/shared/validation";
 
-const PROJECT_KEY_PATTERN = /^[a-z0-9-]+$/;
+export const PROJECT_KEY_PATTERN = /^[a-z0-9-]+$/;
 
 export async function loadConfig(path: string = configPath()): Promise<ScoreConfig> {
   const text = await readFile(path, "utf8");
