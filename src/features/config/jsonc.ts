@@ -19,9 +19,11 @@ function stripComments(text: string): string {
       continue;
     }
     if (char === "/" && text[i + 1] === "*") {
-      i += 2;
-      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
-      i += 2;
+      const close = text.indexOf("*/", i + 2);
+      // A comment cut off at EOF means the file is truncated; loading whatever
+      // parsed before the cut would be fail-open, so refuse instead.
+      if (close === -1) throw new Error("unclosed block comment (/* without matching */)");
+      i = close + 2;
       out += " "; // separator, so a comment splitting a token can't fuse it into valid JSON
       continue;
     }

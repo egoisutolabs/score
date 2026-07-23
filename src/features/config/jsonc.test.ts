@@ -79,3 +79,12 @@ test("nested combinations", () => {
 }`),
   ).toEqual({ outer: { list: [{ url: "https://example.com//path" }] } });
 });
+
+test("an unclosed block comment is a truncated file and must fail fast", () => {
+  expect(() => stripJsonc('{ "version": 1, "projects": {} } /* cut off')).toThrow(
+    /unclosed block comment/,
+  );
+  expect(() => stripJsonc("/* never closed")).toThrow(/unclosed block comment/);
+  // A properly closed comment in the same position still strips cleanly.
+  expect(JSON.parse(stripJsonc('{ "version": 1 } /* closed */'))).toEqual({ version: 1 });
+});
