@@ -7,5 +7,8 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts"],
+    // OpenTUI's test renderer needs native FFI (Node >= 26.4) for the TUI
+    // frame-snapshot tests.
+    execArgv: ["--experimental-ffi"],
   },
 });

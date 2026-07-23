@@ -6,7 +6,7 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --hot src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target bun --external '@opentui/*'",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -24,6 +24,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@opentui/core": "^0.4.5",
     "jsonc-parser": "^3.3.1"
   }
 }
