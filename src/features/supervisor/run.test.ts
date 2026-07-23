@@ -11,13 +11,15 @@ class RecordingRunner implements CommandRunner {
   readonly calls: string[][] = [];
   listOutput = "";
   failBootstrapMatching: string | undefined;
+  failBootoutMatching: string | undefined;
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.calls.push([...command]);
+    const matches = (pattern: string | undefined): boolean =>
+      pattern !== undefined && command.some((argument) => argument.includes(pattern));
     const failed =
-      command[1] === "bootstrap" &&
-      this.failBootstrapMatching !== undefined &&
-      command.some((argument) => argument.includes(this.failBootstrapMatching as string));
+      (command[1] === "bootstrap" && matches(this.failBootstrapMatching)) ||
+      (command[1] === "bootout" && matches(this.failBootoutMatching));
     return {
       command: [...command],
       cwd: options.cwd,
@@ -226,14 +228,70 @@ test("single-project up only reconciles that key and reports no removals", async
     projectBlock("alpha", "/repos/alpha", 5000),
     projectBlock("beta", "/repos/beta", 7000),
   ]);
-  runner.listOutput = "1\t0\tdev.score.other";
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = bothLoaded;
+  logs = [];
+
+  await writeConfig([
+    projectBlock("alpha", "/repos/alpha", 9000),
+    projectBlock("beta", "/repos/beta", 7000),
+  ]);
   await runUp(["alpha"], deps);
   expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score.alpha"],
     ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
     ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
   ]);
-  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+  expect(logs.at(-1)).toBe("started=0 restarted=1 unchanged=0 removed=0");
   await expect(runUp(["missing"], deps)).rejects.toThrow("no enabled project 'missing'");
+});
+
+test("a loaded job with no readable state blocks new starts (fail closed)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  runner.listOutput = "1\t0\tdev.score.ghost";
+  await runUp([], deps);
+  expect(errors).toEqual([
+    "refusing to start 'alpha': dev.score.ghost is running with unreadable state, which could be this checkout — run: score down ghost",
+  ]);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
+});
+
+test("a drifted rendered definition restarts a job even when the hash is unchanged", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  logs = [];
+
+  const moved: UpDependencies = {
+    adapter: deps.adapter,
+    invocationFor: (key) => [
+      "/bin/bun",
+      "/new/home/dist/index.js",
+      "daemon",
+      "--project",
+      key,
+      "--managed",
+    ],
+  };
+  await runUp([], moved);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score.alpha"],
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=0 restarted=1 unchanged=0 removed=0");
+  expect(await readFile(join(agentsDir, "dev.score.alpha.plist"), "utf8")).toContain(
+    "/new/home/dist/index.js",
+  );
+});
+
+test("keys with path separators or dots are rejected before reaching the adapter", async () => {
+  await expect(runDown(["../../foo"], deps.adapter)).rejects.toThrow("invalid project key");
+  await expect(runDown(["dev.score.a"], deps.adapter)).rejects.toThrow("invalid project key");
+  expect(runner.calls).toEqual([]);
 });
 
 test("invalid config touches nothing", async () => {
@@ -255,6 +313,27 @@ test("down <key> boots out, removes the plist, and keeps the state dir", async (
   expect(runner.mutations()).toEqual([["launchctl", "bootout", "gui/501/dev.score.beta"]]);
   expect((await readdir(agentsDir)).sort()).toEqual(["dev.score.alpha.plist"]);
   expect((await stat(join(home, "projects", "beta"))).isDirectory()).toBe(true);
+});
+
+test("down continues past a failing job and reports it", async () => {
+  await writeConfig([
+    projectBlock("alpha", "/repos/alpha", 5000),
+    projectBlock("beta", "/repos/beta", 7000),
+  ]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = bothLoaded;
+  runner.failBootoutMatching = "dev.score.alpha";
+
+  await runDown([], deps.adapter);
+  expect(logs).toContain("stopped 'beta'");
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toContain("failed to stop 'alpha'");
+  expect(process.exitCode).toBe(1);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score.alpha"],
+    ["launchctl", "bootout", "gui/501/dev.score.beta"],
+  ]);
 });
 
 test("down with no argument stops all score jobs and nothing else", async () => {

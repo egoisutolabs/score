@@ -40,8 +40,10 @@ export class LaunchdSupervisor implements SupervisorAdapter {
   }
 
   private launchctl(args: readonly string[], mutates: boolean): Promise<CommandResult> {
+    // cwd "/" — agentsDir may not exist yet (status/stop run before install
+    // creates it), and a missing cwd fails the spawn itself.
     return this.runner.run(["launchctl", ...args], {
-      cwd: this.agentsDir,
+      cwd: "/",
       mutates,
       timeoutMs: 30_000,
     });

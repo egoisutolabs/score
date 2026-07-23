@@ -133,3 +133,41 @@ test("distinct checkouts never collide", () => {
   expect(decided.unchanged.map((entry) => entry.key)).toEqual(["a"]);
   expect(decided.start.map((entry) => entry.key)).toEqual(["b"]);
 });
+
+test("a loaded job with unknowable checkout fails closed: new starts are refused", () => {
+  // ghost is loaded but has no resolved.json and no config entry — it could be
+  // sitting on any checkout, so nothing new starts until it is downed.
+  const decided = plan([project("a")], [loaded("ghost")], existing());
+  expect(decided.refused).toEqual([
+    { project: expect.objectContaining({ key: "a" }), blockingKey: "ghost", unknownState: true },
+  ]);
+  expect(decided.start).toEqual([]);
+  expect(decided.removed).toEqual(["ghost"]);
+});
+
+test("an unknowable job does not block restarts of already-supervised keys", () => {
+  const decided = plan(
+    [project("a", { configHash: "hash-new" })],
+    [loaded("a"), loaded("ghost")],
+    existing(project("a")),
+  );
+  expect(decided.restart.map((entry) => entry.key)).toEqual(["a"]);
+  expect(decided.refused).toEqual([]);
+});
+
+test("claims compare canonical paths, so symlink spellings of one checkout collide", () => {
+  const canonicalize = (path: string): string => path.replace("/link/", "/real/");
+  const decided = plan(
+    [
+      project("a", { mainLocation: "/real/shared" }),
+      project("b", { mainLocation: "/link/shared" }),
+    ],
+    [],
+    existing(),
+    canonicalize,
+  );
+  expect(decided.start.map((entry) => entry.key)).toEqual(["a"]);
+  expect(decided.refused).toEqual([
+    { project: expect.objectContaining({ key: "b" }), blockingKey: "a" },
+  ]);
+});

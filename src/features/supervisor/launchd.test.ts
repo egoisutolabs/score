@@ -8,11 +8,13 @@ import type { CommandRunner, RunCommandOptions } from "@/shared/command-runner";
 
 class RecordingRunner implements CommandRunner {
   readonly calls: string[][] = [];
+  readonly cwds: string[] = [];
   listOutput = "";
   exitCodeFor: (command: readonly string[]) => number = () => 0;
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.calls.push([...command]);
+    this.cwds.push(options.cwd);
     return {
       command: [...command],
       cwd: options.cwd,
@@ -83,4 +85,15 @@ test("status merges launchctl list with definition-only plists, score namespace 
     { key: "stale", loaded: false },
   ]);
   expect(runner.calls).toEqual([["launchctl", "list"]]);
+});
+
+test("launchctl never runs from the agents dir — it may not exist before install", async () => {
+  const missing = new LaunchdSupervisor(runner, {
+    uid: 501,
+    launchAgentsDir: join(agentsDir, "does-not-exist"),
+  });
+  expect(await missing.status()).toEqual([]);
+  await missing.stop("demo");
+  await missing.uninstall("demo");
+  expect(runner.cwds.every((cwd) => cwd === "/")).toBe(true);
 });
