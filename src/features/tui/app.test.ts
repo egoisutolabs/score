@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectConfig, ScoreConfig } from "@/features/config/model";
 import type { JobStatus, SupervisorAdapter } from "@/features/supervisor/adapter";
-import { buildTui } from "@/features/tui/app";
 
 const NOW = new Date("2026-07-01T12:00:00.000Z");
 
@@ -106,13 +105,17 @@ const hasFfi = process.execArgv.includes("--experimental-ffi");
 
 describe.skipIf(!hasFfi)("tui app", () => {
   let createTestRenderer: typeof import("@opentui/core/testing").createTestRenderer;
+  let buildTui: typeof import("@/features/tui/app").buildTui;
   let home: string;
   let adapter: FakeAdapter;
   let destroy: (() => void) | null = null;
 
   beforeAll(async () => {
-    // Dynamic so a skipped run never loads OpenTUI's native bindings.
+    // Dynamic so a skipped run never loads OpenTUI's native bindings —
+    // app.ts imports @opentui/core at module scope, so it stays behind the
+    // guard too.
     ({ createTestRenderer } = await import("@opentui/core/testing"));
+    ({ buildTui } = await import("@/features/tui/app"));
   });
 
   beforeEach(async () => {
@@ -133,10 +136,10 @@ describe.skipIf(!hasFfi)("tui app", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  async function setup(width: number, height: number) {
+  async function setup(width: number, height: number, cfg: ScoreConfig = config) {
     const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width, height });
     destroy = () => renderer.destroy();
-    const app = buildTui(renderer, { adapter, config, now: () => NOW });
+    const app = buildTui(renderer, { adapter, config: cfg, now: () => NOW });
     await app.refresh();
     return { app, renderOnce, captureCharFrame };
   }
@@ -201,6 +204,45 @@ describe.skipIf(!hasFfi)("tui app", () => {
     await vi.waitFor(() =>
       expect(adapter.calls).toEqual(["stop alpha", INSTALL_ALPHA, "start alpha"]),
     );
+  });
+
+  it("r with a missing saved definition fails before touching the supervisor", async () => {
+    await rm(join(home, "projects", "alpha", "job.plist"));
+    const { app, renderOnce, captureCharFrame } = await setup(80, 24);
+    app.handleKey({ name: "r" });
+    await vi.waitFor(async () => {
+      await renderOnce();
+      expect(captureCharFrame()).toContain("error: no job definition for 'alpha'");
+    });
+    // The running daemon was never booted out.
+    expect(adapter.calls).toEqual([]);
+  });
+
+  it("x and r never start a project disabled in config", async () => {
+    const disabled: ScoreConfig = {
+      version: 1,
+      projects: { alpha: { ...project("alpha"), enabled: false }, beta: project("beta") },
+    };
+    adapter.jobs = [
+      { key: "alpha", loaded: false },
+      { key: "beta", loaded: true, pid: 222 },
+    ];
+    const { app, renderOnce, captureCharFrame } = await setup(80, 24, disabled);
+    app.handleKey({ name: "x" });
+    app.handleKey({ name: "r" });
+    await renderOnce();
+    expect(captureCharFrame()).toContain("error: 'alpha' is disabled in config");
+    expect(adapter.calls).toEqual([]);
+  });
+
+  it("x still stops a running project that is disabled in config", async () => {
+    const disabled: ScoreConfig = {
+      version: 1,
+      projects: { alpha: { ...project("alpha"), enabled: false }, beta: project("beta") },
+    };
+    const { app } = await setup(80, 24, disabled);
+    app.handleKey({ name: "x" });
+    expect(adapter.calls).toEqual(["stop alpha"]);
   });
 
   it("ignores lifecycle keys while an action is in flight — no retry storm", async () => {

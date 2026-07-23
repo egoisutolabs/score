@@ -8,6 +8,14 @@ function jobDefinitionPath(key: string): string {
   return join(projectDir(key), "job.plist");
 }
 
+async function readDefinition(key: string): Promise<string> {
+  const definition = await readFile(jobDefinitionPath(key), "utf8").catch(() => null);
+  if (definition === null) {
+    throw new Error(`no job definition for '${key}' — run: score up ${key}`);
+  }
+  return definition;
+}
+
 /**
  * `stop()` deregisters the job (keeping its definition file), so starting a
  * booted-out project re-registers it from the saved copy before starting —
@@ -21,11 +29,7 @@ export async function startProject(
   stillRegistered = false,
 ): Promise<void> {
   if (!stillRegistered) {
-    const definition = await readFile(jobDefinitionPath(key), "utf8").catch(() => null);
-    if (definition === null) {
-      throw new Error(`no job definition for '${key}' — run: score up ${key}`);
-    }
-    await adapter.install(key, definition);
+    await adapter.install(key, await readDefinition(key));
   }
   await adapter.start(key);
 }
@@ -35,6 +39,10 @@ export function stopProject(adapter: SupervisorAdapter, key: string): Promise<vo
 }
 
 export async function restartProject(adapter: SupervisorAdapter, key: string): Promise<void> {
+  // Read the definition before stopping: a missing saved plist must fail
+  // without booting out a running daemon it can't bring back.
+  const definition = await readDefinition(key);
   await adapter.stop(key);
-  await startProject(adapter, key);
+  await adapter.install(key, definition);
+  await adapter.start(key);
 }

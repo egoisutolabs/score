@@ -249,16 +249,24 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     } else if (key.name === "f") follow = !follow;
     else if (key.name === "?") help = !help;
     else if (key.name === "x") {
-      const job = selectedView()?.job;
-      // A crashed job is still registered with the supervisor: start alone.
-      // A booted-out or definition-only job needs install-then-start.
-      runAction(
-        job?.pid !== undefined
-          ? stopProject
-          : (adapter, projectKey) => startProject(adapter, projectKey, job?.loaded === true),
-      );
-    } else if (key.name === "r") runAction(restartProject);
-    else return;
+      const view = selectedView();
+      if (view?.job?.pid !== undefined) runAction(stopProject);
+      else if (view !== undefined && !view.enabled) {
+        // The viewer honors the same disabled-project contract as `score up`:
+        // stopping a running disabled job is fine, starting one is not.
+        actionError = `'${view.key}' is disabled in config — not starting`;
+      } else {
+        // A crashed job is still registered with the supervisor: start alone.
+        // A booted-out or definition-only job needs install-then-start.
+        const registered = view?.job?.loaded === true;
+        runAction((adapter, projectKey) => startProject(adapter, projectKey, registered));
+      }
+    } else if (key.name === "r") {
+      const view = selectedView();
+      if (view !== undefined && !view.enabled) {
+        actionError = `'${view.key}' is disabled in config — not starting`;
+      } else runAction(restartProject);
+    } else return;
     render();
   };
 
