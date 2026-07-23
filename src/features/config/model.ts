@@ -1,6 +1,7 @@
 export interface AgentConfig {
   harness: "claude";
-  model: string;
+  /** Absent = the harness's own default model (the manual repair path). */
+  model?: string;
 }
 
 export interface ProjectRuntimeConfig {

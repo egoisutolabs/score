@@ -6,6 +6,16 @@
  */
 export const DEFAULT_SESSION_SUFFIX = "^issue-%N";
 
+/**
+ * A managed daemon matches exactly the sessions its own dispatch creates
+ * (`score-<key>-issue-N`, see sessionNameForIssue) — a bare or foreign-project
+ * session must never be pinged. Identity's naming and this template are tied
+ * together by a test.
+ */
+export function sessionSuffixForNamespace(namespace: string | undefined): string {
+  return namespace === undefined ? DEFAULT_SESSION_SUFFIX : `^score-${namespace}-issue-%N`;
+}
+
 export interface RepairDefects {
   readonly conflicting: boolean;
   readonly unresolvedThreads: number;

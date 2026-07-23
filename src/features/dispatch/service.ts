@@ -1,4 +1,5 @@
-import { createWorkIdentity } from "@/features/dispatch/identity";
+import type { AgentConfig } from "@/features/config/model";
+import { createWorkIdentity, sessionNameForIssue } from "@/features/dispatch/identity";
 import type { IssueObservation } from "@/features/dispatch/issue";
 import {
   hasLabel,
@@ -19,6 +20,9 @@ export interface DispatchServiceOptions {
   readonly workspaceRoot: string;
   readonly maxParallelIssues: number;
   readonly issues: IssuePolicy;
+  readonly agent: AgentConfig;
+  /** Managed mode: project key namespacing every session this service creates. */
+  readonly namespace?: string;
 }
 
 interface DispatchRunOptions {
@@ -84,13 +88,14 @@ export class DispatchService {
     if (hasLabel(issue, this.options.issues.holdLabel)) return false;
     if (!(await this.#dependenciesSatisfied(issue))) return false;
 
-    const identity = createWorkIdentity(this.options.workspaceRoot, issue);
+    const identity = createWorkIdentity(this.options.workspaceRoot, issue, this.options.namespace);
     if (dryRun) return true;
     await this.workspace.createWorktree(identity);
     await this.briefings.write(issue, identity);
     await this.agents.startImplementation(
       identity,
       "Read TASK.md and implement it end-to-end. Open a PR with Fixes in the body. Stop after reporting the PR URL.",
+      this.options.agent,
     );
     return true;
   }
@@ -108,7 +113,9 @@ export class DispatchService {
     if ((await this.#issueWorktrees()).some((worktree) => worktree.branch.startsWith(prefix))) {
       return true;
     }
-    if (await this.agents.sessionExists(`issue-${issueNumber}`)) return true;
+    if (await this.agents.sessionExists(sessionNameForIssue(this.options.namespace, issueNumber))) {
+      return true;
+    }
     return (await this.changeHost.observeOpenChangeHeads()).some((change) =>
       change.headRefName.startsWith(prefix),
     );

@@ -1,3 +1,4 @@
+import type { AgentConfig } from "@/features/config/model";
 import { issueNumberFromBranch } from "@/features/dispatch/identity";
 import type { ChangeHost } from "@/features/landing/port";
 import type { RepairDefects } from "@/features/repair/policy";
@@ -9,7 +10,7 @@ import type { WorkspaceDriver } from "@/shared/workspace-driver";
 const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 export interface RepairServiceOptions {
-  readonly agentCommand: string;
+  readonly agent: AgentConfig;
   readonly verificationCommands: string;
   readonly sessionSuffix: string;
   readonly includeClean: boolean;
@@ -98,12 +99,7 @@ export class RepairService {
         });
       } else if (worktree && !this.options.noSpawn) {
         if (!dryRun) {
-          await this.agents.startRepair(
-            change.number,
-            worktree.path,
-            message,
-            this.options.agentCommand,
-          );
+          await this.agents.startRepair(change.number, worktree.path, message, this.options.agent);
         }
         results.push({
           pullRequestNumber: change.number,

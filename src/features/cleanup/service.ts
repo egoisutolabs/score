@@ -1,6 +1,6 @@
 import { cleanupStatusIsSafe } from "@/features/cleanup/policy";
 import type { CleanupResult } from "@/features/cleanup/result";
-import { issueNumberFromBranch } from "@/features/dispatch/identity";
+import { issueNumberFromBranch, sessionNameForIssue } from "@/features/dispatch/identity";
 import { isOwnedIssueWorktree } from "@/features/dispatch/policy";
 import type { ChangeHost } from "@/features/landing/port";
 import type { AgentRuntime } from "@/shared/agent-runtime";
@@ -11,6 +11,8 @@ export interface CleanupServiceOptions {
   readonly workspaceRoot: string;
   readonly harnessOwnedPaths: readonly string[];
   readonly autoPullMain: boolean;
+  /** Managed mode: project key; must match the namespace dispatch launched with. */
+  readonly namespace?: string;
 }
 
 /** Cleanup acts only on merged PR observations and refuses unknown worktree dirt. */
@@ -51,7 +53,9 @@ export class CleanupService {
       }
 
       const issueNumber = issueNumberFromBranch(worktree.branch);
-      if (issueNumber !== null) await this.agents.stop(`issue-${issueNumber}`);
+      if (issueNumber !== null) {
+        await this.agents.stop(sessionNameForIssue(this.options.namespace, issueNumber));
+      }
       await this.workspace.removeWorktree(worktree);
       // Legacy treats safe local-branch deletion failure as a warning, not failed cleanup.
       await this.workspace.deleteBranch(worktree.branch);
