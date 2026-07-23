@@ -5,7 +5,6 @@ import {
   arrayValue,
   booleanValue,
   enumValue,
-  nullableStringValue,
   objectValue,
   positiveIntegerValue,
   stringValue,
@@ -14,6 +13,15 @@ import {
 
 const ISSUE_STATES = ["OPEN", "CLOSED"] as const;
 const ISSUE_STATE_REASONS = ["COMPLETED", "NOT_PLANNED", "REOPENED"] as const;
+
+/**
+ * gh serializes GraphQL nulls as "" across nullable string fields
+ * (reviewDecision, check conclusions, stateReason); "" always means absent.
+ */
+function ghNullableString(value: unknown, path: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return stringValue(value, path);
+}
 
 /** gh serializes "no state reason" on open issues as "", not null; treat both as absent. */
 export function issueStateReason(
@@ -67,10 +75,7 @@ export function parseGithubPullRequest(
       change.mergeable === undefined
         ? "UNKNOWN"
         : stringValue(change.mergeable, `${path}.mergeable`),
-    reviewDecision:
-      change.reviewDecision === null || change.reviewDecision === undefined
-        ? null
-        : stringValue(change.reviewDecision, `${path}.reviewDecision`),
+    reviewDecision: ghNullableString(change.reviewDecision, `${path}.reviewDecision`),
     labels: optionalArray(change.labels, `${path}.labels`).map((label, index) =>
       parseLabel(label, `${path}.labels[${index}]`),
     ),
@@ -86,7 +91,7 @@ export function parseGithubPullRequest(
         return parsed ? [parsed] : [];
       },
     ),
-    mergedAt: nullableStringValue(change.mergedAt, `${path}.mergedAt`),
+    mergedAt: ghNullableString(change.mergedAt, `${path}.mergedAt`),
   };
 }
 
@@ -144,7 +149,7 @@ function parseChangeCheck(value: unknown, path: string): ChangeCheck | null {
   if (check.status !== undefined) {
     return {
       status: stringValue(check.status, `${path}.status`),
-      conclusion: nullableStringValue(check.conclusion, `${path}.conclusion`),
+      conclusion: ghNullableString(check.conclusion, `${path}.conclusion`),
     };
   }
   if (check.state !== undefined) {

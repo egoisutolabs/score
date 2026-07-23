@@ -78,6 +78,20 @@ test("GitHub pull-request parser preserves typed check variants", () => {
   ]);
 });
 
+test("gh's empty-string form of null reads as absent across PR fields", () => {
+  const change = parseGithubPullRequest({
+    number: 11,
+    title: "No decision yet",
+    headRefName: "issue-2-daemon-project-mode",
+    reviewDecision: "",
+    mergedAt: "",
+    statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: "" }],
+  });
+  expect(change.reviewDecision).toBeNull();
+  expect(change.mergedAt).toBeNull();
+  expect(change.statusCheckRollup).toEqual([{ status: "IN_PROGRESS", conclusion: null }]);
+});
+
 test("GitHub parsers reject malformed shapes but preserve provider enum additions", () => {
   expect(() =>
     parseGithubIssue({
@@ -96,5 +110,5 @@ test("GitHub parsers reject malformed shapes but preserve provider enum addition
       headRefName: "issue-1-unknown-check",
       statusCheckRollup: [{ status: "MAYBE" }],
     }).statusCheckRollup,
-  ).toEqual([{ status: "MAYBE", conclusion: undefined }]);
+  ).toEqual([{ status: "MAYBE", conclusion: null }]);
 });
