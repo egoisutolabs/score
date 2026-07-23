@@ -446,7 +446,7 @@ test("self-heal aborts a staged merge left in the checkout and logs one recovery
   });
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, false);
+  await selfHealStagedMerge(git, log, false, "main");
 
   expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
   expect(log.logged).toEqual([
@@ -462,7 +462,7 @@ test("self-heal is silent when no merge is in progress", async () => {
   });
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, false);
+  await selfHealStagedMerge(git, log, false, "main");
 
   expect(log.logged).toEqual([]);
 });
@@ -471,8 +471,9 @@ test("self-heal fails closed when the abort leaves MERGE_HEAD behind", async () 
   const stuck = {
     mergeInProgress: async () => true,
     abortMerge: async () => {},
+    observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
   };
-  await expect(selfHealStagedMerge(stuck, new CaptureLogger(), false)).rejects.toThrow(
+  await expect(selfHealStagedMerge(stuck, new CaptureLogger(), false, "main")).rejects.toThrow(
     /failed to abort the staged merge/,
   );
 });
@@ -484,16 +485,41 @@ test("self-heal under dry-run only announces the abort it would run", async () =
     abortMerge: async () => {
       aborted = true;
     },
+    observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
   };
   const log = new CaptureLogger();
 
-  await selfHealStagedMerge(git, log, true);
+  await selfHealStagedMerge(git, log, true, "main");
 
   expect(aborted).toBe(false);
   expect(log.logged).toEqual([
     {
       level: "warn",
       text: "staged merge left by a previous run (MERGE_HEAD present); would abort",
+    },
+  ]);
+});
+
+test("self-heal never aborts a merge in progress on a non-default branch", async () => {
+  const repo = await fixtureRepo(false);
+  const gitCli = (...args: string[]) =>
+    execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+  gitCli("checkout", "-b", "operator-work");
+  await writeFile(join(repo, ".git", "MERGE_HEAD"), `${gitCli("rev-parse", "HEAD")}\n`);
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+  const log = new CaptureLogger();
+
+  await selfHealStagedMerge(git, log, false, "main");
+
+  // The operator's in-progress merge survives the daemon start.
+  expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: "MERGE_HEAD present on operator-work, not main; not landing's merge, leaving it untouched",
     },
   ]);
 });

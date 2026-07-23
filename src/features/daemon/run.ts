@@ -291,11 +291,22 @@ async function preflightManagedRuntime(
  * decision 9, tracked on issue #4.)
  */
 export async function selfHealStagedMerge(
-  git: Pick<GitService, "mergeInProgress" | "abortMerge">,
+  git: Pick<GitService, "mergeInProgress" | "abortMerge" | "observePrimaryCheckout">,
   log: Logger,
   dryRun: boolean,
+  defaultBranch: string,
 ): Promise<void> {
   if (!(await git.mergeInProgress())) return;
+  // Landing only ever stages merges on the default branch, so a MERGE_HEAD
+  // anywhere else is not the daemon's merge to abort — an operator's
+  // in-progress conflict resolution must survive a daemon start.
+  const { branch } = await git.observePrimaryCheckout();
+  if (branch !== defaultBranch) {
+    log.warn(
+      `MERGE_HEAD present on ${branch}, not ${defaultBranch}; not landing's merge, leaving it untouched`,
+    );
+    return;
+  }
   if (dryRun) {
     log.warn("staged merge left by a previous run (MERGE_HEAD present); would abort");
     return;
@@ -406,7 +417,7 @@ async function runDaemonLoop(
   });
   const observations = new PassCachedChangeHost(github);
 
-  if (managedRuntime) await selfHealStagedMerge(git, log, dryRun);
+  if (managedRuntime) await selfHealStagedMerge(git, log, dryRun, runtime.defaultBranch);
 
   const maintenance = new LegacyWorkflowService(
     new CleanupService(
