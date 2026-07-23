@@ -112,6 +112,11 @@ export class GitService implements WorkspaceDriver {
     );
   }
 
+  /** A staged-but-uncommitted merge (MERGE_HEAD present) is in progress. */
+  async mergeInProgress(): Promise<boolean> {
+    return (await this.#run(["rev-parse", "-q", "--verify", "MERGE_HEAD"])).exitCode === 0;
+  }
+
   async abortMerge(): Promise<void> {
     await this.#run(["merge", "--abort"], true);
   }

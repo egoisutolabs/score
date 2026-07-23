@@ -38,3 +38,31 @@ test("phases run in declared order and a throwing phase does not skip the rest",
   expect(failures).toEqual(["landing: build gate exploded"]);
   expect(daemon.tick).toBe(2);
 });
+
+test("shouldStop skips remaining phases between them, never mid-phase", async () => {
+  let stopping = false;
+  const ran: string[] = [];
+  const daemon = new DaemonService(
+    [
+      phase("one", 1, async () => {
+        ran.push("one");
+        // The stop lands while phase one runs; it must still finish.
+        stopping = true;
+        ran.push("one finished");
+      }),
+      phase("two", 1, async () => {
+        ran.push("two");
+      }),
+    ],
+    () => {},
+    () => stopping,
+  );
+
+  await daemon.runPass();
+  expect(ran).toEqual(["one", "one finished"]);
+  expect(daemon.tick).toBe(1);
+
+  // Stop already requested when the next pass starts: nothing runs at all.
+  await daemon.runPass();
+  expect(ran).toEqual(["one", "one finished"]);
+});

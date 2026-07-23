@@ -1,12 +1,16 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { GitService } from "@/adapters/git";
 import type { ScoreConfig } from "@/features/config/model";
 import { resolveProjects } from "@/features/config/resolve";
-import { bootstrapDaemon, parseDaemonArguments } from "@/features/daemon/run";
+import { bootstrapDaemon, parseDaemonArguments, selfHealStagedMerge } from "@/features/daemon/run";
 import type { CommandResult } from "@/shared/command";
 import type { CommandRunner, RunCommandOptions } from "@/shared/command-runner";
+import type { Logger, LogLine } from "@/shared/log";
 
 test("daemon flags parse and default to the long-running loop", () => {
   expect(parseDaemonArguments([])).toEqual({
@@ -366,4 +370,130 @@ test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
       expect(boot.agent).toEqual({ harness: "claude" });
     },
   );
+});
+
+/** Real subprocess runner for the self-heal fixture-repo tests. */
+class ExecRunner implements CommandRunner {
+  async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
+    try {
+      const stdout = execFileSync(command[0] as string, command.slice(1), {
+        cwd: options.cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return {
+        command,
+        cwd: options.cwd,
+        exitCode: 0,
+        stdout,
+        stderr: "",
+        timedOut: false,
+        dryRun: false,
+      };
+    } catch (error) {
+      const failure = error as { status?: number | null; stdout?: string; stderr?: string };
+      return {
+        command,
+        cwd: options.cwd,
+        exitCode: failure.status ?? 1,
+        stdout: failure.stdout ?? "",
+        stderr: failure.stderr ?? "",
+        timedOut: false,
+        dryRun: false,
+      };
+    }
+  }
+}
+
+class CaptureLogger implements Logger {
+  readonly logged: LogLine[] = [];
+  info(text: string): void {
+    this.logged.push({ level: "info", text });
+  }
+  warn(text: string): void {
+    this.logged.push({ level: "warn", text });
+  }
+  debug(text: string): void {
+    this.logged.push({ level: "debug", text });
+  }
+  lines(lines: readonly LogLine[]): void {
+    this.logged.push(...lines);
+  }
+}
+
+/** git repo with one commit; when staged, a synthetic MERGE_HEAD points at HEAD. */
+async function fixtureRepo(stagedMerge: boolean): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), "score-selfheal-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "score@test.invalid");
+  git("config", "user.name", "score");
+  git("config", "commit.gpgsign", "false");
+  await writeFile(join(repo, "README.md"), "fixture\n");
+  git("add", "README.md");
+  git("commit", "-m", "initial");
+  if (stagedMerge)
+    await writeFile(join(repo, ".git", "MERGE_HEAD"), `${git("rev-parse", "HEAD")}\n`);
+  return repo;
+}
+
+test("self-heal aborts a staged merge left in the checkout and logs one recovery line", async () => {
+  const repo = await fixtureRepo(true);
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+  const log = new CaptureLogger();
+
+  await selfHealStagedMerge(git, log, false);
+
+  expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+  expect(log.logged).toEqual([
+    { level: "warn", text: "recovered staged merge left by a previous run" },
+  ]);
+});
+
+test("self-heal is silent when no merge is in progress", async () => {
+  const repo = await fixtureRepo(false);
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+  const log = new CaptureLogger();
+
+  await selfHealStagedMerge(git, log, false);
+
+  expect(log.logged).toEqual([]);
+});
+
+test("self-heal fails closed when the abort leaves MERGE_HEAD behind", async () => {
+  const stuck = {
+    mergeInProgress: async () => true,
+    abortMerge: async () => {},
+  };
+  await expect(selfHealStagedMerge(stuck, new CaptureLogger(), false)).rejects.toThrow(
+    /failed to abort the staged merge/,
+  );
+});
+
+test("self-heal under dry-run only announces the abort it would run", async () => {
+  let aborted = false;
+  const git = {
+    mergeInProgress: async () => true,
+    abortMerge: async () => {
+      aborted = true;
+    },
+  };
+  const log = new CaptureLogger();
+
+  await selfHealStagedMerge(git, log, true);
+
+  expect(aborted).toBe(false);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: "staged merge left by a previous run (MERGE_HEAD present); would abort",
+    },
+  ]);
 });

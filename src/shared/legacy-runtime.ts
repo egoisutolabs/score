@@ -61,15 +61,31 @@ export function positiveEnvironment(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/** Legacy signal behavior finishes the current tick and does not interrupt sleep. */
+export interface PollingLoopOptions {
+  /** Managed mode: a stop signal wakes the idle sleep instead of waiting out the tick. */
+  readonly interruptible?: boolean;
+  /** Fires once, on the first stop signal — the seam for status writes and between-phase skips. */
+  readonly onStopRequested?: () => void;
+}
+
+/**
+ * Legacy signal behavior (no options) finishes the current tick and does not
+ * interrupt sleep. Managed mode passes `interruptible` so SIGTERM during the
+ * idle sleep exits promptly instead of risking launchd's SIGKILL.
+ */
 export async function runPollingLoop(
   tick: () => Promise<void>,
   once: boolean,
   pollIntervalMs: number,
+  options: PollingLoopOptions = {},
 ): Promise<void> {
   let stopRequested = false;
+  let wake = () => {};
   const stop = () => {
+    if (stopRequested) return;
     stopRequested = true;
+    options.onStopRequested?.();
+    wake();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
@@ -77,7 +93,18 @@ export async function runPollingLoop(
     do {
       await tick();
       if (once || stopRequested) break;
-      await Bun.sleep(pollIntervalMs);
+      if (options.interruptible) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, pollIntervalMs);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        wake = () => {};
+      } else {
+        await Bun.sleep(pollIntervalMs);
+      }
     } while (!stopRequested);
   } finally {
     process.off("SIGINT", stop);
