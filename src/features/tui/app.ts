@@ -2,8 +2,10 @@ import {
   BoxRenderable,
   type CliRenderer,
   createCliRenderer,
+  fg,
   type KeyEvent,
   TextRenderable,
+  t,
 } from "@opentui/core";
 import { BunCommandRunner } from "@/adapters/command-runner";
 import { logsDir } from "@/features/config/layout";
@@ -16,9 +18,15 @@ import { fleetSnapshot, type ProjectView } from "@/features/tui/snapshot";
 import { LogTail } from "@/features/tui/tail";
 
 const RAIL_WIDTH = 26;
+const HEADER_HEIGHT = 3;
+const PANE_HEADER_HEIGHT = 1;
 const CONFIG_HEIGHT = 6;
 const FOOTER_HEIGHT = 1;
 const POLL_MS = 1000;
+/** Rail border (2) — the card content area inside the projects box. */
+const RAIL_INNER = RAIL_WIDTH - 2;
+/** Rail (26) + log box border (2) + paddingLeft (1) — the wrap width for log rows. */
+const LOG_CHROME = RAIL_WIDTH + 3;
 
 const DOT_CHAR: Record<Dot, string> = { green: "●", amber: "●", red: "●", gray: "○" };
 const DOT_COLOR: Record<Dot, string> = {
@@ -80,6 +88,16 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     finish = resolve;
   });
 
+  // Top header bar per the wireframe: app name left, fleet summary right.
+  const headerText = new TextRenderable(renderer, { id: "header-text", content: "" });
+  const headerBox = new BoxRenderable(renderer, {
+    id: "header",
+    border: true,
+    width: "100%",
+    height: HEADER_HEIGHT,
+    paddingLeft: 1,
+  });
+  headerBox.add(headerText);
   const railBox = new BoxRenderable(renderer, {
     id: "rail",
     title: "projects",
@@ -89,6 +107,14 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     flexDirection: "column",
   });
   const railRows: TextRenderable[] = [];
+  // Selected-project header row above the config box: name left, state right.
+  const paneHeaderText = new TextRenderable(renderer, { id: "pane-header-text", content: "" });
+  const paneHeaderBox = new BoxRenderable(renderer, {
+    id: "pane-header",
+    height: PANE_HEADER_HEIGHT,
+    paddingLeft: 1,
+  });
+  paneHeaderBox.add(paneHeaderText);
   const configText = new TextRenderable(renderer, { id: "config-text", content: "" });
   const configBox = new BoxRenderable(renderer, {
     id: "config",
@@ -98,11 +124,11 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     paddingLeft: 1,
   });
   configBox.add(configText);
-  // wrapMode none keeps one log line per row, so the visible-slice math holds.
+  // Lines are wrapped by hand into rows, so the visible-slice math stays exact.
   const logText = new TextRenderable(renderer, { id: "log-text", content: "", wrapMode: "none" });
   const logBox = new BoxRenderable(renderer, {
     id: "log",
-    title: "log",
+    title: "logs",
     border: true,
     flexGrow: 1,
     paddingLeft: 1,
@@ -113,6 +139,7 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     flexGrow: 1,
     flexDirection: "column",
   });
+  rightColumn.add(paneHeaderBox);
   rightColumn.add(configBox);
   rightColumn.add(logBox);
   const mainRow = new BoxRenderable(renderer, {
@@ -137,6 +164,7 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     height: "100%",
     flexDirection: "column",
   });
+  root.add(headerBox);
   root.add(mainRow);
   root.add(footerBox);
   renderer.root.add(root);
@@ -144,32 +172,67 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
   const selectedView = (): ProjectView | undefined =>
     views.find((view) => view.key === selectedKey);
 
+  /** left-pad-right layout: `left……right` across the given content width. */
+  const spread = (left: string, right: string, width: number): string => {
+    const pad = Math.max(1, width - left.length - right.length);
+    return `${left}${" ".repeat(pad)}${right}`;
+  };
+
   const render = (): void => {
     // A fire-and-forget tail poll can land after quit tore the renderer down.
     if (renderer.isDestroyed) return;
-    while (railRows.length < views.length) {
+
+    const running = views.filter((view) => view.job?.pid !== undefined).length;
+    const summary = `● ${running} running`;
+    const headerPad = Math.max(1, renderer.terminalWidth - 4 - "score".length - summary.length);
+    headerText.content = t`score${" ".repeat(headerPad)}${fg("#3fb950")(summary)}`;
+    headerText.fg = "#e6edf3";
+
+    // Rail: a two-line card per project (name + dot, then its tick) with a
+    // separator row between cards — per the wireframe.
+    const CARD_ROWS = 3;
+    while (railRows.length < views.length * CARD_ROWS) {
       const row = new TextRenderable(renderer, { id: `rail-row-${railRows.length}`, content: "" });
       railBox.add(row);
       railRows.push(row);
     }
     railRows.forEach((row, index) => {
-      const view = views[index];
+      const view = views[Math.floor(index / CARD_ROWS)];
       if (view === undefined) {
         row.content = "";
         return;
       }
-      const tick = view.status !== null && view.status.tick !== null ? `#${view.status.tick}` : "-";
-      row.content = `${view.key === selectedKey ? "▸" : " "}${DOT_CHAR[view.dot]} ${view.key
-        .slice(0, RAIL_WIDTH - 9)
-        .padEnd(RAIL_WIDTH - 9)} ${tick}`;
-      row.fg = DOT_COLOR[view.dot];
+      const kind = index % CARD_ROWS;
+      if (kind === 0) {
+        const marker = view.key === selectedKey ? "▸" : " ";
+        const name = `${marker}${view.key.slice(0, RAIL_INNER - 4)}`;
+        // Name in the row's own color; only the dot carries the status color.
+        row.content = t`${name.padEnd(RAIL_INNER - 2)}${fg(DOT_COLOR[view.dot])(DOT_CHAR[view.dot])}`;
+        row.fg = view.key === selectedKey ? "#e6edf3" : "#c9d1d9";
+      } else if (kind === 1) {
+        const tick = view.status !== null && view.status.tick !== null ? view.status.tick : "-";
+        row.content = ` tick ${tick}`;
+        row.fg = "#8b949e";
+      } else {
+        // No separator after the last card.
+        row.content =
+          Math.floor(index / CARD_ROWS) === views.length - 1 ? "" : "─".repeat(RAIL_INNER);
+        row.fg = "#30363d";
+      }
     });
 
     const selected = selectedView();
-    configBox.title = selected === undefined ? "config" : selected.key;
+    const paneWidth = renderer.terminalWidth - RAIL_WIDTH - 2;
     if (selected === undefined) {
+      paneHeaderText.content = "";
       configText.content = "no projects — run: score up";
     } else {
+      paneHeaderText.content = spread(
+        selected.key,
+        `${DOT_WORD[selected.dot]} | x to toggle`,
+        paneWidth,
+      );
+      paneHeaderText.fg = "#e6edf3";
       const state = [
         DOT_WORD[selected.dot],
         ...(selected.job?.pid !== undefined ? [`pid ${selected.job.pid}`] : []),
@@ -181,20 +244,39 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
           : `agent     ${selected.resolved.agent}\ntick      ${selected.resolved.tickIntervalMs} ms\nparallel  ${selected.resolved.maxParallel}\nstate     ${state}`;
     }
 
-    const lines = tail?.lines ?? [];
-    const visible = Math.max(1, renderer.terminalHeight - CONFIG_HEIGHT - FOOTER_HEIGHT - 2);
-    const maxStart = Math.max(0, lines.length - visible);
+    // Long lines wrap (the wireframe wraps them) — rows are cut by hand so the
+    // scroll window stays exact; `scroll` indexes wrapped rows, not file lines.
+    const wrapWidth = Math.max(20, renderer.terminalWidth - LOG_CHROME);
+    const rows = (tail?.lines ?? []).flatMap((line) => {
+      const chunks: string[] = [];
+      for (let at = 0; at < Math.max(1, line.length); at += wrapWidth) {
+        chunks.push(line.slice(at, at + wrapWidth));
+      }
+      return chunks;
+    });
+    const visible = Math.max(
+      1,
+      renderer.terminalHeight -
+        HEADER_HEIGHT -
+        PANE_HEADER_HEIGHT -
+        CONFIG_HEIGHT -
+        FOOTER_HEIGHT -
+        2,
+    );
+    const maxStart = Math.max(0, rows.length - visible);
     scroll = follow ? maxStart : Math.min(scroll, maxStart);
-    logText.content = lines.slice(scroll, scroll + visible).join("\n");
-    logBox.title = tail === null ? "log" : `log — ${tail.file}${follow ? " · follow" : ""}`;
+    logText.content = rows.slice(scroll, scroll + visible).join("\n");
+    logBox.title = tail === null ? "logs" : `logs — ${tail.file}${follow ? " · follow" : ""}`;
 
     const error = actionError ?? pollError;
-    footerText.content =
+    const footer =
       error !== null
         ? `error: ${error}`
         : help
           ? "j/k select project · x stop/start via supervisor · r restart · f toggle follow · g top · G end · q quit viewer (daemons keep running)"
           : `j/k select · x ${selected?.job?.pid !== undefined ? "stop" : "start"} · r restart · f follow${follow ? " *" : ""} · g/G · ? help · q quit`;
+    // Errors read left-aligned; the shortcut line sits bottom-right per the wireframe.
+    footerText.content = error !== null ? footer : spread("", footer, renderer.terminalWidth - 2);
   };
 
   const select = (key: string | null): void => {
