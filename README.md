@@ -74,3 +74,12 @@ bun run --cwd score check
 bun run --cwd score test
 bun run --cwd score build
 ```
+
+## License
+
+Copyright (C) 2026 egoisutolabs.com
+
+Score is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3 of the License only. See [LICENSE](LICENSE)
+for the full text.
