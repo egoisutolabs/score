@@ -1,8 +1,9 @@
 {
-  "name": "score",
+  "name": "@egoisutolabs/score",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "license": "AGPL-3.0-only",
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --hot src/index.ts",
