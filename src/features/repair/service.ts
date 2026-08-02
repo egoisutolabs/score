@@ -22,6 +22,12 @@ export interface RepairServiceOptions {
    * an agent already working on this PR is left alone.
    */
   shouldAct?(pullRequestNumber: number, defects: RepairDefects, headSha?: string): boolean;
+  /**
+   * Landing's build-red handoff (epic decision 11): the gate-failure tail for
+   * this PR, if landing's merged-tree gate failed. Unset for the manual
+   * subcommand — its scan stays GitHub-facts-only.
+   */
+  buildRed?(pullRequestNumber: number): string | undefined;
 }
 
 /** One-shot port of shepherd-prs.sh. Repair never owns merge authority. */
@@ -60,10 +66,12 @@ export class RepairService {
         }
         return !["SUCCESS", "PENDING", "EXPECTED"].includes(check.state);
       }).length;
+      const buildRed = this.options.buildRed?.(change.number);
       const defects: RepairDefects = {
         conflicting: change.mergeable === "CONFLICTING",
         unresolvedThreads,
         failingChecks,
+        ...(buildRed !== undefined && { buildRed }),
       };
       if (!this.options.includeClean && !needsRepair(defects)) {
         results.push({ pullRequestNumber: change.number, action: "NOT_NEEDED", dryRun });
@@ -87,7 +95,11 @@ export class RepairService {
       const worktree = (await this.workspace.observeWorktrees()).find(
         (candidate) => candidate.branch === change.headRefName,
       );
-      const message = renderRepairPrompt(change.number, this.options.verificationCommands);
+      const message = renderRepairPrompt(
+        change.number,
+        this.options.verificationCommands,
+        buildRed,
+      );
 
       if (session) {
         if (!dryRun) await this.agents.ping(session, message);

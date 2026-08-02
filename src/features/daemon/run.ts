@@ -14,7 +14,7 @@ import { PassCachedChangeHost } from "@/features/daemon/observations";
 import { RepairLedger } from "@/features/daemon/repair-ledger";
 import type { DaemonPhase } from "@/features/daemon/service";
 import { DaemonService } from "@/features/daemon/service";
-import { gateFailureFrom, StatusWriter } from "@/features/daemon/status";
+import { applyGateVerdicts, gateFailureFrom, StatusWriter } from "@/features/daemon/status";
 import { DispatchService } from "@/features/dispatch/service";
 import { TaskBriefingService } from "@/features/dispatch/task-briefing";
 import { renderLandingTick } from "@/features/landing/render";
@@ -477,6 +477,7 @@ async function runDaemonLoop(
       onlyPullRequests: new Set<string>(),
       noSpawn: false,
       shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
+      buildRed: (number) => gateVerdicts.get(number),
     },
     github,
     git,
@@ -488,6 +489,9 @@ async function runDaemonLoop(
   // Retained across passes: landing runs every second tick, and status keeps
   // carrying the last landing verdict until the next landing tick replaces it.
   let lastGateFailure: string | null = null;
+  // Landing → repair build-red handoff (epic decision 11): repair's own scan
+  // sees only GitHub facts, so landing's merged-tree verdicts ride this map.
+  const gateVerdicts = new Map<number, string>();
   let passError: string | null = null;
   let stopping = false;
   const phases: readonly DaemonPhase[] = [
@@ -512,6 +516,7 @@ async function runDaemonLoop(
         // undefined = no gate verdict this tick; the last known failure stands.
         const gateVerdict = gateFailureFrom(results);
         if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
+        applyGateVerdicts(gateVerdicts, results);
         log.lines(renderLandingTick(results));
         pass.merged += results.filter(
           (result) => result.tag === "merged" || result.tag === "would-merge",

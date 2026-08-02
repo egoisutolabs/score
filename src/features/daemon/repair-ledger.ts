@@ -12,7 +12,8 @@ function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
   return (
     a.conflicting === b.conflicting &&
     a.unresolvedThreads === b.unresolvedThreads &&
-    a.failingChecks === b.failingChecks
+    a.failingChecks === b.failingChecks &&
+    a.buildRed === b.buildRed
   );
 }
 

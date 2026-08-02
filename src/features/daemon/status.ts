@@ -36,6 +36,27 @@ export function gateFailureFrom(results: readonly LandingResult[]): string | nul
 }
 
 /**
+ * Per-PR build-red verdicts landing hands to repair (epic decision 11).
+ * Same standing semantics as gateFailureFrom: build-red sets, a green gate run
+ * clears, a tick where gates never ran (skipped/conflict/checks-pending) keeps
+ * the last verdict, and a PR absent from the candidates (closed, merged,
+ * label-skipped) is forgotten.
+ */
+export function applyGateVerdicts(
+  verdicts: Map<number, string>,
+  results: readonly LandingResult[],
+): void {
+  const live = new Set(results.map((result) => result.pullRequestNumber));
+  for (const number of verdicts.keys()) {
+    if (!live.has(number)) verdicts.delete(number);
+  }
+  for (const result of results) {
+    if (result.tag === "build-red") verdicts.set(result.pullRequestNumber, result.note);
+    else if (GREEN_GATE_TAGS.has(result.tag)) verdicts.delete(result.pullRequestNumber);
+  }
+}
+
+/**
  * Single-writer status heartbeat. Each write merges into the last full
  * snapshot and lands via tmp + rename, so a reader polling mid-write always
  * parses a complete file. Writes are chained in order; settle() flushes the

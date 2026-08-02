@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
-import { gateFailureFrom, StatusWriter } from "@/features/daemon/status";
+import { applyGateVerdicts, gateFailureFrom, StatusWriter } from "@/features/daemon/status";
 import type { LandingResult } from "@/features/landing/change";
 
 const sandboxes: string[] = [];
@@ -42,6 +42,34 @@ test("gateFailureFrom carries the latest build-red tail and clears only on a gre
   ).toBeUndefined();
   // ready = soak complete under --no-merge; gates ran green.
   expect(gateFailureFrom([landing("skipped", "not processed"), landing("ready", "ok")])).toBeNull();
+});
+
+test("applyGateVerdicts sets on build-red, keeps while gates idle, clears on green or gone", () => {
+  const verdicts = new Map<number, string>();
+  const result = (
+    pullRequestNumber: number,
+    tag: LandingResult["tag"],
+    note = "",
+  ): LandingResult => ({ pullRequestNumber, tag, note });
+
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345")]);
+  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+
+  // A tick where gates never ran keeps the last verdict standing.
+  applyGateVerdicts(verdicts, [result(7, "skipped", "not processed")]);
+  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+  applyGateVerdicts(verdicts, [result(7, "conflict")]);
+  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+
+  // A green gate run clears it; a later failure sets the new tail.
+  applyGateVerdicts(verdicts, [result(7, "soaking")]);
+  expect(verdicts.has(7)).toBe(false);
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:test — 2 failed")]);
+  expect(verdicts.get(7)).toBe("daemon:test — 2 failed");
+
+  // A PR no longer among the candidates (closed, merged, label-skipped) is forgotten.
+  applyGateVerdicts(verdicts, [result(8, "skipped", "not processed")]);
+  expect(verdicts.has(7)).toBe(false);
 });
 
 test("writes merge into a full schema snapshot and round-trip as JSON", async () => {

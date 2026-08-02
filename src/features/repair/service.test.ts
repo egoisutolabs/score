@@ -55,6 +55,7 @@ class RepairWorkspace implements WorkspaceDriver {
 class RepairAgents implements AgentRuntime {
   sessions: string[] = [];
   pinged: string[] = [];
+  pingedMessages: string[] = [];
   spawned: number[] = [];
   spawnedWith: AgentConfig[] = [];
   async sessionExists() {
@@ -64,8 +65,9 @@ class RepairAgents implements AgentRuntime {
     return this.sessions;
   }
   async startImplementation() {}
-  async ping(sessionName: string) {
+  async ping(sessionName: string, message: string) {
     this.pinged.push(sessionName);
+    this.pingedMessages.push(message);
   }
   async startRepair(
     pullRequestNumber: number,
@@ -172,6 +174,40 @@ test("review-thread query failure retains shepherd's fail-open zero", async () =
   };
   const result = await new RepairService(options, host, workspace, agents).run();
   expect(result[0]?.action).toBe("NOT_NEEDED");
+});
+
+test("a GitHub-clean PR with a landing build-red verdict is repaired, tail in the prompt", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const clean = { ...change(), mergeable: "MERGEABLE" as const };
+  const host: ChangeHost = {
+    ...changes(),
+    async observeOpenChanges() {
+      return [clean];
+    },
+    async observeRepairChanges() {
+      return [clean];
+    },
+  };
+  const seenDefects: unknown[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      buildRed: (pullRequestNumber) =>
+        pullRequestNumber === 9 ? "daemon:check — TS2345 boom" : undefined,
+      shouldAct: (_number, defects) => {
+        seenDefects.push(defects);
+        return true;
+      },
+    },
+    host,
+    new RepairWorkspace(),
+    agents,
+  ).run();
+  expect(result[0]?.action).toBe("PINGED");
+  expect(agents.pingedMessages[0]).toContain("daemon:check — TS2345 boom");
+  // The verdict rides the defects so the ledger re-pings when the tail changes.
+  expect(seenDefects[0]).toMatchObject({ buildRed: "daemon:check — TS2345 boom" });
 });
 
 test("default session suffix matches the sessions dispatch creates, and only those", () => {

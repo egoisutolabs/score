@@ -20,16 +20,32 @@ export interface RepairDefects {
   readonly conflicting: boolean;
   readonly unresolvedThreads: number;
   readonly failingChecks: number;
+  /**
+   * Landing's build-red gate-failure tail (epic decision 11): the PR merges
+   * textually but fails the merged-tree gate — invisible to GitHub CI, so
+   * repair's own scan can never see it. Undefined = no verdict.
+   */
+  readonly buildRed?: string;
 }
 
 export function needsRepair(defects: RepairDefects): boolean {
-  return defects.conflicting || defects.unresolvedThreads > 0 || defects.failingChecks > 0;
+  return (
+    defects.conflicting ||
+    defects.unresolvedThreads > 0 ||
+    defects.failingChecks > 0 ||
+    defects.buildRed !== undefined
+  );
 }
 
 /** Repair prompt names every defect class while explicitly withholding merge authority. */
 export function renderRepairPrompt(
   pullRequestNumber: number,
   verificationCommands: string,
+  buildRed?: string,
 ): string {
-  return `Follow-up on your PR #${pullRequestNumber}: it needs cleanup before it can land. Please do all of: (1) git fetch origin && merge origin/main into this branch, resolving every conflict correctly per the code's intent; (2) address any unresolved review threads — list them with gh api graphql reviewThreads where isResolved is false, fix each in code, then resolve via resolveReviewThread; (3) check failing CI with \`gh pr checks ${pullRequestNumber}\` and \`gh run view --log-failed\`, then fix the root cause; (4) run verification: ${verificationCommands}; (5) commit and push. Do NOT merge the PR — just make it green and conflict-free, then report.`;
+  const gateNote =
+    buildRed === undefined
+      ? ""
+      : ` Note: this PR also fails the local merged-tree build gate, which GitHub CI cannot see — after merging origin/main, fix this failure too: ${buildRed}.`;
+  return `Follow-up on your PR #${pullRequestNumber}: it needs cleanup before it can land. Please do all of: (1) git fetch origin && merge origin/main into this branch, resolving every conflict correctly per the code's intent; (2) address any unresolved review threads — list them with gh api graphql reviewThreads where isResolved is false, fix each in code, then resolve via resolveReviewThread; (3) check failing CI with \`gh pr checks ${pullRequestNumber}\` and \`gh run view --log-failed\`, then fix the root cause; (4) run verification: ${verificationCommands}; (5) commit and push. Do NOT merge the PR — just make it green and conflict-free, then report.${gateNote}`;
 }
