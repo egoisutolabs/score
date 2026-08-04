@@ -1,9 +1,13 @@
 # Score guidance
 
-- Use Bun and TypeScript.
+- Use Bun and TypeScript. The repo is a Bun-workspaces + Turborepo monorepo:
+  `apps/{daemon,tui,server}` are entry points; `packages/{shared,core,agents,tracker}`
+  are libraries. The `score` CLI is `apps/daemon`.
 - Keep models as interfaces and types; do not add Zod or any schema-builder
   DSL — interfaces read as the shape directly, schema objects are indirection.
-- Keep code feature-first under `src/features/`.
+- Keep code feature-first: domain phases live in `packages/core/src/<feature>/`;
+  ports (`agent-runtime`, `workspace-driver`, `landing/port`, `dispatch/work-source`)
+  are owned by core, implementations by `packages/{agents,tracker}`.
 - Preserve the three separate legacy boundaries: autopilot, repair, and landing.
 - Do not add policy that is absent from `legacy/` when working on parity.
 - Run `bun run check`, `bun run test`, and `bun run build` from this directory.

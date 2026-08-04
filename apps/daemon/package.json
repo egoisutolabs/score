@@ -1,0 +1,20 @@
+{
+  "name": "@egoisutolabs/score",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dev": "bun --hot src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --external '@opentui/*'",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@score/agents": "workspace:*",
+    "@score/core": "workspace:*",
+    "@score/shared": "workspace:*",
+    "@score/tracker": "workspace:*",
+    "@score/tui": "workspace:*"
+  }
+}

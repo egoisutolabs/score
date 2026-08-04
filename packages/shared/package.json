@@ -1,0 +1,16 @@
+{
+  "name": "@score/shared",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
+  }
+}

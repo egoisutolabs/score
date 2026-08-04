@@ -44,11 +44,11 @@ no such ledger and always acts.
 | `WORKTREE_ROOT` | `~/wt` | Parent of the per-repo worktree directory. |
 | `EPIC_LABEL_PREFIX` | `epic:` | Label prefix marking dispatchable issues. |
 | `AGENT_CMD` | `claude` | Command repair spawns in a worktree. |
-| `VERIFY_CMDS` | `cd daemon && bun run check && bun test` | Verification repair asks an agent to run. |
+| `VERIFY_CMDS` | `bun run check && bun run test && bun run build` | Verification dispatch briefs and repair asks an agent to run. |
 
 Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
-`ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `src/features/daemon/run.ts` and
-`src/features/repair/run.ts`.
+`ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/run.ts` and
+`apps/daemon/src/repair/run.ts`.
 
 ## Supervisor platforms
 

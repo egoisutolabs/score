@@ -1,0 +1,6 @@
+{
+  "name": "@score/server",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only"
+}
