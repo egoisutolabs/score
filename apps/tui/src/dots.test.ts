@@ -52,6 +52,8 @@ describe("deriveDot", () => {
     ["deliberately stopped, stale running status", stoppedJob, status(), "gray"],
     ["not installed at all", undefined, null, "gray"],
     ["not installed, leftover status", undefined, status(), "gray"],
+    // A restarted daemon must not inherit its predecessor's fresh heartbeat.
+    ["replacement pid, predecessor's fresh status", runningJob, status({ pid: 999 }), "amber"],
   ];
 
   for (const [name, job, file, expected] of table) {

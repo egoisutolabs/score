@@ -59,7 +59,8 @@ describe("fleetSnapshot", () => {
     // Absent last_error is not an error, absent tick renders as none.
     expect(view?.status?.last_error).toBeNull();
     expect(view?.status?.tick).toBeNull();
-    expect(view?.dot).toBe("green");
+    // No pid in the file means the heartbeat cannot certify the live process.
+    expect(view?.dot).toBe("amber");
   });
 
   it("falls back to the real defaults for a partial resolved.json", async () => {

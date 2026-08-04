@@ -9,7 +9,7 @@ import {
 import { jobLabel, renderPlist } from "@score/core/supervisor/plist";
 import { plan } from "@score/core/supervisor/reconcile";
 import { BunCommandRunner } from "@score/shared/adapters/command-runner";
-import { projectDir, resolvedPath } from "@score/shared/config/layout";
+import { projectDir, resolvedPath, scoreHome } from "@score/shared/config/layout";
 import { loadConfig, PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import type { ResolvedProject } from "@score/shared/config/model";
 import { resolveProjects } from "@score/shared/config/resolve";
@@ -40,7 +40,9 @@ function defaultSupervisor(): { adapter: SupervisorAdapter; render: DefinitionRe
 function jobEnvironment(): Record<string, string> {
   return {
     ...(process.env.PATH !== undefined && { PATH: process.env.PATH }),
-    ...(process.env.SCORE_HOME !== undefined && { SCORE_HOME: process.env.SCORE_HOME }),
+    // The resolved absolute home, never the raw env value: the job runs with
+    // cwd=main_location, where a relative SCORE_HOME would name another dir.
+    ...(process.env.SCORE_HOME !== undefined && { SCORE_HOME: scoreHome() }),
   };
 }
 

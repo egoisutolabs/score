@@ -1,6 +1,5 @@
-import { join } from "node:path";
-
 import type { BuildGate, LandingResult, PullRequestObservation } from "@score/core/landing/change";
+import { VERIFY_ARGV } from "@score/core/verify";
 
 const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
@@ -83,32 +82,21 @@ export function evaluatePreconditions(
   return null;
 }
 
-/** Touched-area gates are intentionally identical to babysit-prs.mjs. */
-export function gatesFor(
-  change: PullRequestObservation,
-  repositoryRoot: string,
-): readonly BuildGate[] {
-  const directories = new Set(change.files.map((file) => file.path.split("/")[0]));
-  const gates: BuildGate[] = [];
-  if (directories.has("daemon")) {
-    gates.push({
-      name: "daemon",
-      cwd: join(repositoryRoot, "daemon"),
-      steps: [
-        { label: "check", command: ["bun", "run", "check"] },
-        { label: "test", command: ["bun", "test"], retry: true },
-      ],
-    });
-  }
-  if (directories.has("dashboard")) {
-    gates.push({
-      name: "dashboard",
-      cwd: join(repositoryRoot, "dashboard"),
-      steps: [
-        { label: "lint", command: ["bun", "run", "lint"] },
-        { label: "build", command: ["bun", "run", "build"] },
-      ],
-    });
-  }
-  return gates;
+/**
+ * One project-agnostic merged-tree gate: `make verify` at the repository root
+ * (the Score contract — see verify.ts). The legacy touched-area classifier
+ * (daemon/dashboard directories) described a repo layout no current target
+ * has, so every PR since the port merged with zero local gates. Fail-safe on
+ * purpose: the gate runs regardless of which files changed — an empty file
+ * list (API hiccup) must never read as green, and a repo without the Makefile
+ * target fails the gate instead of merging unverified.
+ */
+export function gatesFor(repositoryRoot: string): readonly BuildGate[] {
+  return [
+    {
+      name: "verify",
+      cwd: repositoryRoot,
+      steps: [{ label: "verify", command: [...VERIFY_ARGV], retry: true }],
+    },
+  ];
 }

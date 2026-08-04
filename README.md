@@ -3,17 +3,25 @@
 One daemon runs the whole issue → PR → green → merged pipeline:
 
 ```sh
-# cleanup + dispatch every tick, landing every 2 ticks, repair every tick
-bun run --cwd score start
+# from the repo root: cleanup + dispatch every tick, landing every 2 ticks, repair every tick
+bun run start
 ```
 
 ```sh
-bun run --cwd score start --once --dry-run --verbose --no-merge
+bun run start --once --dry-run --verbose --no-merge
 ```
 
 `--once` runs one full pass of every phase and exits. `--dry-run` reports what
 each phase would do without touching a session, a worktree, or a branch.
 `--no-merge` lets landing gate and soak but never commit the merge.
+
+Score has exactly one contract with every project it cranks: the repo exposes
+**`make verify`** at its root, running that project's full verification (check,
+tests, build — whatever the repo deems necessary) and exiting nonzero on
+failure. Landing's merged-tree gate runs it before any merge, and agent
+briefings point at it; the recipe lives in the repo's own Makefile, versioned
+with the code, so Score carries zero language assumptions — Bun, Go, Rust, all
+the same to it. A repo without the target never merges.
 
 Phases run strictly in order within a pass — **cleanup → dispatch → landing →
 repair** — which keeps the primary checkout single-writer and preserves the
@@ -23,7 +31,7 @@ never merges. A phase that throws is logged and the pass continues.
 `repair` also stays a manual one-shot, for when a specific PR needs a nudge now:
 
 ```sh
-bun run --cwd score start repair --only 12,14 --dry-run --include-clean --no-spawn
+bun run start repair --only 12,14 --dry-run --include-clean --no-spawn
 ```
 
 Under the daemon, repair leaves a PR alone while the agent it already pinged is
@@ -44,7 +52,6 @@ no such ledger and always acts.
 | `WORKTREE_ROOT` | `~/wt` | Parent of the per-repo worktree directory. |
 | `EPIC_LABEL_PREFIX` | `epic:` | Label prefix marking dispatchable issues. |
 | `AGENT_CMD` | `claude` | Command repair spawns in a worktree. |
-| `VERIFY_CMDS` | `bun run check && bun run test && bun run build` | Verification dispatch briefs and repair asks an agent to run. |
 
 Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
 `ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/run.ts` and
@@ -70,9 +77,9 @@ enforced.
 ## Verify
 
 ```sh
-bun run --cwd score check
-bun run --cwd score test
-bun run --cwd score build
+bun run check
+bun run test
+bun run build
 ```
 
 ## License

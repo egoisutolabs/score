@@ -11,7 +11,6 @@ const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 export interface RepairServiceOptions {
   readonly agent: AgentConfig;
-  readonly verificationCommands: string;
   readonly sessionSuffix: string;
   readonly includeClean: boolean;
   readonly onlyPullRequests: ReadonlySet<string>;
@@ -95,11 +94,7 @@ export class RepairService {
       const worktree = (await this.workspace.observeWorktrees()).find(
         (candidate) => candidate.branch === change.headRefName,
       );
-      const message = renderRepairPrompt(
-        change.number,
-        this.options.verificationCommands,
-        buildRed,
-      );
+      const message = renderRepairPrompt(change.number, buildRed);
 
       if (session) {
         if (!dryRun) await this.agents.ping(session, message);

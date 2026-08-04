@@ -17,7 +17,7 @@ function issue(): IssueObservation {
 
 test("briefing carries the issue, prior comments, and the portable policy contract", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService("bun run check && bun test").render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity);
 
   expect(markdown).toContain("# Issue #9: Port the legacy task");
   expect(markdown).toContain("## Notes from Prior Work");
@@ -28,7 +28,7 @@ test("briefing carries the issue, prior comments, and the portable policy contra
 
 test("briefing is project-agnostic: configured verification, repo facts delegated", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService("make verify").render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity);
 
   // Verification is exactly what the project configured — nothing invented.
   expect(markdown).toContain("make verify");

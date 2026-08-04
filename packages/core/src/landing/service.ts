@@ -67,8 +67,8 @@ export class LandingService {
   }
 
   async #land(change: PullRequestObservation): Promise<LandingResult> {
-    const gates = gatesFor(change, this.options.repositoryRoot);
-    const gateNames = gates.map((gate) => gate.name).join("+") || "none (skills/docs)";
+    const gates = gatesFor(this.options.repositoryRoot);
+    const gateNames = gates.map((gate) => gate.name).join("+");
     // Legacy performs cheap checks before the GraphQL review-thread query.
     let blocker = evaluatePreconditions(change, 0);
     if (blocker) return blocker;

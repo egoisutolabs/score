@@ -25,6 +25,7 @@ import {
 import { agentConfigFromCommand } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner";
 import { logsDir, promptsDir, statusPath } from "@score/shared/config/layout";
+import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/model";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
@@ -328,6 +329,14 @@ interface ManagedRuntime {
 
 export async function runDaemon(args: readonly string[]): Promise<void> {
   const parsed = parseDaemonArguments(args);
+  // Validate before ANY path is built from the key: logsDir/statusPath join it
+  // into $SCORE_HOME/projects, and a separator-bearing key would escape that
+  // root. up/down validate at config load; this is the direct-invocation route.
+  if (parsed.project !== undefined && !PROJECT_KEY_PATTERN.test(parsed.project)) {
+    throw new Error(
+      `--project must match ${PROJECT_KEY_PATTERN} (got ${JSON.stringify(parsed.project)})`,
+    );
+  }
   if (!parsed.managed) {
     await runDaemonLoop(parsed, createLogger(parsed.verbose));
     return;
@@ -389,9 +398,6 @@ async function runDaemonLoop(
     managed ? fallback : positiveEnvironment(name, fallback);
   const maxMerges = positiveTuning("MAX_MERGES", 5);
   const soakTicks = positiveTuning("SOAK_TICKS", 2);
-  // Shared by dispatch's TASK.md briefing and repair's follow-up prompts.
-  const verificationCommands =
-    tuning("VERIFY_CMDS") || "bun run check && bun run test && bun run build";
   const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
     .split(",")
     .map((label) => label.trim().toLowerCase())
@@ -454,7 +460,7 @@ async function runDaemonLoop(
       observations,
       git,
       tmux,
-      new TaskBriefingService(verificationCommands),
+      new TaskBriefingService(),
     ),
   );
   const landing = new LandingService(
@@ -477,7 +483,6 @@ async function runDaemonLoop(
   const repair = new RepairService(
     {
       agent,
-      verificationCommands,
       sessionSuffix: tuning("SESSION_SUFFIX") || sessionSuffixForNamespace(namespace),
       includeClean: false,
       onlyPullRequests: new Set<string>(),

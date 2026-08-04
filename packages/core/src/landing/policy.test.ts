@@ -34,11 +34,10 @@ test("unknown mergeability passes host preconditions exactly like legacy", () =>
   expect(evaluatePreconditions(pullRequest({ mergeable: "UNKNOWN" }), 0)).toBeNull();
 });
 
-test("legacy touched-area gates preserve order and retry metadata", () => {
-  const gates = gatesFor(
-    pullRequest({ files: [{ path: "dashboard/app.ts" }, { path: "daemon/worker.ts" }] }),
-    "/repo",
-  );
-  expect(gates.map((gate) => gate.name)).toEqual(["daemon", "dashboard"]);
-  expect(gates[0]?.steps[1]?.retry).toBe(true);
+test("every PR gets the make-verify root gate, regardless of files", () => {
+  const gates = gatesFor("/repo");
+  expect(gates).toHaveLength(1);
+  expect(gates[0]?.cwd).toBe("/repo");
+  expect(gates[0]?.steps[0]?.command).toEqual(["make", "verify"]);
+  expect(gates[0]?.steps[0]?.retry).toBe(true);
 });

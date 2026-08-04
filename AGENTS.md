@@ -7,7 +7,10 @@
   DSL — interfaces read as the shape directly, schema objects are indirection.
 - Keep code feature-first: domain phases live in `packages/core/src/<feature>/`;
   ports (`agent-runtime`, `workspace-driver`, `landing/port`, `dispatch/work-source`)
-  are owned by core, implementations by `packages/{agents,tracker}`.
+  are owned by core, implementations by `packages/{agents,tracker}`. Known
+  exception: `GitService` lives in `packages/core/src/adapters/` beside the
+  `WorkspaceDriver` port it implements — none of the current packages is a
+  sensible home for a local-VCS adapter, and a package for one file isn't either.
 - Preserve the three separate legacy boundaries: autopilot, repair, and landing.
 - Do not add policy that is absent from `legacy/` when working on parity.
 - Run `bun run check`, `bun run test`, and `bun run build` from this directory.

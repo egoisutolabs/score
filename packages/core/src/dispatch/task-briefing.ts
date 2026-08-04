@@ -4,17 +4,16 @@ import { join } from "node:path";
 import type { IssueObservation } from "@score/core/dispatch/issue";
 import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing-port";
 import type { WorkIdentity } from "@score/core/dispatch/work";
+import { VERIFY_COMMAND } from "@score/core/verify";
 
 /**
  * Project-agnostic TASK.md briefing: the issue, the identity, and portable
  * policy. Repo facts are deliberately absent — the target repo's own
- * AGENTS.md/CLAUDE.md are the authority, and verification commands come from
- * per-project configuration, because this service briefs agents for any
- * project the fleet cranks, not just Score.
+ * AGENTS.md/CLAUDE.md are the authority, and verification is the one Score
+ * contract every project implements (`make verify`, see verify.ts) — because
+ * this service briefs agents for any project the fleet cranks, not just Score.
  */
 export class TaskBriefingService implements TaskBriefingWriter {
-  constructor(private readonly verificationCommands: string) {}
-
   render(issue: IssueObservation, identity: WorkIdentity): string {
     const priorComments = issue.comments.length
       ? `\n## Notes from Prior Work\n\n${issue.comments.map((comment) => `**@${comment.author?.login ?? "unknown"}**: ${comment.body.trim()}`).join("\n\n---\n\n")}\n`
@@ -42,14 +41,15 @@ Keep PR scope limited to this issue. Add tests for behavioral changes.
 
 ## Required Verification
 
-Run before committing:
+Run before committing, at the repository root:
 
 \`\`\`sh
-${this.verificationCommands}
+${VERIFY_COMMAND}
 \`\`\`
 
-If a check reports a pre-existing, unrelated failure, document it in the PR body and
-still run the rest.
+The repository's Makefile owns what that target does. If it reports a
+pre-existing, unrelated failure, document it in the PR body and still run the
+rest.
 
 ## Test Integrity
 

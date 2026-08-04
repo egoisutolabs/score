@@ -1,9 +1,15 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-/** Root of Score's state: `SCORE_HOME` if set, else `~/.score`. */
+/**
+ * Root of Score's state: `SCORE_HOME` if set, else `~/.score`. Always
+ * absolute: a relative SCORE_HOME would name a different directory in every
+ * process cwd — the supervisor writes state from the operator's shell while
+ * the daemon it starts runs in the project checkout.
+ */
 export function scoreHome(): string {
-  return process.env.SCORE_HOME || join(homedir(), ".score");
+  const home = process.env.SCORE_HOME;
+  return home ? resolve(home) : join(homedir(), ".score");
 }
 
 export function configPath(): string {

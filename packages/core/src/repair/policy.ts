@@ -1,3 +1,5 @@
+import { VERIFY_COMMAND } from "@score/core/verify";
+
 /**
  * Must match the session names dispatch creates (`issue-N` in identity.ts).
  * Legacy defaulted to "-issue-%N", which never matched its own "issue-N"
@@ -38,14 +40,10 @@ export function needsRepair(defects: RepairDefects): boolean {
 }
 
 /** Repair prompt names every defect class while explicitly withholding merge authority. */
-export function renderRepairPrompt(
-  pullRequestNumber: number,
-  verificationCommands: string,
-  buildRed?: string,
-): string {
+export function renderRepairPrompt(pullRequestNumber: number, buildRed?: string): string {
   const gateNote =
     buildRed === undefined
       ? ""
       : ` Note: this PR also fails the local merged-tree build gate, which GitHub CI cannot see — after merging origin/main, fix this failure too: ${buildRed}.`;
-  return `Follow-up on your PR #${pullRequestNumber}: it needs cleanup before it can land. Please do all of: (1) git fetch origin && merge origin/main into this branch, resolving every conflict correctly per the code's intent; (2) address any unresolved review threads — list them with gh api graphql reviewThreads where isResolved is false, fix each in code, then resolve via resolveReviewThread; (3) check failing CI with \`gh pr checks ${pullRequestNumber}\` and \`gh run view --log-failed\`, then fix the root cause; (4) run verification: ${verificationCommands}; (5) commit and push. Do NOT merge the PR — just make it green and conflict-free, then report.${gateNote}`;
+  return `Follow-up on your PR #${pullRequestNumber}: it needs cleanup before it can land. Please do all of: (1) git fetch origin && merge origin/main into this branch, resolving every conflict correctly per the code's intent; (2) address any unresolved review threads — list them with gh api graphql reviewThreads where isResolved is false, fix each in code, then resolve via resolveReviewThread; (3) check failing CI with \`gh pr checks ${pullRequestNumber}\` and \`gh run view --log-failed\`, then fix the root cause; (4) run verification: ${VERIFY_COMMAND} at the repository root; (5) commit and push. Do NOT merge the PR — just make it green and conflict-free, then report.${gateNote}`;
 }

@@ -10,7 +10,7 @@ import type { ScoreConfig } from "@score/shared/config/model";
 import { resolveProjects } from "@score/shared/config/resolve";
 import type { Logger, LogLine } from "@score/shared/log";
 import { expect, test } from "vitest";
-import { bootstrapDaemon, parseDaemonArguments, selfHealStagedMerge } from "./run";
+import { bootstrapDaemon, parseDaemonArguments, runDaemon, selfHealStagedMerge } from "./run";
 
 test("daemon flags parse and default to the long-running loop", () => {
   expect(parseDaemonArguments([])).toEqual({
@@ -134,6 +134,15 @@ function managedResponses(repo: string) {
     return {};
   };
 }
+
+test("a separator-bearing --project key is rejected before any state path is built", async () => {
+  // logsDir/statusPath join the key under $SCORE_HOME/projects; a traversal
+  // key must die before the managed runtime constructs logger or status paths.
+  await expect(runDaemon(["--project", "../../escape", "--managed"])).rejects.toThrow(
+    "--project must match",
+  );
+  await expect(runDaemon(["--project", "a/b"])).rejects.toThrow("--project must match");
+});
 
 test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuning", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));

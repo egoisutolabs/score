@@ -102,7 +102,6 @@ function changes(): ChangeHost {
 
 const options = {
   agent: { harness: "claude", model: "opus-4.6" } as AgentConfig,
-  verificationCommands: "bun test",
   sessionSuffix: "-issue-%N",
   includeClean: false,
   onlyPullRequests: new Set<string>(),

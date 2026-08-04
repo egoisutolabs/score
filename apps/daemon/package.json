@@ -6,11 +6,12 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --hot src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun --external '@opentui/*'",
+    "build": "bun build src/index.ts --outdir dist --target bun --splitting --external '@opentui/*'",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@opentui/core": "^0.4.5",
     "@score/agents": "workspace:*",
     "@score/core": "workspace:*",
     "@score/shared": "workspace:*",

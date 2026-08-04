@@ -35,3 +35,12 @@ test("every layout path lands under SCORE_HOME when set", () => {
   expect(promptsDir("score")).toBe("/tmp/x/projects/score/prompts");
   expect(crashLogPath("score")).toBe("/tmp/x/projects/score/launchd-crash.log");
 });
+
+test("a relative SCORE_HOME resolves to one absolute root, not one per cwd", () => {
+  process.env.SCORE_HOME = "relative-home";
+  try {
+    expect(scoreHome()).toBe(join(process.cwd(), "relative-home"));
+  } finally {
+    delete process.env.SCORE_HOME;
+  }
+});

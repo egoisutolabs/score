@@ -79,8 +79,6 @@ export async function runRepair(args: readonly string[]): Promise<void> {
   const service = new RepairService(
     {
       agent: agentConfigFromCommand(process.env.AGENT_CMD),
-      verificationCommands:
-        process.env.VERIFY_CMDS || "bun run check && bun run test && bun run build",
       sessionSuffix: process.env.SESSION_SUFFIX || DEFAULT_SESSION_SUFFIX,
       includeClean: parsed.includeClean,
       onlyPullRequests: parsed.only,

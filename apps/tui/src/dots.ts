@@ -30,6 +30,9 @@ export function deriveDot({ job, status, tickIntervalMs, nowMs }: DotInput): Dot
   // Unreadable/partial status is stale, never a crash — atomic writes are
   // issue 4's guarantee; this is belt-and-braces.
   if (status === null) return "amber";
+  // A heartbeat certifies only the process that wrote it: after a restart the
+  // predecessor's fresh status must not color the replacement green.
+  if (status.pid !== job.pid) return "amber";
   if (status.last_error !== null) return "red";
   if (status.state === "stopping") return "gray";
   const age = nowMs - Date.parse(status.updated_at);

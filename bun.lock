@@ -15,6 +15,7 @@
     "apps/daemon": {
       "name": "@egoisutolabs/score",
       "dependencies": {
+        "@opentui/core": "^0.4.5",
         "@score/agents": "workspace:*",
         "@score/core": "workspace:*",
         "@score/shared": "workspace:*",
