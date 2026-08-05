@@ -1,0 +1,33 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check dependency changes
+        uses: actions/dependency-review-action@v5
+        with:
+          # Block actionable runtime risk without making low-severity advisories
+          # or a new license policy into merge gates.
+          fail-on-severity: high
+          fail-on-scopes: runtime
+          license-check: false
+          show-patched-versions: true
