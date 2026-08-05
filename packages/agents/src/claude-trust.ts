@@ -24,8 +24,13 @@ export async function preseedWorktreeTrust(
   let text: string;
   try {
     text = await readFile(configPath, "utf8");
-  } catch {
-    throw new Error(`${configPath} not found — run claude once interactively to create it`);
+  } catch (error) {
+    // Only a missing file means "never ran claude"; a permissions or I/O
+    // error is a different problem and must surface as itself.
+    if ((error as { code?: string }).code === "ENOENT") {
+      throw new Error(`${configPath} not found — run claude once interactively to create it`);
+    }
+    throw error;
   }
   let parsed: unknown;
   try {
@@ -40,8 +45,9 @@ export async function preseedWorktreeTrust(
   if (!isRecord(projects)) {
     throw new Error(`${configPath} projects is not a JSON object; refusing to rewrite it`);
   }
-  const entry = isRecord(projects[worktreePath]) ? (projects[worktreePath] as object) : {};
-  if ((entry as Record<string, unknown>).hasTrustDialogAccepted === true) return;
+  const existing = projects[worktreePath];
+  const entry: Record<string, unknown> = isRecord(existing) ? existing : {};
+  if (entry.hasTrustDialogAccepted === true) return;
 
   parsed.projects = { ...projects, [worktreePath]: { ...entry, hasTrustDialogAccepted: true } };
   // Write-then-rename so a crash mid-write can't leave a torn ~/.claude.json.

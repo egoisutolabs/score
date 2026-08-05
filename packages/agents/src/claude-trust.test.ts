@@ -73,3 +73,11 @@ test("refuses to touch a missing or unparseable config", async () => {
   await expect(preseedWorktreeTrust("/w", corrupt)).rejects.toThrow(/refusing to rewrite/);
   expect(await readFile(corrupt, "utf8")).toBe("{ definitely not json");
 });
+
+test("a read failure that is not ENOENT surfaces as itself, not as missing-config advice", async () => {
+  // A directory as configPath fails with EISDIR — masking it behind "run
+  // claude once interactively" would send the operator debugging setup
+  // instead of the actual filesystem problem.
+  const dir = await mkdtemp(join(tmpdir(), "score-trust-dir-"));
+  await expect(preseedWorktreeTrust("/w", dir)).rejects.toThrow(/EISDIR|illegal operation/);
+});
