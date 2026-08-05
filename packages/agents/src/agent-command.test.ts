@@ -1,6 +1,6 @@
-import { encodeTmuxShellCommand } from "@score/agents/tmux";
+import { encodeTmuxShellCommand } from "@score/agents/tmux.service";
 import { agentArgv, agentConfigFromCommand } from "@score/shared/agent-command";
-import type { AgentConfig } from "@score/shared/config/model";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 import { expect, test } from "vitest";
 
 test("agentArgv pins the configured model and omits the flag without one", () => {

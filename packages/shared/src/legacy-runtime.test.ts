@@ -1,5 +1,5 @@
-import type { CommandResult } from "@score/shared/command";
-import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner";
+import type { CommandResult } from "@score/shared/command.interface";
+import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import { discoverLegacyRuntime } from "@score/shared/legacy-runtime";
 import { expect, test } from "vitest";
 

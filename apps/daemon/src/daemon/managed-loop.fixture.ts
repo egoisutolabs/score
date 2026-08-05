@@ -1,9 +1,9 @@
 // Spawned-child fixture for the managed shutdown contract: an interruptible
 // polling loop over fake phases, with the same status wiring as runDaemon.
 // Usage: bun managed-loop.fixture.ts <sleep|midpass> <statusPath>
-import type { DaemonPhase } from "@score/core/daemon/service";
-import { DaemonService } from "@score/core/daemon/service";
-import { StatusWriter } from "@score/core/daemon/status";
+import type { DaemonPhase } from "@score/core/daemon/daemon.service";
+import { DaemonService } from "@score/core/daemon/daemon.service";
+import { StatusWriter } from "@score/core/daemon/status.service";
 import { runPollingLoop } from "@score/shared/legacy-runtime";
 
 const [mode, statusFile] = process.argv.slice(2);

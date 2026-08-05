@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { KNOWN_HARNESSES } from "@score/shared/agent-command";
+import type { ResolvedProject } from "@score/shared/config/config.interface";
 import { resolvedPath } from "@score/shared/config/layout";
-import type { ResolvedProject } from "@score/shared/config/model";
 import { configHash } from "@score/shared/config/resolve";
 import {
   assertNoUnknownKeys,

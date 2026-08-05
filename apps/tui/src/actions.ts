@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { SupervisorAdapter } from "@score/core/supervisor/adapter";
+import type { SupervisorAdapter } from "@score/core/supervisor/supervisor-adapter.interface";
 import { projectDir } from "@score/shared/config/layout";
 
 /** The definition copy `score up` keeps in the state dir (issue 5's contract). */

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ResolvedProject, ScoreConfig } from "@score/shared/config/model";
+import type { ResolvedProject, ScoreConfig } from "@score/shared/config/config.interface";
 
 export const DEFAULT_TICK_INTERVAL_MS = 60_000;
 export const DEFAULT_MAX_PARALLEL = 1;

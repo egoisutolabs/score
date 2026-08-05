@@ -1,5 +1,5 @@
-import type { StatusFile } from "@score/core/daemon/status";
-import type { JobStatus } from "@score/core/supervisor/adapter";
+import type { StatusFile } from "@score/core/daemon/status.service";
+import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
 import { type Dot, deriveDot } from "@score/tui/dots";
 import { describe, expect, it } from "vitest";
 

@@ -7,11 +7,14 @@ import {
   TextRenderable,
   t,
 } from "@opentui/core";
-import { type SupervisorAdapter, supervisorForPlatform } from "@score/core/supervisor/adapter";
-import { BunCommandRunner } from "@score/shared/adapters/command-runner";
+import {
+  type SupervisorAdapter,
+  supervisorForPlatform,
+} from "@score/core/supervisor/supervisor-adapter.interface";
+import { BunCommandRunner } from "@score/shared/adapters/command-runner.service";
+import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { logsDir } from "@score/shared/config/layout";
 import { loadConfig } from "@score/shared/config/load";
-import type { ScoreConfig } from "@score/shared/config/model";
 import { restartProject, startProject, stopProject } from "@score/tui/actions";
 import type { Dot } from "@score/tui/dots";
 import { fleetSnapshot, type ProjectView } from "@score/tui/snapshot";

@@ -1,4 +1,4 @@
-import type { AgentConfig } from "@score/shared/config/model";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 
 /** v1 harness enum (locked decision 7); jiti/module-path loading is a later epic. */
 export const KNOWN_HARNESSES = ["claude"] as const;

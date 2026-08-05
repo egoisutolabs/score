@@ -1,9 +1,9 @@
-import type { IssueComment, IssueObservation, Label } from "@score/core/dispatch/issue";
+import type { IssueComment, IssueObservation, Label } from "@score/core/dispatch/issue.interface";
 import type {
   ChangeCheck,
   PullRequestObservation,
   StatusContext,
-} from "@score/core/landing/change";
+} from "@score/core/landing/change.interface";
 import type { UnknownRecord } from "@score/shared/validation";
 import {
   arrayValue,

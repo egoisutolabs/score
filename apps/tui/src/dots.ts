@@ -1,5 +1,5 @@
-import type { StatusFile } from "@score/core/daemon/status";
-import type { JobStatus } from "@score/core/supervisor/adapter";
+import type { StatusFile } from "@score/core/daemon/status.service";
+import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
 
 export type Dot = "green" | "amber" | "gray" | "red";
 

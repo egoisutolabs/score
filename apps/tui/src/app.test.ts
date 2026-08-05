@@ -1,8 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JobStatus, SupervisorAdapter } from "@score/core/supervisor/adapter";
-import type { ProjectConfig, ScoreConfig } from "@score/shared/config/model";
+import type {
+  JobStatus,
+  SupervisorAdapter,
+} from "@score/core/supervisor/supervisor-adapter.interface";
+import type { ProjectConfig, ScoreConfig } from "@score/shared/config/config.interface";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const NOW = new Date("2026-07-01T12:00:00.000Z");

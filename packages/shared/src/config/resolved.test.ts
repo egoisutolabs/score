@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ResolvedProject } from "@score/shared/config/model";
+import type { ResolvedProject } from "@score/shared/config/config.interface";
 import { resolveProjects } from "@score/shared/config/resolve";
 import { readResolvedProject, validateResolvedProject } from "@score/shared/config/resolved";
 import { expect, test } from "vitest";

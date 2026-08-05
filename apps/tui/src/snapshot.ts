@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
-import type { StatusFile } from "@score/core/daemon/status";
-import type { JobStatus, SupervisorAdapter } from "@score/core/supervisor/adapter";
+import type { StatusFile } from "@score/core/daemon/status.service";
+import type {
+  JobStatus,
+  SupervisorAdapter,
+} from "@score/core/supervisor/supervisor-adapter.interface";
+import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { resolvedPath, statusPath } from "@score/shared/config/layout";
-import type { ScoreConfig } from "@score/shared/config/model";
 import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@score/shared/config/resolve";
 import { type Dot, deriveDot } from "@score/tui/dots";
 

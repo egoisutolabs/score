@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 
-import { requireSuccess } from "@score/shared/adapters/command-runner";
-import type { CommandRunner } from "@score/shared/command-runner";
+import { requireSuccess } from "@score/shared/adapters/command-runner.service";
+import type { CommandRunner } from "@score/shared/command-runner.interface";
 
 export interface LegacyRuntimeContext {
   readonly repositoryRoot: string;

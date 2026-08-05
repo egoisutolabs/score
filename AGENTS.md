@@ -5,6 +5,11 @@
   are libraries. The `score` CLI is `apps/daemon`.
 - Keep models as interfaces and types; do not add Zod or any schema-builder
   DSL — interfaces read as the shape directly, schema objects are indirection.
+- Name files `<noun>.<role>.ts` — roles: `.service` (stateful class), `.policy`
+  (pure decisions), `.render` (output shaping), `.interface` (types/ports),
+  `.run` (CLI composition). Types live in the feature that owns them; never
+  create a central types/ dump. Pure utility modules (`color.ts`, `log.ts`,
+  `verify.ts`) and unique entries (`index.ts`, `doctor.ts`) keep bare names.
 - Keep code feature-first: domain phases live in `packages/core/src/<feature>/`;
   ports (`agent-runtime`, `workspace-driver`, `landing/port`, `dispatch/work-source`)
   are owned by core, implementations by `packages/{agents,tracker}`. Known

@@ -1,8 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { KNOWN_HARNESSES } from "@score/shared/agent-command";
+import type {
+  ProjectConfig,
+  ProjectRuntimeConfig,
+  ScoreConfig,
+} from "@score/shared/config/config.interface";
 import { parseJsonc } from "@score/shared/config/jsonc";
 import { configPath } from "@score/shared/config/layout";
-import type { ProjectConfig, ProjectRuntimeConfig, ScoreConfig } from "@score/shared/config/model";
 import {
   assertNoUnknownKeys,
   booleanValue,

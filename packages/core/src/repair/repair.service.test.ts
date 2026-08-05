@@ -1,0 +1,230 @@
+import type { AgentRuntime } from "@score/core/agent-runtime.interface";
+import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
+import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
+import type { PullRequestObservation } from "@score/core/landing/change.interface";
+import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import { DEFAULT_SESSION_SUFFIX } from "@score/core/repair/repair.policy";
+import { RepairService } from "@score/core/repair/repair.service";
+import type {
+  PrimaryCheckoutObservation,
+  WorkspaceDriver,
+} from "@score/core/workspace-driver.interface";
+import type { AgentConfig } from "@score/shared/config/config.interface";
+import { expect, test } from "vitest";
+
+function change(): PullRequestObservation {
+  return {
+    number: 9,
+    title: "Repair",
+    headRefName: "issue-3-repair",
+    isDraft: false,
+    mergeable: "CONFLICTING",
+    reviewDecision: null,
+    labels: [],
+    files: [],
+    statusCheckRollup: [],
+  };
+}
+
+class RepairWorkspace implements WorkspaceDriver {
+  worktrees: WorktreeObservation[] = [];
+  async observeWorktrees() {
+    return this.worktrees;
+  }
+  async createWorktree(_identity: WorkIdentity): Promise<void> {}
+  async status() {
+    return "";
+  }
+  async removeWorktree() {}
+  async deleteBranch() {
+    return true;
+  }
+  async observePrimaryCheckout(): Promise<PrimaryCheckoutObservation> {
+    return { branch: "main", status: "" };
+  }
+  async fetchOrigin() {}
+  async stageMerge() {
+    return true;
+  }
+  async abortMerge() {}
+  async commitMerge() {}
+  async pushDefaultBranch() {}
+  async fastForwardDefaultBranch() {
+    return true;
+  }
+}
+
+class RepairAgents implements AgentRuntime {
+  sessions: string[] = [];
+  pinged: string[] = [];
+  pingedMessages: string[] = [];
+  spawned: number[] = [];
+  spawnedWith: AgentConfig[] = [];
+  async sessionExists() {
+    return false;
+  }
+  async listSessions() {
+    return this.sessions;
+  }
+  async startImplementation() {}
+  async ping(sessionName: string, message: string) {
+    this.pinged.push(sessionName);
+    this.pingedMessages.push(message);
+  }
+  async startRepair(
+    pullRequestNumber: number,
+    _worktree: string,
+    _message: string,
+    agent: AgentConfig,
+  ) {
+    this.spawned.push(pullRequestNumber);
+    this.spawnedWith.push(agent);
+  }
+  async stop() {}
+}
+
+function changes(): ChangeHost {
+  return {
+    async observeOpenChanges() {
+      return [change()];
+    },
+    async observeMergedOwnedChanges() {
+      return [];
+    },
+    async observeOpenChangeHeads() {
+      return [];
+    },
+    async observeRepairChanges() {
+      return [change()];
+    },
+    async unresolvedThreadCount() {
+      return 0;
+    },
+  };
+}
+
+const options = {
+  agent: { harness: "claude", model: "opus-4.6" } as AgentConfig,
+  sessionSuffix: "-issue-%N",
+  includeClean: false,
+  onlyPullRequests: new Set<string>(),
+  noSpawn: false,
+};
+
+test("repair pings the matching live issue session even without a worktree", async () => {
+  const workspace = new RepairWorkspace();
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const result = await new RepairService(options, changes(), workspace, agents).run();
+  expect(result[0]?.action).toBe("PINGED");
+  expect(agents.pinged).toEqual(["score-issue-3"]);
+});
+
+test("shouldAct=false reports WORKING and touches no session", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const asked: number[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      shouldAct: (pullRequestNumber) => {
+        asked.push(pullRequestNumber);
+        return false;
+      },
+    },
+    changes(),
+    new RepairWorkspace(),
+    agents,
+  ).run();
+  expect(result[0]?.action).toBe("WORKING");
+  expect(asked).toEqual([9]);
+  expect(agents.pinged).toEqual([]);
+});
+
+test("repair spawns shepherd-pr work in the exact existing PR worktree", async () => {
+  const workspace = new RepairWorkspace();
+  workspace.worktrees = [{ path: "/wt/issue-3-repair", branch: "issue-3-repair", locked: false }];
+  const agents = new RepairAgents();
+  const result = await new RepairService(options, changes(), workspace, agents).run();
+  expect(result[0]?.action).toBe("SPAWNED");
+  expect(agents.spawned).toEqual([9]);
+  // The agent config flows through to the spawn untouched.
+  expect(agents.spawnedWith).toEqual([{ harness: "claude", model: "opus-4.6" }]);
+});
+
+test("review-thread query failure retains shepherd's fail-open zero", async () => {
+  const workspace = new RepairWorkspace();
+  const agents = new RepairAgents();
+  const clean = { ...change(), mergeable: "MERGEABLE" as const };
+  const host: ChangeHost = {
+    async observeOpenChanges() {
+      return [clean];
+    },
+    async observeMergedOwnedChanges() {
+      return [];
+    },
+    async observeOpenChangeHeads() {
+      return [];
+    },
+    async observeRepairChanges() {
+      return [clean];
+    },
+    async unresolvedThreadCount() {
+      throw new Error("graphql failed");
+    },
+  };
+  const result = await new RepairService(options, host, workspace, agents).run();
+  expect(result[0]?.action).toBe("NOT_NEEDED");
+});
+
+test("a GitHub-clean PR with a landing build-red verdict is repaired, tail in the prompt", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const clean = { ...change(), mergeable: "MERGEABLE" as const };
+  const host: ChangeHost = {
+    ...changes(),
+    async observeOpenChanges() {
+      return [clean];
+    },
+    async observeRepairChanges() {
+      return [clean];
+    },
+  };
+  const seenDefects: unknown[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      buildRed: (pullRequestNumber) =>
+        pullRequestNumber === 9 ? "daemon:check — TS2345 boom" : undefined,
+      shouldAct: (_number, defects) => {
+        seenDefects.push(defects);
+        return true;
+      },
+    },
+    host,
+    new RepairWorkspace(),
+    agents,
+  ).run();
+  expect(result[0]?.action).toBe("PINGED");
+  expect(agents.pingedMessages[0]).toContain("daemon:check — TS2345 boom");
+  // The verdict rides the defects so the ledger re-pings when the tail changes.
+  expect(seenDefects[0]).toMatchObject({ buildRed: "daemon:check — TS2345 boom" });
+});
+
+test("default session suffix matches the sessions dispatch creates, and only those", () => {
+  const identity = createWorkIdentity("/tmp/worktrees", {
+    number: 1,
+    title: "Port models",
+    body: "",
+    labels: [],
+    state: "OPEN",
+    url: "https://github.com/example/score/issues/1",
+    comments: [],
+  });
+  // Same construction as RepairService: suffix with %N substituted, anchored at the end.
+  const pattern = new RegExp(`${DEFAULT_SESSION_SUFFIX.replace("%N", "1")}$`);
+  expect(pattern.test(identity.sessionName)).toBe(true);
+  expect(pattern.test("my-issue-1")).toBe(false);
+  expect(pattern.test("shepherd-pr-1")).toBe(false);
+  expect(pattern.test("issue-11")).toBe(false);
+});

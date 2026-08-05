@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ProjectConfig, ScoreConfig } from "@score/shared/config/model";
+import type { ProjectConfig, ScoreConfig } from "@score/shared/config/config.interface";
 import { resolveProjects } from "@score/shared/config/resolve";
 import { expect, test } from "vitest";
 

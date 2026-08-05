@@ -1,8 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JobStatus, SupervisorAdapter } from "@score/core/supervisor/adapter";
-import type { ScoreConfig } from "@score/shared/config/model";
+import type {
+  JobStatus,
+  SupervisorAdapter,
+} from "@score/core/supervisor/supervisor-adapter.interface";
+import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { fleetSnapshot } from "@score/tui/snapshot";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 

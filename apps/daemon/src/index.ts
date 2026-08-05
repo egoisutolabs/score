@@ -1,9 +1,9 @@
 import { color } from "@score/shared/color";
 import { runConfigInit } from "@score/shared/config/template";
-import { runDaemon } from "./daemon/run";
-import { runRepair } from "./repair/run";
+import { runDaemon } from "./daemon/daemon.run";
+import { runRepair } from "./repair/repair.run";
 import { runDoctor } from "./supervisor/doctor";
-import { runDown, runUp } from "./supervisor/run";
+import { runDown, runUp } from "./supervisor/supervisor.run";
 
 const [command, ...args] = process.argv.slice(2);
 
