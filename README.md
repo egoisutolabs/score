@@ -28,6 +28,13 @@ repair** — which keeps the primary checkout single-writer and preserves the
 legacy authority split: dispatch never merges, landing never edits code, repair
 never merges. A phase that throws is logged and the pass continues.
 
+Landing stages the exact head SHA it vetted (never the mutable branch name) and
+soaks per commit: a new push mid-soak restarts the count from zero, and an
+observation without a head SHA is refused outright. Every command the daemon
+runs is bounded by a deadline (120s default, 30min for `make verify`) and killed
+as a whole process tree on timeout — a hung `gh` or wedged verify can't stall a
+phase.
+
 `repair` also stays a manual one-shot, for when a specific PR needs a nudge now:
 
 ```sh
@@ -54,8 +61,8 @@ no such ledger and always acts.
 | `AGENT_CMD` | `claude` | Command repair spawns in a worktree. |
 
 Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
-`ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/run.ts` and
-`apps/daemon/src/repair/run.ts`.
+`ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/daemon.run.ts`
+and `apps/daemon/src/repair/repair.run.ts`.
 
 ## Supervisor platforms
 
@@ -73,6 +80,14 @@ loginctl enable-linger $USER
 
 `score doctor` deliberately does not check this — it is documented, not
 enforced.
+
+## Layout
+
+Bun workspaces + Turborepo. `apps/{daemon,tui,server}` are entry points (the
+`score` CLI is `apps/daemon`; `server` is a future-HTTP stub);
+`packages/{shared,core,agents,tracker}` are libraries — ports live in `core`,
+implementations in `agents`/`tracker`. Files are named `<noun>.<role>.ts`
+(`.service`, `.policy`, `.render`, `.interface`, `.run`); see `AGENTS.md`.
 
 ## Verify
 
