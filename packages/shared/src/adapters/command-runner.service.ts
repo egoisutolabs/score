@@ -118,27 +118,28 @@ export class BunCommandRunner implements CommandRunner {
       }, timeoutMs),
     );
 
-    const exitCode = await new Promise<number>((resolve) => {
+    // Both listeners armed at spawn time — registering `close` only after
+    // awaiting `exit` loses the event when it fires in between.
+    const exited = new Promise<number>((resolve) => {
       child.on("error", (error) => {
         stderr += `${stderr ? "\n" : ""}${error.message}`;
         resolve(-1);
       });
       child.on("exit", (code) => resolve(code ?? -1));
     });
+    const closed = new Promise<void>((resolve) => {
+      child.on("close", () => resolve());
+    });
+    const exitCode = await exited;
     // Streams normally close with the process; give stragglers one grace
     // period, then return with what was captured rather than waiting on an
     // orphan that inherited our pipe.
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-      child.on("close", finish);
-      timers.push(setTimeout(finish, this.#killGraceMs));
-    });
+    await Promise.race([
+      closed,
+      new Promise<void>((resolve) => {
+        timers.push(setTimeout(resolve, this.#killGraceMs));
+      }),
+    ]);
     for (const timer of timers) clearTimeout(timer);
 
     return {
