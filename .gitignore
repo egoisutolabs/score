@@ -36,5 +36,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # turborepo
 .turbo
 .scratchpad/
-# local clones parked in the repo
-meat
+
+#graphify
+graphify-out/
+
