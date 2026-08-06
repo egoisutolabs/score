@@ -27,7 +27,14 @@ export interface LandingServiceOptions {
 
 /** Full port of babysitPr/tick: local integration, merged-tree gates, soak, commit, push. */
 export class LandingService {
-  readonly #readyTicks = new Map<number, number>();
+  /**
+   * Soak is keyed by (PR number, head SHA): green ticks certify one exact
+   * commit, never the PR number. Legacy keyed by number alone and its header
+   * still claimed "a fresh push pre-empts the merge" — that only held because
+   * its CI outlasted its 90s poll interval, an environmental accident this
+   * implements as policy: a new head always restarts soak from zero.
+   */
+  readonly #readyTicks = new Map<number, { readonly headSha: string; readonly ticks: number }>();
 
   constructor(
     private readonly options: LandingServiceOptions,
@@ -94,8 +101,20 @@ export class LandingService {
       };
     }
 
+    // Stage the exact commit the preconditions above vetted — never the
+    // mutable branch name, which may already point at a head whose checks and
+    // review nobody examined. No observed SHA = no identity = nothing merges.
+    const headSha = change.headSha;
+    if (headSha === undefined) {
+      return {
+        pullRequestNumber: change.number,
+        tag: "skipped",
+        note: "observation carried no head SHA; refusing to stage unvetted code",
+      };
+    }
+
     await this.workspace.fetchOrigin();
-    if (!(await this.workspace.stageMerge(change.headRefName))) {
+    if (!(await this.workspace.stageMerge(headSha))) {
       await this.workspace.abortMerge().catch(() => undefined);
       return {
         pullRequestNumber: change.number,
@@ -110,8 +129,9 @@ export class LandingService {
       return { pullRequestNumber: change.number, tag: "build-red", note: gateFailure };
     }
 
-    const greenTicks = (this.#readyTicks.get(change.number) ?? 0) + 1;
-    this.#readyTicks.set(change.number, greenTicks);
+    const previous = this.#readyTicks.get(change.number);
+    const greenTicks = previous?.headSha === headSha ? previous.ticks + 1 : 1;
+    this.#readyTicks.set(change.number, { headSha, ticks: greenTicks });
     const remaining = this.options.soakTicks - greenTicks;
     if (remaining > 0) {
       await this.workspace.abortMerge().catch(() => undefined);

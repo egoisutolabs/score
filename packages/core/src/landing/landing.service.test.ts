@@ -15,6 +15,7 @@ function pullRequest(overrides: Partial<PullRequestObservation> = {}): PullReque
     number: 7,
     title: "Legacy landing",
     headRefName: "issue-1-legacy-landing",
+    headSha: "aaa111",
     isDraft: false,
     mergeable: "MERGEABLE",
     reviewDecision: "APPROVED",
@@ -46,8 +47,8 @@ class FakeWorkspace implements WorkspaceDriver {
   async fetchOrigin(): Promise<void> {
     this.effects.push("fetch");
   }
-  async stageMerge(): Promise<boolean> {
-    this.effects.push("stage");
+  async stageMerge(commit: string): Promise<boolean> {
+    this.effects.push(`stage:${commit}`);
     return true;
   }
   async abortMerge(): Promise<void> {
@@ -119,17 +120,83 @@ test("landing re-stages and gates until soakTicks consecutive green ticks, then 
 
   expect((await service.runTick())[0]?.tag).toBe("soaking");
   expect((await service.runTick())[0]?.tag).toBe("merged");
+  // Staging targets the observed SHA, never the mutable branch name.
   expect(workspace.effects).toEqual([
     "fetch",
     "fetch",
-    "stage",
+    "stage:aaa111",
     "abort",
     "fetch",
     "fetch",
-    "stage",
+    "stage:aaa111",
     "commit",
     "push",
   ]);
+});
+
+test("a new head mid-soak restarts soak from zero instead of inheriting green ticks", async () => {
+  let change = pullRequest({ headSha: "aaa111" });
+  const changes: ChangeHost = {
+    ...host(),
+    async observeOpenChanges() {
+      return [change];
+    },
+  };
+  const workspace = new FakeWorkspace();
+  const service = new LandingService(
+    {
+      repositoryRoot: "/repo",
+      repository: "owner/repo",
+      defaultBranch: "main",
+      dryRun: false,
+      noMerge: false,
+      maxMerges: 5,
+      soakTicks: 2,
+      skipLabels: [],
+      onlyIssueBranches: false,
+    },
+    changes,
+    workspace,
+    runner,
+  );
+
+  // Head A soaks its first green tick...
+  expect((await service.runTick())[0]?.tag).toBe("soaking");
+  // ...the agent pushes head B. Under number-only soak, B would inherit A's
+  // tick and merge here with a single green evaluation.
+  change = pullRequest({ headSha: "bbb222" });
+  expect((await service.runTick())[0]?.tag).toBe("soaking");
+  expect((await service.runTick())[0]?.tag).toBe("merged");
+  // Every stage after the push targeted B's exact commit.
+  expect(workspace.effects.filter((e) => e.startsWith("stage:"))).toEqual([
+    "stage:aaa111",
+    "stage:bbb222",
+    "stage:bbb222",
+  ]);
+});
+
+test("an observation without a head SHA is refused before any merge effect", async () => {
+  const workspace = new FakeWorkspace();
+  const service = new LandingService(
+    {
+      repositoryRoot: "/repo",
+      repository: "owner/repo",
+      defaultBranch: "main",
+      dryRun: false,
+      noMerge: false,
+      maxMerges: 5,
+      soakTicks: 2,
+      skipLabels: [],
+      onlyIssueBranches: false,
+    },
+    host(pullRequest({ headSha: undefined })),
+    workspace,
+    runner,
+  );
+  const [result] = await service.runTick();
+  expect(result?.tag).toBe("skipped");
+  expect(result?.note).toContain("no head SHA");
+  expect(workspace.effects.some((e) => e.startsWith("stage:"))).toBe(false);
 });
 
 test("a lapse resets the green-tick counter, so soaking restarts from zero", async () => {

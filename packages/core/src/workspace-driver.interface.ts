@@ -13,7 +13,8 @@ export interface WorkspaceDriver {
   deleteBranch(branch: string): Promise<boolean>;
   observePrimaryCheckout(): Promise<PrimaryCheckoutObservation>;
   fetchOrigin(): Promise<void>;
-  stageMerge(remoteBranch: string): Promise<boolean>;
+  /** Stage a merge of the exact observed commit — callers pass a SHA, not a mutable ref. */
+  stageMerge(commit: string): Promise<boolean>;
   abortMerge(): Promise<void>;
   commitMerge(message: string): Promise<void>;
   pushDefaultBranch(defaultBranch: string): Promise<void>;

@@ -107,11 +107,11 @@ export class GitService implements WorkspaceDriver {
     requireSuccess(await this.#run(["fetch", "origin", "--quiet"]));
   }
 
-  async stageMerge(remoteBranch: string): Promise<boolean> {
-    return (
-      (await this.#run(["merge", "--no-ff", "--no-commit", `origin/${remoteBranch}`], true))
-        .exitCode === 0
-    );
+  async stageMerge(commit: string): Promise<boolean> {
+    // The exact commit, never origin/<branch>: a branch can move between
+    // observation and staging, and merging an unreachable (force-pushed-away)
+    // SHA fails here — which is the correct, fail-closed outcome.
+    return (await this.#run(["merge", "--no-ff", "--no-commit", commit], true)).exitCode === 0;
   }
 
   /** A staged-but-uncommitted merge (MERGE_HEAD present) is in progress. */
