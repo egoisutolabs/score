@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import type { Logger } from "@score/shared/log";
@@ -42,8 +43,31 @@ export class LoggingCommandRunner implements CommandRunner {
   }
 }
 
-/** Bun-backed argv runner with bounded execution and an explicit dry-run mutation gate. */
+export interface BunCommandRunnerOptions {
+  /** Applied when a call passes no timeoutMs — every command is bounded by default. */
+  readonly defaultTimeoutMs?: number;
+  /** Grace between SIGTERM and SIGKILL, and again before the hard-stop return. */
+  readonly killGraceMs?: number;
+}
+
+/**
+ * Argv runner with bounded execution and an explicit dry-run mutation gate.
+ * Every command gets a deadline: a hung gh, git, tmux, or verify gate must
+ * never wedge the daemon mid-phase, where the SIGTERM stop-check between
+ * phases can't reach and launchd sees a live process. Children are spawned
+ * detached into their own process group so the deadline kills the whole tree
+ * (`sh -c "make verify"` included), and stream collection after exit is
+ * bounded too — an orphan holding our pipe cannot hang the await.
+ */
 export class BunCommandRunner implements CommandRunner {
+  readonly #defaultTimeoutMs: number;
+  readonly #killGraceMs: number;
+
+  constructor(options: BunCommandRunnerOptions = {}) {
+    this.#defaultTimeoutMs = options.defaultTimeoutMs ?? 120_000;
+    this.#killGraceMs = options.killGraceMs ?? 5_000;
+  }
+
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     if (command.length === 0) throw new Error("command cannot be empty");
     if (options.dryRun && options.mutates) {
@@ -58,28 +82,64 @@ export class BunCommandRunner implements CommandRunner {
       };
     }
 
-    const process = Bun.spawn([...command], {
+    const child = spawn(command[0] as string, command.slice(1), {
       cwd: options.cwd,
       env: options.env ? { ...processEnv(), ...options.env } : processEnv(),
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
+      // Own process group, so the deadline can kill the whole tree.
+      detached: true,
     });
-    let timedOut = false;
-    const timer =
-      options.timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            process.kill();
-          }, options.timeoutMs);
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk;
+    });
 
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-    ]).finally(() => {
-      if (timer !== undefined) clearTimeout(timer);
+    const killTree = (signal: NodeJS.Signals) => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {
+        child.kill(signal);
+      }
+    };
+
+    const timeoutMs = options.timeoutMs ?? this.#defaultTimeoutMs;
+    let timedOut = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        killTree("SIGTERM");
+        timers.push(setTimeout(() => killTree("SIGKILL"), this.#killGraceMs));
+      }, timeoutMs),
+    );
+
+    const exitCode = await new Promise<number>((resolve) => {
+      child.on("error", (error) => {
+        stderr += `${stderr ? "\n" : ""}${error.message}`;
+        resolve(-1);
+      });
+      child.on("exit", (code) => resolve(code ?? -1));
     });
+    // Streams normally close with the process; give stragglers one grace
+    // period, then return with what was captured rather than waiting on an
+    // orphan that inherited our pipe.
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      child.on("close", finish);
+      timers.push(setTimeout(finish, this.#killGraceMs));
+    });
+    for (const timer of timers) clearTimeout(timer);
 
     return {
       command: [...command],

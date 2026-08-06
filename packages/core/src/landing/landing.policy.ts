@@ -95,12 +95,22 @@ export function evaluatePreconditions(
  * list (API hiccup) must never read as green, and a repo without the Makefile
  * target fails the gate instead of merging unverified.
  */
+/** Set generously above the worst observed pass, like the supervisor kill timeout. */
+export const VERIFY_TIMEOUT_MS = 30 * 60_000;
+
 export function gatesFor(repositoryRoot: string): readonly BuildGate[] {
   return [
     {
       name: "verify",
       cwd: repositoryRoot,
-      steps: [{ label: "verify", command: [...VERIFY_ARGV], retry: true }],
+      steps: [
+        {
+          label: "verify",
+          command: [...VERIFY_ARGV],
+          retry: true,
+          timeoutMs: VERIFY_TIMEOUT_MS,
+        },
+      ],
     },
   ];
 }

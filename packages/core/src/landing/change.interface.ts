@@ -46,6 +46,8 @@ export interface BuildStep {
   readonly label: string;
   readonly command: Command;
   readonly retry?: boolean;
+  /** Deadline for this step; unset falls to the runner's bounded default. */
+  readonly timeoutMs?: number;
 }
 
 export interface BuildGate {

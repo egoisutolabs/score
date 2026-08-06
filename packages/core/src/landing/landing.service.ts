@@ -176,8 +176,8 @@ export class LandingService {
   async #runGates(gates: readonly BuildGate[]): Promise<string | null> {
     for (const gate of gates) {
       for (const step of gate.steps) {
-        let result = await this.#tryGateStep(step.command, gate.cwd);
-        if (!result.ok && step.retry) result = await this.#tryGateStep(step.command, gate.cwd);
+        let result = await this.#tryGateStep(step, gate.cwd);
+        if (!result.ok && step.retry) result = await this.#tryGateStep(step, gate.cwd);
         if (!result.ok) {
           const tail = result.output.split(/\r?\n/).filter(Boolean).slice(-4).join(" | ");
           return `${gate.name}:${step.label} — ${tail}`;
@@ -188,14 +188,19 @@ export class LandingService {
   }
 
   async #tryGateStep(
-    command: readonly string[],
+    step: BuildGate["steps"][number],
     cwd: string,
   ): Promise<{ readonly ok: boolean; readonly output: string }> {
     try {
-      const result = await this.runner.run(command, { cwd });
+      const result = await this.runner.run(step.command, {
+        cwd,
+        ...(step.timeoutMs !== undefined && { timeoutMs: step.timeoutMs }),
+      });
       return {
         ok: result.exitCode === 0 && !result.timedOut,
-        output: result.stderr || result.stdout,
+        output: result.timedOut
+          ? `timed out after ${step.timeoutMs}ms`
+          : result.stderr || result.stdout,
       };
     } catch (error) {
       return { ok: false, output: errorMessage(error) };
