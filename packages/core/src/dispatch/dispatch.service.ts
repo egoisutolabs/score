@@ -96,10 +96,10 @@ export class DispatchService {
     if (!(await this.#dependenciesSatisfied(issue))) return false;
 
     const identity = createWorkIdentity(this.options.workspaceRoot, issue, this.options.namespace);
-    if (dryRun) return true;
-    // Reject an undispatchable harness before touching the filesystem — otherwise the
-    // worktree/briefing strand permanently (#alreadyInFlight sees them on every later tick).
+    // Pure check, run before the dry-run return too: a dry-run preview must report the same
+    // deterministic failure a real pass would hit, not silently plan an undispatchable issue.
     assertKnownHarness(this.options.agent, this.options.dispatchableHarnesses);
+    if (dryRun) return true;
     await this.workspace.createWorktree(identity);
     await this.briefings.write(issue, identity);
     await this.agents.startImplementation(

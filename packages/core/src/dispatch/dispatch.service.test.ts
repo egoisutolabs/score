@@ -314,6 +314,39 @@ test("an undispatchable harness fails without creating a worktree, and the issue
   expect(second.failed).toEqual([{ issueNumber: 2, message: 'unknown agent harness: "opencode"' }]);
 });
 
+test("a dry-run preview reports an undispatchable harness as a failure, not a plan", async () => {
+  const opencodeOptions: DispatchServiceOptions = {
+    ...options,
+    maxParallelIssues: 1,
+    agent: { harness: "opencode", model: "openai/gpt-5" },
+  };
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(2)];
+    },
+    async observeIssue() {
+      return issue(2);
+    },
+    async observeDependency() {
+      return issue(2);
+    },
+  };
+
+  const workspace = new FakeWorkspace();
+  const agents = new FakeAgents();
+  const service = new DispatchService(opencodeOptions, source, changes, workspace, agents, {
+    async write(): Promise<void> {
+      throw new Error("dry-run must not write TASK.md");
+    },
+  });
+
+  const result = await service.run({ dryRun: true });
+
+  expect(result.failed).toEqual([{ issueNumber: 2, message: 'unknown agent harness: "opencode"' }]);
+  expect(result.planned).toEqual([]);
+  expect(workspace.created).toEqual([]);
+});
+
 test("dispatchability is whatever the composition root injects, not a hardcoded runtime assumption", async () => {
   // Simulates a future composition root wiring a harness-capable AgentRuntime (e.g. OpencodeService)
   // for "opencode" — DispatchService must not reject it on its own authority.
