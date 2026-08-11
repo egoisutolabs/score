@@ -83,3 +83,62 @@ test("unknown fields fail naming them", () => {
     /resolved has unknown fields: branch/,
   );
 });
+
+test("a hand-edited resolved.json with harness: opencode round-trips configHash", async () => {
+  const [resolved] = resolveProjects({
+    version: 1,
+    projects: {
+      demo: {
+        enabled: true,
+        main_location: "/repos/demo",
+        worktree_location: "/tmp/x/wt-demo",
+        github_repo: "egoisutolabs/demo",
+        config: {
+          tick_interval_ms: 5000,
+          max_parallel: 2,
+          agent: { harness: "opencode", model: "anthropic/claude-sonnet-5" },
+        },
+      },
+    },
+  });
+  if (!resolved) throw new Error("fixture did not resolve");
+  const path = await writeFixture(resolved);
+  expect(await readResolvedProject("demo", path)).toEqual(resolved);
+});
+
+test("opencode without a model fails, same as claude", () => {
+  const project: Record<string, unknown> = {
+    ...fixtureProject(),
+    agent: { harness: "opencode" },
+  };
+  expect(() => validateResolvedProject(project)).toThrow(
+    /resolved\.agent\.model must be a non-empty string/,
+  );
+});
+
+test.each(["sonnet", "/x", "x/"])(
+  "opencode model %j is rejected as not provider/model",
+  (model) => {
+    const project = { ...fixtureProject(), agent: { harness: "opencode", model } };
+    expect(() => validateResolvedProject(project)).toThrow(
+      /resolved\.agent\.model must be "provider\/model"/,
+    );
+  },
+);
+
+test("claude without a model still fails, exactly as on main today", () => {
+  const project: Record<string, unknown> = {
+    ...fixtureProject(),
+    agent: { harness: "claude" },
+  };
+  expect(() => validateResolvedProject(project)).toThrow(
+    /resolved\.agent\.model must be a non-empty string/,
+  );
+});
+
+test("unknown harness fails naming both allowed values", () => {
+  const project = { ...fixtureProject(), agent: { harness: "codex", model: "x" } };
+  expect(() => validateResolvedProject(project)).toThrow(
+    /resolved\.agent\.harness must be one of claude, opencode/,
+  );
+});

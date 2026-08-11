@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { KNOWN_HARNESSES } from "@score/shared/agent-command";
+import { MANAGED_HARNESSES, parseOpencodeModel } from "@score/shared/agent-command";
 import type { ResolvedProject } from "@score/shared/config/config.interface";
 import { resolvedPath } from "@score/shared/config/layout";
 import { configHash } from "@score/shared/config/resolve";
@@ -71,6 +71,9 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
   );
   const agent = objectValue(record.agent, `${path}.agent`);
   assertNoUnknownKeys(agent, ["harness", "model"], `${path}.agent`);
+  const harness = enumValue(agent.harness, MANAGED_HARNESSES, `${path}.agent.harness`);
+  const model = stringValue(agent.model, `${path}.agent.model`);
+  if (harness === "opencode") parseOpencodeModel(model, `${path}.agent.model`);
   return {
     key: stringValue(record.key, `${path}.key`),
     mainLocation: stringValue(record.mainLocation, `${path}.mainLocation`),
@@ -78,10 +81,7 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
     githubRepo: stringValue(record.githubRepo, `${path}.githubRepo`),
     tickIntervalMs: positiveIntegerValue(record.tickIntervalMs, `${path}.tickIntervalMs`),
     maxParallel: positiveIntegerValue(record.maxParallel, `${path}.maxParallel`),
-    agent: {
-      harness: enumValue(agent.harness, KNOWN_HARNESSES, `${path}.agent.harness`),
-      model: stringValue(agent.model, `${path}.agent.model`),
-    },
+    agent: { harness, model },
     autoMerge: booleanValue(record.autoMerge, `${path}.autoMerge`),
     logRetentionDays: positiveIntegerValue(record.logRetentionDays, `${path}.logRetentionDays`),
     configHash: stringValue(record.configHash, `${path}.configHash`),
