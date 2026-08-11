@@ -104,8 +104,66 @@ test("harness other than claude fails loudly", () => {
   };
   value.projects.score.config.agent.harness = "codex";
   expect(() => validateScoreConfig(value)).toThrow(
-    /projects\.score\.config\.agent\.harness must be one of claude/,
+    /projects\.score\.config\.agent\.harness must be one of claude, opencode/,
   );
+});
+
+test("opencode harness with a provider\\/model string is accepted", () => {
+  const value = exampleValue() as {
+    projects: { score: { config: { agent: { harness: string; model: string } } } };
+  };
+  value.projects.score.config.agent.harness = "opencode";
+  value.projects.score.config.agent.model = "anthropic/claude-sonnet-5";
+  const config = validateScoreConfig(value);
+  expect(config.projects.score?.config.agent).toEqual({
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+});
+
+test("opencode without a model fails, same as claude", () => {
+  const value = exampleValue() as {
+    projects: { score: { config: { agent: { harness: string; model?: string } } } };
+  };
+  value.projects.score.config.agent.harness = "opencode";
+  delete value.projects.score.config.agent.model;
+  expect(() => validateScoreConfig(value)).toThrow(
+    /projects\.score\.config\.agent\.model must be a non-empty string/,
+  );
+});
+
+test("claude without a model still fails managed validation", () => {
+  const value = exampleValue() as {
+    projects: { score: { config: { agent: { model?: string } } } };
+  };
+  delete value.projects.score.config.agent.model;
+  expect(() => validateScoreConfig(value)).toThrow(
+    /projects\.score\.config\.agent\.model must be a non-empty string/,
+  );
+});
+
+test.each(["sonnet", "/x", "x/"])(
+  "opencode model %j is rejected as not provider/model",
+  (model) => {
+    const value = exampleValue() as {
+      projects: { score: { config: { agent: { harness: string; model: string } } } };
+    };
+    value.projects.score.config.agent.harness = "opencode";
+    value.projects.score.config.agent.model = model;
+    expect(() => validateScoreConfig(value)).toThrow(
+      /projects\.score\.config\.agent\.model must be "provider\/model"/,
+    );
+  },
+);
+
+test('opencode model "a/b/c" splits on the first slash', () => {
+  const value = exampleValue() as {
+    projects: { score: { config: { agent: { harness: string; model: string } } } };
+  };
+  value.projects.score.config.agent.harness = "opencode";
+  value.projects.score.config.agent.model = "a/b/c";
+  const config = validateScoreConfig(value);
+  expect(config.projects.score?.config.agent.model).toBe("a/b/c");
 });
 
 test("wrong types fail with the field path", () => {

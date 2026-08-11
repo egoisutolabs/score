@@ -1,5 +1,5 @@
 export interface AgentConfig {
-  harness: "claude";
+  harness: "claude" | "opencode";
   /** Absent = the harness's own default model (the manual repair path). */
   model?: string;
 }

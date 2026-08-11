@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { KNOWN_HARNESSES } from "@score/shared/agent-command";
+import { MANAGED_HARNESSES, parseOpencodeModel } from "@score/shared/agent-command";
 import type {
   ProjectConfig,
   ProjectRuntimeConfig,
@@ -75,6 +75,9 @@ function validateRuntimeConfig(value: unknown, path: string): ProjectRuntimeConf
   assertNoUnknownKeys(config, ["tick_interval_ms", "max_parallel", "agent", "auto_merge"], path);
   const agent = objectValue(config.agent, `${path}.agent`);
   assertNoUnknownKeys(agent, ["harness", "model"], `${path}.agent`);
+  const harness = enumValue(agent.harness, MANAGED_HARNESSES, `${path}.agent.harness`);
+  const model = stringValue(agent.model, `${path}.agent.model`);
+  if (harness === "opencode") parseOpencodeModel(model, `${path}.agent.model`);
   return {
     ...(config.tick_interval_ms !== undefined && {
       tick_interval_ms: positiveIntegerValue(config.tick_interval_ms, `${path}.tick_interval_ms`),
@@ -82,10 +85,7 @@ function validateRuntimeConfig(value: unknown, path: string): ProjectRuntimeConf
     ...(config.max_parallel !== undefined && {
       max_parallel: positiveIntegerValue(config.max_parallel, `${path}.max_parallel`),
     }),
-    agent: {
-      harness: enumValue(agent.harness, KNOWN_HARNESSES, `${path}.agent.harness`),
-      model: stringValue(agent.model, `${path}.agent.model`),
-    },
+    agent: { harness, model },
     ...(config.auto_merge !== undefined && {
       auto_merge: booleanValue(config.auto_merge, `${path}.auto_merge`),
     }),

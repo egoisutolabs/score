@@ -1,7 +1,29 @@
 import type { AgentConfig } from "@score/shared/config/config.interface";
 
-/** v1 harness enum (locked decision 7); jiti/module-path loading is a later epic. */
+/**
+ * v1 harness enum (locked decision 7); jiti/module-path loading is a later epic.
+ * Unmanaged-only (AGENT_CMD, agentArgv's tmux seam) — never merge this with
+ * MANAGED_HARNESSES, or AGENT_CMD=opencode would silently pass in unmanaged
+ * mode, where no server owner exists to run it.
+ */
 export const KNOWN_HARNESSES = ["claude"] as const;
+
+/** Harnesses a managed project config may declare (locked decision 1). */
+export const MANAGED_HARNESSES = ["claude", "opencode"] as const;
+
+/** Split on the first "/", rejecting an empty provider or model half (locked decision 9). */
+export function parseOpencodeModel(
+  model: string,
+  path: string,
+): { providerID: string; modelID: string } {
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) {
+    throw new Error(
+      `${path} must be "provider/model" for the opencode harness (got ${JSON.stringify(model)})`,
+    );
+  }
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) };
+}
 
 /**
  * The single seam turning agent config into a launch argv for both dispatch
