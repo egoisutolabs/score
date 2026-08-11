@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { OpencodeServer } from "@score/agents/opencode-server.service";
+import type { ManagedChild } from "@score/agents/opencode-server.service";
+import { bufferStdout, OpencodeServer } from "@score/agents/opencode-server.service";
 import { afterEach, expect, test } from "vitest";
 
 const fixtureDir = fileURLToPath(new URL(".", import.meta.url));
@@ -47,6 +49,37 @@ async function waitUntilGone(fixturePath: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+function fakeManagedChild(): ManagedChild {
+  const stdout = new Readable({ read() {} });
+  return {
+    process: { stdout } as ManagedChild["process"],
+    exited: new Promise(() => {}),
+    hasExited: () => false,
+  };
+}
+
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test("bufferStdout drops retained text once stopBuffering() is called", async () => {
+  const managed = fakeManagedChild();
+  const stdout = bufferStdout(managed);
+  managed.process.stdout.push("opencode server listening on http://127.0.0.1:1\n");
+  await nextTick();
+  expect(stdout.read()).toBe("opencode server listening on http://127.0.0.1:1\n");
+
+  stdout.stopBuffering();
+  expect(stdout.read()).toBe("");
+
+  // A long-lived child's later stdout (request logs, debug noise) must not
+  // grow the buffer back — the listener stays attached only to drain the
+  // pipe, per the regression this test guards against.
+  managed.process.stdout.push("request log line\n".repeat(1_000));
+  await nextTick();
+  expect(stdout.read()).toBe("");
+});
 
 test("start() resolves with the base URL a happy stub prints", async () => {
   const server = new OpencodeServer({

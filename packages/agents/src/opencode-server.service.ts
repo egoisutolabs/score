@@ -22,7 +22,7 @@ export interface OpencodeServerHandle {
   stop(): Promise<void>;
 }
 
-interface ManagedChild {
+export interface ManagedChild {
   readonly process: ChildProcessByStdio<null, Readable, null>;
   readonly exited: Promise<void>;
   hasExited(): boolean;
@@ -52,12 +52,27 @@ function spawnChild(executable: string): ManagedChild {
   return { process: child, exited: exitedPromise, hasExited: () => exited };
 }
 
-function bufferStdout(managed: ManagedChild): () => string {
+interface StdoutBuffer {
+  read(): string;
+  /** Drops the retained text and stops accumulating — the listener stays
+   * attached so the child's stdout pipe keeps draining for its whole life;
+   * only the string it was collected into is bounded to the startup phase. */
+  stopBuffering(): void;
+}
+
+export function bufferStdout(managed: ManagedChild): StdoutBuffer {
   let buffer = "";
+  let buffering = true;
   managed.process.stdout.on("data", (chunk: Buffer) => {
-    buffer += chunk.toString("utf8");
+    if (buffering) buffer += chunk.toString("utf8");
   });
-  return () => buffer;
+  return {
+    read: () => buffer,
+    stopBuffering: () => {
+      buffering = false;
+      buffer = "";
+    },
+  };
 }
 
 /**
@@ -99,14 +114,18 @@ export class OpencodeServer {
 
     const managed = spawnChild(this.#executable);
     this.#child = managed;
-    const readBuffer = bufferStdout(managed);
+    const stdout = bufferStdout(managed);
     managed.exited.then(() => {
       if (!this.#stopRequested) this.#resolveUnexpectedExit();
     });
 
     const deadlineAt = Date.now() + this.#startupDeadlineMs;
     try {
-      const baseUrl = await this.#readListeningUrl(managed, readBuffer, deadlineAt);
+      const baseUrl = await this.#readListeningUrl(managed, stdout.read, deadlineAt);
+      // The listening line is the only reason we ever needed stdout history —
+      // stop retaining it so a long-lived child's later output (request logs,
+      // debug noise) can't grow this string for the rest of its life.
+      stdout.stopBuffering();
       await this.#awaitDocReady(baseUrl, managed, deadlineAt);
       if (this.#stopRequested) {
         throw new Error("opencode server stop requested during startup");
