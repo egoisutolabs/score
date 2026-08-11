@@ -539,7 +539,7 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
         : ["--project", "demo", "--once"];
       const parsed = parseDaemonArguments(args);
 
-      await runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner });
+      await runDaemonLoop(parsed, fileLog, { fileLog, status }, { createOpencodeServer, runner });
 
       result = { startCalls, stopCalls, requests: stub.requests };
     } finally {
@@ -611,9 +611,66 @@ test("managed opencode: an unexpected child exit rejects runDaemonLoop with the 
       const parsed = parseDaemonArguments(["--project", "demo"]);
 
       await expect(
-        runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }),
+        runDaemonLoop(parsed, fileLog, { fileLog, status }, { createOpencodeServer, runner }),
       ).rejects.toThrow("opencode child exited unexpectedly");
 
+      expect(stopCalls).toBe(1);
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
+
+test("opencode without --managed: an unexpected child exit wakes an idle sleep immediately, not just under managedRuntime", async () => {
+  // Mirrors runDaemon's own unmanaged call site (daemon.run.ts:371):
+  // runDaemonLoop(parsed, log) with NO third argument. `reactive` falls
+  // back to `opencodeHandle !== undefined` specifically for this shape —
+  // a bare `--project X` run without `--managed` still owns the opencode
+  // child it spawned and must wake its idle sleep the same way a managed
+  // run does, not wait out the full (5s, per managedFixture) tick.
+  //
+  // A plain "it eventually rejects" assertion would NOT catch a dropped
+  // `|| opencodeHandle !== undefined` fallback: onReady's childError/reject
+  // wiring is unconditional on opencodeHandle alone, so the loop still
+  // rejects eventually either way — only the non-interruptible sleep
+  // actually waiting out the full tick before noticing exposes the
+  // regression, hence asserting elapsed time here.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      let resolveExit!: () => void;
+      const unexpectedExit = new Promise<void>((resolve) => {
+        resolveExit = resolve;
+      });
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        unexpectedExit,
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+      const runner = new FakeRunner(managedResponses(repo));
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+
+      const startedAt = Date.now();
+      const loopPromise = runDaemonLoop(parsed, new CaptureLogger(), undefined, {
+        createOpencodeServer,
+        runner,
+      });
+      // Comfortably after the first (near-instant, FakeRunner-backed) pass
+      // has entered the idle sleep, comfortably before the fixture's 5s tick.
+      setTimeout(resolveExit, 300);
+
+      await expect(loopPromise).rejects.toThrow("opencode child exited unexpectedly");
+
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
       expect(stopCalls).toBe(1);
     } finally {
       stub.close();
@@ -662,9 +719,12 @@ test("SIGINT during opencode startup stops the not-yet-ready child, not just an 
     try {
       // Fire-and-forget: runDaemonLoop is permanently suspended awaiting
       // stuckStart, so nothing here ever awaits its return.
-      void runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }).catch(
-        () => {},
-      );
+      void runDaemonLoop(
+        parsed,
+        fileLog,
+        { fileLog, status },
+        { createOpencodeServer, runner },
+      ).catch(() => {});
       // Let bootstrap's sequential preflight awaits run their course and
       // land on the earlyStop registration before signaling.
       const deadline = Date.now() + 5_000;
@@ -727,9 +787,12 @@ test("a second SIGINT during a slow opencode shutdown escalation still reaches e
     const priorSigint = process.listeners("SIGINT");
     const priorSigterm = process.listeners("SIGTERM");
     try {
-      void runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }).catch(
-        () => {},
-      );
+      void runDaemonLoop(
+        parsed,
+        fileLog,
+        { fileLog, status },
+        { createOpencodeServer, runner },
+      ).catch(() => {});
       const deadline = Date.now() + 5_000;
       while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
         if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");

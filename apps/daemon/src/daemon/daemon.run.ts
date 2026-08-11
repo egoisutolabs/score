@@ -351,9 +351,19 @@ interface StartableOpencodeServer {
 interface ManagedRuntime {
   readonly fileLog: FileLogger;
   readonly status: StatusWriter;
-  /** Test seam: overrides the opencode server. Defaults to a real `opencode serve` child. */
+}
+
+/**
+ * Test-only overrides, kept independent of ManagedRuntime: production's
+ * unmanaged path calls runDaemonLoop with no managedRuntime at all (see
+ * runDaemon below), so a seam nested inside it could never be exercised for
+ * that call shape — e.g. a bare `--project X` run with an opencode harness
+ * but no `--managed`.
+ */
+interface DaemonLoopOverrides {
+  /** Overrides the opencode server. Defaults to a real `opencode serve` child. */
   readonly createOpencodeServer?: () => StartableOpencodeServer;
-  /** Test seam: overrides the command runner. Defaults to the real Bun-backed one. */
+  /** Overrides the command runner. Defaults to the real Bun-backed one. */
   readonly runner?: CommandRunner;
 }
 
@@ -399,13 +409,14 @@ export async function runDaemonLoop(
   parsed: DaemonArguments,
   log: Logger,
   managedRuntime?: ManagedRuntime,
+  overrides?: DaemonLoopOverrides,
 ): Promise<void> {
   const { dryRun } = parsed;
   const status = managedRuntime?.status;
   // Heartbeat lands before the bootstrap preflight: a stalled gh/tmux/git
   // probe must not leave the supervisor staring at a stale pid.
   await status?.write({ state: "starting" });
-  const runner = managedRuntime?.runner ?? new LoggingCommandRunner(new BunCommandRunner(), log);
+  const runner = overrides?.runner ?? new LoggingCommandRunner(new BunCommandRunner(), log);
   const {
     runtime,
     workspaceRoot,
@@ -483,7 +494,7 @@ export async function runDaemonLoop(
       ? await (async () => {
           process.on("SIGINT", earlyStop);
           process.on("SIGTERM", earlyStop);
-          const server = (managedRuntime?.createOpencodeServer ?? (() => new OpencodeServer()))();
+          const server = (overrides?.createOpencodeServer ?? (() => new OpencodeServer()))();
           stopChild = () => server.stop();
           handle = await server.start();
           return new OpencodeService(handle.baseUrl, { namespace: namespace as string, dryRun });
