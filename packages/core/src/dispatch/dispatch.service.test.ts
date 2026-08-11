@@ -277,6 +277,42 @@ test("dry-run plans only available capacity and performs no mutations", async ()
   expect(agents.started).toEqual([]);
 });
 
+test("an undispatchable harness fails without creating a worktree, and the issue is retried next tick", async () => {
+  const opencodeOptions: DispatchServiceOptions = {
+    ...options,
+    maxParallelIssues: 1,
+    agent: { harness: "opencode", model: "openai/gpt-5" },
+  };
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(2)];
+    },
+    async observeIssue() {
+      return issue(2);
+    },
+    async observeDependency() {
+      return issue(2);
+    },
+  };
+
+  const workspace = new FakeWorkspace();
+  const agents = new FakeAgents();
+  const service = new DispatchService(opencodeOptions, source, changes, workspace, agents, {
+    async write(): Promise<void> {},
+  });
+
+  const first = await service.run();
+  expect(first.failed).toEqual([{ issueNumber: 2, message: 'unknown agent harness: "opencode"' }]);
+  expect(first.started).toEqual([]);
+  expect(workspace.created).toEqual([]);
+  expect(agents.started).toEqual([]);
+
+  // No worktree, session, or open change survived — the next tick attempts the issue again.
+  const second = await service.run();
+  expect(second.blocked).toEqual([]);
+  expect(second.failed).toEqual([{ issueNumber: 2, message: 'unknown agent harness: "opencode"' }]);
+});
+
 test("an older slug for the same issue number is still an in-flight witness", async () => {
   const workspace = new FakeWorkspace();
   const agents = new FakeAgents();

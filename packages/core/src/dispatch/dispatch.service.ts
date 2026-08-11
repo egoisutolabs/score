@@ -12,6 +12,7 @@ import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.inte
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import { assertKnownHarness } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import type { DispatchResult } from "./dispatch-result.interface";
 import type { IssueObservation } from "./issue.interface";
@@ -90,6 +91,9 @@ export class DispatchService {
 
     const identity = createWorkIdentity(this.options.workspaceRoot, issue, this.options.namespace);
     if (dryRun) return true;
+    // Reject an undispatchable harness before touching the filesystem — otherwise the
+    // worktree/briefing strand permanently (#alreadyInFlight sees them on every later tick).
+    assertKnownHarness(this.options.agent);
     await this.workspace.createWorktree(identity);
     await this.briefings.write(issue, identity);
     await this.agents.startImplementation(

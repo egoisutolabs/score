@@ -26,14 +26,24 @@ export function parseOpencodeModel(
 }
 
 /**
+ * Guards the transitional gap between MANAGED_HARNESSES (config validation,
+ * which already accepts "opencode") and KNOWN_HARNESSES (what the current
+ * TmuxService-only wiring can actually dispatch). Callers use this to fail
+ * before creating any state, not just before building a launch argv.
+ */
+export function assertKnownHarness(agent: Pick<AgentConfig, "harness">): void {
+  if (!(KNOWN_HARNESSES as readonly string[]).includes(agent.harness)) {
+    throw new Error(`unknown agent harness: ${JSON.stringify(agent.harness)}`);
+  }
+}
+
+/**
  * The single seam turning agent config into a launch argv for both dispatch
  * and repair. Signature stability matters more than internals — the future
  * harness-adapter epic replaces the body, not the callers.
  */
 export function agentArgv(agent: AgentConfig, prompt: string): readonly string[] {
-  if (agent.harness !== "claude") {
-    throw new Error(`unknown agent harness: ${JSON.stringify(agent.harness)}`);
-  }
+  assertKnownHarness(agent);
   return agent.model === undefined
     ? ["claude", prompt]
     : ["claude", "--model", agent.model, prompt];
