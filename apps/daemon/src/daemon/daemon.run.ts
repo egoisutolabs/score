@@ -1,8 +1,12 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { OpencodeService } from "@score/agents/opencode.service";
+import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
+import { OpencodeServer } from "@score/agents/opencode-server.service";
 import { TmuxService } from "@score/agents/tmux.service";
 import { GitService } from "@score/core/adapters/git.service";
+import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { CleanupService } from "@score/core/cleanup/cleanup.service";
 import type { DaemonPhase } from "@score/core/daemon/daemon.service";
 import { DaemonService } from "@score/core/daemon/daemon.service";
@@ -245,18 +249,29 @@ async function preflightManagedRuntime(
       `gh resolves ${project.mainLocation} to ${ghResolved}, not projects.${project.key}.github_repo ${project.githubRepo} — run: gh repo set-default ${project.githubRepo}`,
     );
   }
-  requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
-  // A tmux server that predates this daemon keeps the env it started with;
-  // agents in new sessions would inherit a stale GH_REPO and act on the
-  // wrong repo. Failure is fine — with no server running, the one our
-  // sessions start later inherits this process's already-cleaned env. This
-  // mutates the live server, so it honors the dry-run gate like every other
-  // mutation in the codebase.
-  await runner.run(["tmux", "set-environment", "-g", "-r", "GH_REPO"], {
-    cwd: project.mainLocation,
-    mutates: true,
-    dryRun,
-  });
+  if (project.agent.harness === "opencode") {
+    // Locked decision 13 — v1 has no HTTP auth, so a passworded child can
+    // never be authenticated by the adapter; refuse before it ever spawns.
+    if (process.env.OPENCODE_SERVER_PASSWORD !== undefined) {
+      throw new Error(
+        "OPENCODE_SERVER_PASSWORD is set, but the opencode adapter has no HTTP auth support (locked decision 13) — unset it before running a managed opencode daemon",
+      );
+    }
+    requireSuccess(await runner.run(["opencode", "--version"], { cwd: project.mainLocation }));
+  } else {
+    requireSuccess(await runner.run(["tmux", "-V"], { cwd: project.mainLocation }));
+    // A tmux server that predates this daemon keeps the env it started with;
+    // agents in new sessions would inherit a stale GH_REPO and act on the
+    // wrong repo. Failure is fine — with no server running, the one our
+    // sessions start later inherits this process's already-cleaned env. This
+    // mutates the live server, so it honors the dry-run gate like every other
+    // mutation in the codebase.
+    await runner.run(["tmux", "set-environment", "-g", "-r", "GH_REPO"], {
+      cwd: project.mainLocation,
+      mutates: true,
+      dryRun,
+    });
+  }
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {
     cwd: project.mainLocation,
@@ -329,6 +344,10 @@ export async function selfHealStagedMerge(
 interface ManagedRuntime {
   readonly fileLog: FileLogger;
   readonly status: StatusWriter;
+  /** Test seam: overrides how the opencode child is started. Defaults to a real `opencode serve` child. */
+  readonly startOpencodeServer?: () => Promise<OpencodeServerHandle>;
+  /** Test seam: overrides the command runner. Defaults to the real Bun-backed one. */
+  readonly runner?: CommandRunner;
 }
 
 export async function runDaemon(args: readonly string[]): Promise<void> {
@@ -369,7 +388,7 @@ export async function runDaemon(args: readonly string[]): Promise<void> {
  * second tick, repair every tick. Phases share one set of adapters and run
  * strictly in order, which keeps the primary checkout single-writer.
  */
-async function runDaemonLoop(
+export async function runDaemonLoop(
   parsed: DaemonArguments,
   log: Logger,
   managedRuntime?: ManagedRuntime,
@@ -379,7 +398,7 @@ async function runDaemonLoop(
   // Heartbeat lands before the bootstrap preflight: a stalled gh/tmux/git
   // probe must not leave the supervisor staring at a stale pid.
   await status?.write({ state: "starting" });
-  const runner = new LoggingCommandRunner(new BunCommandRunner(), log);
+  const runner = managedRuntime?.runner ?? new LoggingCommandRunner(new BunCommandRunner(), log);
   const {
     runtime,
     workspaceRoot,
@@ -425,199 +444,236 @@ async function runDaemonLoop(
     workspaceRoot,
     dryRun,
   });
-  const tmux = new TmuxService(runner, {
-    repositoryPath: runtime.repositoryRoot,
-    dryRun,
-    namespace,
-    promptsDir: projectPromptsDir,
-  });
+  // Exactly one AgentRuntime per daemon (locked decision 3): phases never
+  // branch on harness, they just share this instance. Opencode owns a single
+  // `opencode serve` child; claude keeps constructing TmuxService unchanged.
+  let handle: OpencodeServerHandle | undefined;
+  const agents: AgentRuntime =
+    agent.harness === "opencode"
+      ? await (async () => {
+          const startOpencodeServer =
+            managedRuntime?.startOpencodeServer ?? (() => new OpencodeServer().start());
+          handle = await startOpencodeServer();
+          return new OpencodeService(handle.baseUrl, { namespace: namespace as string, dryRun });
+        })()
+      : new TmuxService(runner, {
+          repositoryPath: runtime.repositoryRoot,
+          dryRun,
+          namespace,
+          promptsDir: projectPromptsDir,
+        });
+  // Never reassigned past this point — captured by closures below so TS
+  // (and readers) can trust it stays either a live handle or undefined.
+  const opencodeHandle = handle;
   const observations = new PassCachedChangeHost(github);
 
-  if (managedRuntime) await selfHealStagedMerge(git, log, dryRun, runtime.defaultBranch);
+  // Everything from here through the polling loop must run inside this
+  // try/finally: any failure — including one during composition, before the
+  // loop even starts — must still stop a child that was successfully
+  // started. OpencodeServer.stop() is idempotent, so a later stop from the
+  // SIGTERM/unexpected-exit path never double-kills anything.
+  let childError: Error | undefined;
+  try {
+    if (managedRuntime) await selfHealStagedMerge(git, log, dryRun, runtime.defaultBranch);
 
-  const maintenance = new LegacyWorkflowService(
-    new CleanupService(
-      {
-        defaultBranch: runtime.defaultBranch,
-        workspaceRoot,
-        harnessOwnedPaths: ["TASK.md", ".claude/"],
-        autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
-        namespace,
-      },
-      github,
-      git,
-      tmux,
-    ),
-    new DispatchService(
-      {
-        workspaceRoot,
-        maxParallelIssues,
-        issues: {
-          eligibleLabelPrefix: tuning("EPIC_LABEL_PREFIX") || "epic:",
-          holdLabel: "hold",
-          umbrellaLabel: "umbrella",
-        },
-        agent,
-        namespace,
-      },
-      github,
-      observations,
-      git,
-      tmux,
-      new TaskBriefingService(),
-    ),
-  );
-  const landing = new LandingService(
-    {
-      repositoryRoot: runtime.repositoryRoot,
-      repository: runtime.repository,
-      defaultBranch: runtime.defaultBranch,
-      dryRun,
-      noMerge,
-      maxMerges,
-      soakTicks,
-      skipLabels,
-      onlyIssueBranches: tuning("ONLY_ISSUE_BRANCHES") === "1",
-    },
-    github,
-    git,
-    runner,
-  );
-  const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10));
-  const repair = new RepairService(
-    {
-      agent,
-      sessionSuffix: tuning("SESSION_SUFFIX") || sessionSuffixForNamespace(namespace),
-      includeClean: false,
-      onlyPullRequests: new Set<string>(),
-      noSpawn: false,
-      shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
-      buildRed: (number) => gateVerdicts.get(number),
-    },
-    github,
-    git,
-    tmux,
-  );
-
-  const pass = { cleaned: 0, started: 0, merged: 0, soaking: 0, repaired: 0, working: 0 };
-  let currentTick = 0;
-  // Retained across passes: landing runs every second tick, and status keeps
-  // carrying the last landing verdict until the next landing tick replaces it.
-  let lastGateFailure: string | null = null;
-  // Landing → repair build-red handoff (epic decision 11): repair's own scan
-  // sees only GitHub facts, so landing's merged-tree verdicts ride this map.
-  const gateVerdicts = new Map<number, string>();
-  let passError: string | null = null;
-  let stopping = false;
-  const phases: readonly DaemonPhase[] = [
-    {
-      // Cleanup before dispatch is the legacy invariant: free capacity first.
-      name: "cleanup+dispatch",
-      everyTicks: 1,
-      run: async () => {
-        const result = await maintenance.runMaintenanceTick(dryRun);
-        log.lines(renderMaintenanceTick(result));
-        pass.cleaned += result.cleanup.filter(
-          (cleanup) => cleanup.action === "CLEANED" || cleanup.action === "PLANNED",
-        ).length;
-        pass.started += result.dispatch.started.length + result.dispatch.planned.length;
-      },
-    },
-    {
-      name: "landing",
-      everyTicks: 2,
-      run: async () => {
-        const results = await landing.runTick();
-        // undefined = no gate verdict this tick; the last known failure stands.
-        const gateVerdict = gateFailureFrom(results);
-        if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
-        applyGateVerdicts(gateVerdicts, results);
-        log.lines(renderLandingTick(results));
-        pass.merged += results.filter(
-          (result) => result.tag === "merged" || result.tag === "would-merge",
-        ).length;
-        pass.soaking += results.filter((result) => result.tag === "soaking").length;
-      },
-    },
-    {
-      name: "repair",
-      everyTicks: 1,
-      run: async () => {
-        ledger.startPass(currentTick, new Set(await tmux.listSessions()));
-        const results = await repair.run(dryRun);
-        ledger.finishPass(results);
-        const acted = results.filter(
-          (result) => result.action === "PINGED" || result.action === "SPAWNED",
-        ).length;
-        // renderRepairRun always prints a summary line; at one tick apiece that
-        // is noise, so a tick with nothing to fix stays at debug.
-        if (acted > 0) log.lines(renderRepairRun(results));
-        else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
-        pass.repaired += acted;
-        pass.working += results.filter((result) => result.action === "WORKING").length;
-      },
-    },
-  ];
-
-  const daemon = new DaemonService(
-    phases,
-    (name, error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      log.warn(`✗ phase ${name} failed: ${message}`);
-      if (error instanceof Error && error.stack) log.debug(error.stack);
-      passError = `${name}: ${message}`;
-    },
-    () => stopping,
-  );
-
-  await runPollingLoop(
-    async () => {
-      currentTick = daemon.tick;
-      const startedAt = Date.now();
-      passError = null;
-      await status?.write({
-        state: "running",
-        tick: currentTick,
-        last_pass_started_at: new Date().toISOString(),
-      });
-      observations.startPass();
-      for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
-
-      await daemon.runPass();
-
-      const elapsedMs = Date.now() - startedAt;
-      const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
-      log.lines([
+    const maintenance = new LegacyWorkflowService(
+      new CleanupService(
         {
-          level: changed > 0 ? "info" : "debug",
-          text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
+          defaultBranch: runtime.defaultBranch,
+          workspaceRoot,
+          harnessOwnedPaths: ["TASK.md", ".claude/"],
+          autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
+          namespace,
         },
-      ]);
-      // Phases are sequential by design; a pass longer than the tick just
-      // delays the next one. Say so instead of trying to catch up.
-      if (elapsedMs > tickIntervalMs) {
-        log.warn(
-          `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
-        );
-      }
-      await status?.write({
-        last_pass_completed_at: new Date().toISOString(),
-        last_error: passError,
-        last_gate_failure: lastGateFailure,
-      });
-    },
-    parsed.once,
-    tickIntervalMs,
-    managedRuntime
-      ? {
-          interruptible: true,
-          onStopRequested: () => {
-            stopping = true;
-            // Fire-and-forget from a signal handler: a failed write must not
-            // become an unhandled rejection that crashes the clean shutdown.
-            void status?.write({ state: "stopping" }).catch(() => {});
+        github,
+        git,
+        agents,
+      ),
+      new DispatchService(
+        {
+          workspaceRoot,
+          maxParallelIssues,
+          issues: {
+            eligibleLabelPrefix: tuning("EPIC_LABEL_PREFIX") || "epic:",
+            holdLabel: "hold",
+            umbrellaLabel: "umbrella",
           },
+          agent,
+          namespace,
+        },
+        github,
+        observations,
+        git,
+        agents,
+        new TaskBriefingService(),
+      ),
+    );
+    const landing = new LandingService(
+      {
+        repositoryRoot: runtime.repositoryRoot,
+        repository: runtime.repository,
+        defaultBranch: runtime.defaultBranch,
+        dryRun,
+        noMerge,
+        maxMerges,
+        soakTicks,
+        skipLabels,
+        onlyIssueBranches: tuning("ONLY_ISSUE_BRANCHES") === "1",
+      },
+      github,
+      git,
+      runner,
+    );
+    const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10));
+    const repair = new RepairService(
+      {
+        agent,
+        sessionSuffix: tuning("SESSION_SUFFIX") || sessionSuffixForNamespace(namespace),
+        includeClean: false,
+        onlyPullRequests: new Set<string>(),
+        noSpawn: false,
+        shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
+        buildRed: (number) => gateVerdicts.get(number),
+      },
+      github,
+      git,
+      agents,
+    );
+
+    const pass = { cleaned: 0, started: 0, merged: 0, soaking: 0, repaired: 0, working: 0 };
+    let currentTick = 0;
+    // Retained across passes: landing runs every second tick, and status keeps
+    // carrying the last landing verdict until the next landing tick replaces it.
+    let lastGateFailure: string | null = null;
+    // Landing → repair build-red handoff (epic decision 11): repair's own scan
+    // sees only GitHub facts, so landing's merged-tree verdicts ride this map.
+    const gateVerdicts = new Map<number, string>();
+    let passError: string | null = null;
+    let stopping = false;
+    const phases: readonly DaemonPhase[] = [
+      {
+        // Cleanup before dispatch is the legacy invariant: free capacity first.
+        name: "cleanup+dispatch",
+        everyTicks: 1,
+        run: async () => {
+          const result = await maintenance.runMaintenanceTick(dryRun);
+          log.lines(renderMaintenanceTick(result));
+          pass.cleaned += result.cleanup.filter(
+            (cleanup) => cleanup.action === "CLEANED" || cleanup.action === "PLANNED",
+          ).length;
+          pass.started += result.dispatch.started.length + result.dispatch.planned.length;
+        },
+      },
+      {
+        name: "landing",
+        everyTicks: 2,
+        run: async () => {
+          const results = await landing.runTick();
+          // undefined = no gate verdict this tick; the last known failure stands.
+          const gateVerdict = gateFailureFrom(results);
+          if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
+          applyGateVerdicts(gateVerdicts, results);
+          log.lines(renderLandingTick(results));
+          pass.merged += results.filter(
+            (result) => result.tag === "merged" || result.tag === "would-merge",
+          ).length;
+          pass.soaking += results.filter((result) => result.tag === "soaking").length;
+        },
+      },
+      {
+        name: "repair",
+        everyTicks: 1,
+        run: async () => {
+          ledger.startPass(currentTick, new Set(await agents.listSessions()));
+          const results = await repair.run(dryRun);
+          ledger.finishPass(results);
+          const acted = results.filter(
+            (result) => result.action === "PINGED" || result.action === "SPAWNED",
+          ).length;
+          // renderRepairRun always prints a summary line; at one tick apiece that
+          // is noise, so a tick with nothing to fix stays at debug.
+          if (acted > 0) log.lines(renderRepairRun(results));
+          else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
+          pass.repaired += acted;
+          pass.working += results.filter((result) => result.action === "WORKING").length;
+        },
+      },
+    ];
+
+    const daemon = new DaemonService(
+      phases,
+      (name, error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn(`✗ phase ${name} failed: ${message}`);
+        if (error instanceof Error && error.stack) log.debug(error.stack);
+        passError = `${name}: ${message}`;
+      },
+      () => stopping,
+    );
+
+    await runPollingLoop(
+      async () => {
+        currentTick = daemon.tick;
+        const startedAt = Date.now();
+        passError = null;
+        await status?.write({
+          state: "running",
+          tick: currentTick,
+          last_pass_started_at: new Date().toISOString(),
+        });
+        observations.startPass();
+        for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
+
+        await daemon.runPass();
+
+        const elapsedMs = Date.now() - startedAt;
+        const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
+        log.lines([
+          {
+            level: changed > 0 ? "info" : "debug",
+            text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
+          },
+        ]);
+        // Phases are sequential by design; a pass longer than the tick just
+        // delays the next one. Say so instead of trying to catch up.
+        if (elapsedMs > tickIntervalMs) {
+          log.warn(
+            `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
+          );
         }
-      : {},
-  );
+        await status?.write({
+          last_pass_completed_at: new Date().toISOString(),
+          last_error: passError,
+          last_gate_failure: lastGateFailure,
+        });
+      },
+      parsed.once,
+      tickIntervalMs,
+      managedRuntime
+        ? {
+            interruptible: true,
+            onStopRequested: () => {
+              stopping = true;
+              // Fire-and-forget from a signal handler: a failed write must not
+              // become an unhandled rejection that crashes the clean shutdown.
+              void status?.write({ state: "stopping" }).catch(() => {});
+            },
+            // The child-exit seam: reuses the identical stop machinery a
+            // signal uses (same onStopRequested, same idle-sleep wake), so an
+            // unexpected exit and a SIGTERM settle the pass the same way.
+            ...(opencodeHandle !== undefined && {
+              onReady: (requestStop: () => void) => {
+                opencodeHandle.unexpectedExit.then(() => {
+                  childError = new Error("opencode child exited unexpectedly");
+                  requestStop();
+                });
+              },
+            }),
+          }
+        : {},
+    );
+  } finally {
+    await opencodeHandle?.stop();
+  }
+  if (childError) throw childError;
 }

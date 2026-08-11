@@ -1,19 +1,24 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { GitService } from "@score/core/adapters/git.service";
+import { StatusWriter } from "@score/core/daemon/status.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
-import type { ScoreConfig } from "@score/shared/config/config.interface";
+import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
 import { resolveProjects } from "@score/shared/config/resolve";
+import { createFileLogger } from "@score/shared/file-log";
 import type { Logger, LogLine } from "@score/shared/log";
 import { expect, test } from "vitest";
 import {
   bootstrapDaemon,
   parseDaemonArguments,
   runDaemon,
+  runDaemonLoop,
   selfHealStagedMerge,
 } from "./daemon.run";
 
@@ -99,7 +104,10 @@ async function withEnv(vars: Record<string, string>, body: () => Promise<void>):
 }
 
 /** Writes a valid resolved.json for `demo` under a temp SCORE_HOME and returns both dirs. */
-async function managedFixture(mainLocation: string): Promise<{ home: string; worktree: string }> {
+async function managedFixture(
+  mainLocation: string,
+  agent: AgentConfig = { harness: "claude", model: "claude-sonnet-5" },
+): Promise<{ home: string; worktree: string }> {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const worktree = join(home, "wt-demo");
   const config: ScoreConfig = {
@@ -113,7 +121,7 @@ async function managedFixture(mainLocation: string): Promise<{ home: string; wor
         config: {
           tick_interval_ms: 5000,
           max_parallel: 2,
-          agent: { harness: "claude", model: "claude-sonnet-5" },
+          agent,
         },
       },
     },
@@ -137,6 +145,18 @@ function managedResponses(repo: string) {
     if (command[1] === "set-environment") return { exitCode: 1 };
     if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
     return {};
+  };
+}
+
+/** Same git/gh proofs as managedResponses, plus empty issue/PR lists so every
+ * phase's gh JSON parsing succeeds with zero candidates instead of erroring. */
+function managedResponsesOpencode(repo: string) {
+  const base = managedResponses(repo);
+  return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
+    if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
+      return { stdout: "[]\n" };
+    }
+    return base(command);
   };
 }
 
@@ -354,6 +374,143 @@ test("managed bootstrap fails when main_location is not the git toplevel", async
       /projects\.demo\.main_location .* is not a git toplevel/,
     );
   });
+});
+
+test("managed opencode bootstrap preflights opencode --version and skips tmux entirely", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    const boot = await bootstrapDaemon(parsed, runner);
+
+    expect(boot.agent).toEqual({ harness: "opencode", model: "anthropic/claude-sonnet-5" });
+    // A FakeRunner proves no tmux argv is ever issued for this harness.
+    expect(runner.calls.some((call) => call.command[0] === "tmux")).toBe(false);
+    expect(
+      runner.calls.some(
+        (call) => call.command[0] === "opencode" && call.command[1] === "--version",
+      ),
+    ).toBe(true);
+  });
+});
+
+test("OPENCODE_SERVER_PASSWORD fails bootstrap before any opencode call, naming the variable", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home, OPENCODE_SERVER_PASSWORD: "secret" }, async () => {
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(/OPENCODE_SERVER_PASSWORD/);
+    expect(runner.calls.some((call) => call.command[0] === "opencode")).toBe(false);
+  });
+});
+
+/** Records every request a fake `opencode serve` receives. */
+async function startFakeOpencodeServer(): Promise<{
+  baseUrl: string;
+  requests: { method: string; path: string }[];
+  close: () => void;
+}> {
+  const requests: { method: string; path: string }[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    requests.push({ method: request.method ?? "GET", path: url.pathname });
+    if (url.pathname === "/api/session") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [], cursor: {} }));
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("expected a bound TCP address");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => server.close(),
+  };
+}
+
+async function runOpencodeLoop(dryRun: boolean): Promise<{
+  startCalls: number;
+  stopCalls: number;
+  requests: { method: string; path: string }[];
+}> {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  let result!: {
+    startCalls: number;
+    stopCalls: number;
+    requests: { method: string; path: string }[];
+  };
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let startCalls = 0;
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Never resolves: these runs settle via --once, not a child exit.
+        unexpectedExit: new Promise(() => {}),
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const startOpencodeServer = async (): Promise<OpencodeServerHandle> => {
+        startCalls++;
+        return handle;
+      };
+
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const status = new StatusWriter(join(runsDir, "status.json"));
+      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      const args = dryRun
+        ? ["--project", "demo", "--once", "--dry-run"]
+        : ["--project", "demo", "--once"];
+      const parsed = parseDaemonArguments(args);
+
+      await runDaemonLoop(parsed, fileLog, { fileLog, status, startOpencodeServer, runner });
+
+      result = { startCalls, stopCalls, requests: stub.requests };
+    } finally {
+      stub.close();
+    }
+  });
+  return result;
+}
+
+test("managed opencode: starts the child once and every phase shares that OpencodeService instance", async () => {
+  const { startCalls, stopCalls, requests } = await runOpencodeLoop(false);
+
+  expect(startCalls).toBe(1);
+  expect(stopCalls).toBe(1);
+  // The repair phase's ledger.startPass calls agents.listSessions() every
+  // tick unconditionally — seeing it land on the one fake server proves
+  // every phase shares the single OpencodeService this loop constructed.
+  expect(requests.some((r) => r.method === "GET" && r.path === "/api/session")).toBe(true);
+});
+
+test("managed opencode --dry-run: the child still starts and stops, with zero mutating requests", async () => {
+  const { startCalls, stopCalls, requests } = await runOpencodeLoop(true);
+
+  expect(startCalls).toBe(1);
+  expect(stopCalls).toBe(1);
+  expect(requests.some((r) => r.method === "POST" || r.method === "DELETE")).toBe(false);
 });
 
 test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {

@@ -66,6 +66,13 @@ export interface PollingLoopOptions {
   readonly interruptible?: boolean;
   /** Fires once, on the first stop signal — the seam for status writes and between-phase skips. */
   readonly onStopRequested?: () => void;
+  /**
+   * Called once, synchronously, before the loop starts. Hands back the exact
+   * stop() closure SIGINT/SIGTERM use — the seam for an internal caller (e.g.
+   * an unexpected child-exit handler) to request the identical shutdown:
+   * same idempotency, same onStopRequested, same idle-sleep wake.
+   */
+  readonly onReady?: (requestStop: () => void) => void;
 }
 
 /**
@@ -87,6 +94,7 @@ export async function runPollingLoop(
     options.onStopRequested?.();
     wake();
   };
+  options.onReady?.(stop);
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   try {
