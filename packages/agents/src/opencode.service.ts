@@ -11,10 +11,14 @@ import type { WorkIdentity } from "@score/core/dispatch/work.interface";
 import { parseOpencodeModel } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
 export interface OpencodeServiceOptions {
   /** Project key namespacing every session this adapter looks up or creates. */
   readonly namespace: string;
   readonly dryRun?: boolean;
+  /** Bounds every HTTP call, so a wedged server fails the phase instead of hanging it forever. */
+  readonly requestTimeoutMs?: number;
 }
 
 const ALLOW_ALL_PERMISSION: readonly SessionPermission[] = [
@@ -169,6 +173,7 @@ export class OpencodeService implements AgentRuntime {
     }
     const response = await fetch(url, {
       method,
+      signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
       ...(body !== undefined && {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),

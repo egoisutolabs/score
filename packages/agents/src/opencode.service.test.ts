@@ -409,3 +409,23 @@ test("listSessions output feeds RepairLedger.startPass — an idle session count
   ledger.startPass(2, new Set(await service.listSessions()));
   expect(ledger.shouldAct(7, defects)).toBe(false);
 });
+
+test("a wedged server fails the request within requestTimeoutMs instead of hanging forever", async () => {
+  // Accepts the connection but never responds — simulates opencode serve
+  // going unresponsive without exiting, so unexpectedExit never fires either.
+  const hung = createServer(() => {});
+  await new Promise<void>((resolve) => hung.listen(0, "127.0.0.1", resolve));
+  const { port } = hung.address() as AddressInfo;
+  const wedged = new OpencodeService(`http://127.0.0.1:${port}`, {
+    namespace: "ns",
+    requestTimeoutMs: 200,
+  });
+
+  const startedAt = Date.now();
+  await expect(wedged.listSessions()).rejects.toThrow();
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+
+  await new Promise<void>((resolve, reject) =>
+    hung.close((error) => (error ? reject(error) : resolve())),
+  );
+});

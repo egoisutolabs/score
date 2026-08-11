@@ -448,9 +448,19 @@ export async function runDaemonLoop(
   // branch on harness, they just share this instance. Opencode owns a single
   // `opencode serve` child; claude keeps constructing TmuxService unchanged.
   let handle: OpencodeServerHandle | undefined;
+  // A signal arriving after the child spawns but before runPollingLoop
+  // installs its own handlers would otherwise hit the runtime's default
+  // SIGINT/SIGTERM action, which skips `finally` blocks entirely and
+  // orphans the child. This narrow net closes exactly that window; it is
+  // removed the moment runPollingLoop's own handlers take over below.
+  const earlyStop = () => {
+    void handle?.stop().finally(() => process.exit(1));
+  };
   const agents: AgentRuntime =
     agent.harness === "opencode"
       ? await (async () => {
+          process.once("SIGINT", earlyStop);
+          process.once("SIGTERM", earlyStop);
           const startOpencodeServer =
             managedRuntime?.startOpencodeServer ?? (() => new OpencodeServer().start());
           handle = await startOpencodeServer();
@@ -466,6 +476,10 @@ export async function runDaemonLoop(
   // (and readers) can trust it stays either a live handle or undefined.
   const opencodeHandle = handle;
   const observations = new PassCachedChangeHost(github);
+  // Managed mode wants graceful SIGTERM handling; an owned opencode child
+  // needs the same reactivity even outside managed mode — see the
+  // runPollingLoop options below.
+  const reactive = managedRuntime !== undefined || opencodeHandle !== undefined;
 
   // Everything from here through the polling loop must run inside this
   // try/finally: any failure — including one during composition, before the
@@ -481,7 +495,10 @@ export async function runDaemonLoop(
         {
           defaultBranch: runtime.defaultBranch,
           workspaceRoot,
-          harnessOwnedPaths: ["TASK.md", ".claude/"],
+          // .claude/ is claude-trust preseeding (TmuxService only); opencode
+          // never writes it, so treating it as disposable there would let an
+          // operator's genuine .claude/ change get silently discarded.
+          harnessOwnedPaths: agent.harness === "opencode" ? ["TASK.md"] : ["TASK.md", ".claude/"],
           autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
           namespace,
         },
@@ -614,6 +631,11 @@ export async function runDaemonLoop(
       () => stopping,
     );
 
+    // runPollingLoop installs its own graceful SIGINT/SIGTERM handling next;
+    // the narrow early-signal net above has done its job.
+    process.off("SIGINT", earlyStop);
+    process.off("SIGTERM", earlyStop);
+
     await runPollingLoop(
       async () => {
         currentTick = daemon.tick;
@@ -652,30 +674,42 @@ export async function runDaemonLoop(
       },
       parsed.once,
       tickIntervalMs,
-      managedRuntime
-        ? {
-            interruptible: true,
-            onStopRequested: () => {
+      {
+        // Managed mode wants graceful SIGTERM handling; an owned opencode
+        // child needs the same reactivity even outside managed mode (a bare
+        // `--project X` run without --managed still owns the child it just
+        // spawned and must notice it dying, not just poll a dead adapter).
+        ...(reactive && {
+          interruptible: true,
+          onStopRequested: () => {
+            stopping = true;
+            // Fire-and-forget from a signal handler: a failed write must not
+            // become an unhandled rejection that crashes the clean shutdown.
+            void status?.write({ state: "stopping" }).catch(() => {});
+          },
+        }),
+        // The child-exit seam: reuses the identical stop machinery a signal
+        // uses (same idle-sleep wake), so an unexpected exit settles the
+        // pass the same way SIGTERM does.
+        ...(opencodeHandle !== undefined && {
+          onReady: (requestStop: () => void) => {
+            opencodeHandle.unexpectedExit.then(() => {
+              // A stop already under way (e.g. a supervisor's SIGTERM
+              // reaching the whole cgroup, including this child, before our
+              // own deferred handle.stop() runs) means this exit is
+              // expected, not fatal — don't record a spurious child error.
+              if (!stopping) childError = new Error("opencode child exited unexpectedly");
               stopping = true;
-              // Fire-and-forget from a signal handler: a failed write must not
-              // become an unhandled rejection that crashes the clean shutdown.
-              void status?.write({ state: "stopping" }).catch(() => {});
-            },
-            // The child-exit seam: reuses the identical stop machinery a
-            // signal uses (same onStopRequested, same idle-sleep wake), so an
-            // unexpected exit and a SIGTERM settle the pass the same way.
-            ...(opencodeHandle !== undefined && {
-              onReady: (requestStop: () => void) => {
-                opencodeHandle.unexpectedExit.then(() => {
-                  childError = new Error("opencode child exited unexpectedly");
-                  requestStop();
-                });
-              },
-            }),
-          }
-        : {},
+              requestStop();
+            });
+          },
+        }),
+      },
     );
   } finally {
+    // Idempotent no-ops if runPollingLoop already took the handoff above.
+    process.off("SIGINT", earlyStop);
+    process.off("SIGTERM", earlyStop);
     await opencodeHandle?.stop();
   }
   if (childError) throw childError;

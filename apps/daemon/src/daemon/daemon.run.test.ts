@@ -148,12 +148,38 @@ function managedResponses(repo: string) {
   };
 }
 
-/** Same git/gh proofs as managedResponses, plus empty issue/PR lists so every
- * phase's gh JSON parsing succeeds with zero candidates instead of erroring. */
+const SEEDED_ISSUE_NUMBER = 7;
+const SEEDED_ISSUE_TITLE = "Demo issue";
+/** Matches createWorkIdentity's `issue-<n>-<slug(title)>` branch naming. */
+const SEEDED_ISSUE_BRANCH = `issue-${SEEDED_ISSUE_NUMBER}-demo-issue`;
+
+/**
+ * Same git/gh proofs as managedResponses, plus one real open, dispatchable
+ * issue and empty PR lists. A real candidate forces dispatch (not just
+ * repair's unconditional listSessions) through the shared AgentRuntime, and
+ * lets a dry-run test prove suppression against a call that would otherwise
+ * happen — a candidate-free backlog can't tell either apart.
+ */
 function managedResponsesOpencode(repo: string) {
   const base = managedResponses(repo);
+  const issueJson = JSON.stringify({
+    number: SEEDED_ISSUE_NUMBER,
+    title: SEEDED_ISSUE_TITLE,
+    body: "",
+    // isOpenChildIssue requires an eligibleLabelPrefix match (default "epic:").
+    labels: [{ name: "epic:demo" }],
+    state: "OPEN",
+    stateReason: null,
+    url: `https://github.com/egoisutolabs/demo/issues/${SEEDED_ISSUE_NUMBER}`,
+  });
   return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
-    if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
+    if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
+      return { stdout: `[${issueJson}]\n` };
+    }
+    if (command[0] === "gh" && command[1] === "issue" && command[2] === "view") {
+      return { stdout: `${issueJson}\n` };
+    }
+    if (command[0] === "gh" && command[1] === "pr") {
       return { stdout: "[]\n" };
     }
     return base(command);
@@ -421,10 +447,32 @@ async function startFakeOpencodeServer(): Promise<{
   const requests: { method: string; path: string }[] = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    requests.push({ method: request.method ?? "GET", path: url.pathname });
-    if (url.pathname === "/api/session") {
+    const method = request.method ?? "GET";
+    requests.push({ method, path: url.pathname });
+    const json = (body: unknown) => {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ data: [], cursor: {} }));
+      response.end(JSON.stringify(body));
+    };
+    if (method === "GET" && url.pathname === "/api/session") {
+      json({ data: [], cursor: {} });
+      return;
+    }
+    // POST /session creates one; every session-scoped mutation below (prompt,
+    // abort, delete) just needs to succeed — nothing reads its body.
+    if (method === "POST" && url.pathname === "/session") {
+      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
+      return;
+    }
+    if (
+      (method === "POST" && /^\/session\/[^/]+\/(prompt_async|abort)$/.test(url.pathname)) ||
+      (method === "DELETE" && /^\/session\/[^/]+$/.test(url.pathname))
+    ) {
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    if (method === "GET" && /^\/session\/[^/]+$/.test(url.pathname)) {
+      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
       return;
     }
     response.writeHead(404);
@@ -448,10 +496,14 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
   requests: { method: string; path: string }[];
 }> {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedFixture(repo, {
+  const { home, worktree } = await managedFixture(repo, {
     harness: "opencode",
     model: "anthropic/claude-sonnet-5",
   });
+  // Pre-existing worktree dir: createWorktree() short-circuits on it (real
+  // git plumbing is out of scope for a FakeRunner), so the briefing write
+  // that follows has somewhere real to land TASK.md.
+  await mkdir(join(worktree, SEEDED_ISSUE_BRANCH), { recursive: true });
   let result!: {
     startCalls: number;
     stopCalls: number;
@@ -499,10 +551,15 @@ test("managed opencode: starts the child once and every phase shares that Openco
 
   expect(startCalls).toBe(1);
   expect(stopCalls).toBe(1);
-  // The repair phase's ledger.startPass calls agents.listSessions() every
-  // tick unconditionally — seeing it land on the one fake server proves
-  // every phase shares the single OpencodeService this loop constructed.
+  // Repair's ledger.startPass calls agents.listSessions() every tick
+  // unconditionally (a GET); dispatch only calls startImplementation (a
+  // POST) because a real candidate was seeded. Both landing on the one fake
+  // server proves cleanup+dispatch and repair share the same instance.
   expect(requests.some((r) => r.method === "GET" && r.path === "/api/session")).toBe(true);
+  expect(requests.some((r) => r.method === "POST" && r.path === "/session")).toBe(true);
+  expect(
+    requests.some((r) => r.method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(r.path)),
+  ).toBe(true);
 });
 
 test("managed opencode --dry-run: the child still starts and stops, with zero mutating requests", async () => {
@@ -510,8 +567,56 @@ test("managed opencode --dry-run: the child still starts and stops, with zero mu
 
   expect(startCalls).toBe(1);
   expect(stopCalls).toBe(1);
+  // Same seeded candidate as the non-dry-run test above — proven there to
+  // produce a POST — makes zero mutations here a real assertion, not a
+  // vacuous one from an empty backlog.
   expect(requests.some((r) => r.method === "POST" || r.method === "DELETE")).toBe(false);
 });
+
+test("managed opencode: an unexpected child exit rejects runDaemonLoop with the child error and stops the child exactly once", async () => {
+  // Exercises the onReady/childError wiring inside runDaemonLoop itself —
+  // not the standalone reimplementation in managed-loop.fixture.ts — so a
+  // regression that drops the throw or breaks the requestStop wiring here
+  // fails a test that actually calls the production entry point.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Already resolved: the child "exited" before the loop even starts,
+        // so the very first tick's shouldStop() check settles the race
+        // deterministically instead of depending on real time passing.
+        unexpectedExit: Promise.resolve(),
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const startOpencodeServer = async (): Promise<OpencodeServerHandle> => handle;
+
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const status = new StatusWriter(join(runsDir, "status.json"));
+      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      // once:false — a fatal exit must interrupt the long-running loop, not
+      // just be reachable when the loop was already going to stop anyway.
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+
+      await expect(
+        runDaemonLoop(parsed, fileLog, { fileLog, status, startOpencodeServer, runner }),
+      ).rejects.toThrow("opencode child exited unexpectedly");
+
+      expect(stopCalls).toBe(1);
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
 
 test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
   await withEnv(
