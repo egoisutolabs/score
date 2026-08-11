@@ -17,7 +17,7 @@ export const CONFIG_TEMPLATE = `// Score fleet configuration — edit, then run 
     //   "config": {
     //     "tick_interval_ms": 60000, // poll-loop interval, in milliseconds
     //     "max_parallel": 2, // how many issues may be in flight at once
-    //     "agent": { "harness": "claude", "model": "claude-sonnet-5" }, // harness must be "claude"
+    //     "agent": { "harness": "claude", "model": "claude-sonnet-5" }, // harness: "claude" or "opencode"; opencode's model must be "provider/model", e.g. "anthropic/claude-sonnet-5"
     //     "auto_merge": true, // merge green approved PRs automatically
     //   },
     // },

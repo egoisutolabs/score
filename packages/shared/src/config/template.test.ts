@@ -1,8 +1,20 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseJsonc } from "@score/shared/config/jsonc";
+import { validateScoreConfig } from "@score/shared/config/load";
 import { CONFIG_TEMPLATE, runConfigInit } from "@score/shared/config/template";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+
+/** Strips the leading "// " from the example project's JSON lines, leaving prose comments alone. */
+function uncommentedTemplate(): string {
+  return CONFIG_TEMPLATE.split("\n")
+    .map((line) => {
+      const match = line.match(/^(\s*)\/\/\s+(["}].*)$/);
+      return match ? `${match[1]}${match[2]}` : line;
+    })
+    .join("\n");
+}
 
 const originalScoreHome = process.env.SCORE_HOME;
 let home: string;
@@ -50,6 +62,20 @@ test("template mentions every config field", () => {
   ]) {
     expect(CONFIG_TEMPLATE).toContain(`"${field}"`);
   }
+});
+
+test("the template is valid JSONC even with the example project commented out", () => {
+  const parsed = parseJsonc(CONFIG_TEMPLATE);
+  expect(validateScoreConfig(parsed)).toEqual({ version: 1, log_retention_days: 30, projects: {} });
+});
+
+test("the example project, uncommented, parses and validates", () => {
+  const parsed = parseJsonc(uncommentedTemplate());
+  const config = validateScoreConfig(parsed);
+  expect(config.projects.score?.config.agent).toEqual({
+    harness: "claude",
+    model: "claude-sonnet-5",
+  });
 });
 
 test("second init refuses with one line, exit 1, file untouched", async () => {
