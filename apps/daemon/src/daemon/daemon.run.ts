@@ -341,11 +341,18 @@ export async function selfHealStagedMerge(
   log.warn("recovered staged merge left by a previous run");
 }
 
+/** The subset of OpencodeServer's own shape earlyStop needs: stop() must be
+ * reachable before start() resolves, not just after. */
+interface StartableOpencodeServer {
+  start(): Promise<OpencodeServerHandle>;
+  stop(): Promise<void>;
+}
+
 interface ManagedRuntime {
   readonly fileLog: FileLogger;
   readonly status: StatusWriter;
-  /** Test seam: overrides how the opencode child is started. Defaults to a real `opencode serve` child. */
-  readonly startOpencodeServer?: () => Promise<OpencodeServerHandle>;
+  /** Test seam: overrides the opencode server. Defaults to a real `opencode serve` child. */
+  readonly createOpencodeServer?: () => StartableOpencodeServer;
   /** Test seam: overrides the command runner. Defaults to the real Bun-backed one. */
   readonly runner?: CommandRunner;
 }
@@ -448,22 +455,29 @@ export async function runDaemonLoop(
   // branch on harness, they just share this instance. Opencode owns a single
   // `opencode serve` child; claude keeps constructing TmuxService unchanged.
   let handle: OpencodeServerHandle | undefined;
+  // Captured the instant the server object exists — before start() is even
+  // called — because the child is alive and running for the whole
+  // spawn-to-ready window (up to startupDeadlineMs), not just after start()
+  // resolves. OpencodeServer.stop() is safe and effective at any point in
+  // that lifecycle (it aborts an in-flight start() and kills the child), so
+  // this, not `handle?.stop()`, is what closes the window end to end.
+  let stopChild: (() => Promise<void>) | undefined;
   // A signal arriving after the child spawns but before runPollingLoop
   // installs its own handlers would otherwise hit the runtime's default
   // SIGINT/SIGTERM action, which skips `finally` blocks entirely and
   // orphans the child. This narrow net closes exactly that window; it is
   // removed the moment runPollingLoop's own handlers take over below.
   const earlyStop = () => {
-    void handle?.stop().finally(() => process.exit(1));
+    void (stopChild?.() ?? Promise.resolve()).finally(() => process.exit(1));
   };
   const agents: AgentRuntime =
     agent.harness === "opencode"
       ? await (async () => {
           process.once("SIGINT", earlyStop);
           process.once("SIGTERM", earlyStop);
-          const startOpencodeServer =
-            managedRuntime?.startOpencodeServer ?? (() => new OpencodeServer().start());
-          handle = await startOpencodeServer();
+          const server = (managedRuntime?.createOpencodeServer ?? (() => new OpencodeServer()))();
+          stopChild = () => server.stop();
+          handle = await server.start();
           return new OpencodeService(handle.baseUrl, { namespace: namespace as string, dryRun });
         })()
       : new TmuxService(runner, {

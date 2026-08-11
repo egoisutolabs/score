@@ -13,7 +13,7 @@ import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.inter
 import { resolveProjects } from "@score/shared/config/resolve";
 import { createFileLogger } from "@score/shared/file-log";
 import type { Logger, LogLine } from "@score/shared/log";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   bootstrapDaemon,
   parseDaemonArguments,
@@ -522,10 +522,13 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
           stopCalls++;
         },
       };
-      const startOpencodeServer = async (): Promise<OpencodeServerHandle> => {
-        startCalls++;
-        return handle;
-      };
+      const createOpencodeServer = () => ({
+        start: async () => {
+          startCalls++;
+          return handle;
+        },
+        stop: () => handle.stop(),
+      });
 
       const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
       const fileLog = createFileLogger(join(runsDir, "logs"), false);
@@ -536,7 +539,7 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
         : ["--project", "demo", "--once"];
       const parsed = parseDaemonArguments(args);
 
-      await runDaemonLoop(parsed, fileLog, { fileLog, status, startOpencodeServer, runner });
+      await runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner });
 
       result = { startCalls, stopCalls, requests: stub.requests };
     } finally {
@@ -597,7 +600,7 @@ test("managed opencode: an unexpected child exit rejects runDaemonLoop with the 
           stopCalls++;
         },
       };
-      const startOpencodeServer = async (): Promise<OpencodeServerHandle> => handle;
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
 
       const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
       const fileLog = createFileLogger(join(runsDir, "logs"), false);
@@ -608,12 +611,81 @@ test("managed opencode: an unexpected child exit rejects runDaemonLoop with the 
       const parsed = parseDaemonArguments(["--project", "demo"]);
 
       await expect(
-        runDaemonLoop(parsed, fileLog, { fileLog, status, startOpencodeServer, runner }),
+        runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }),
       ).rejects.toThrow("opencode child exited unexpectedly");
 
       expect(stopCalls).toBe(1);
     } finally {
       stub.close();
+    }
+  });
+}, 20_000);
+
+test("SIGINT during opencode startup stops the not-yet-ready child, not just an already-ready one", async () => {
+  // The child is alive for the entire spawn-to-ready window (up to
+  // startupDeadlineMs) before start() ever resolves. A signal net keyed off
+  // the resolved handle would silently no-op for that whole window; this
+  // proves stopChild is reachable before start() settles, not just after.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    let stopCalls = 0;
+    // Never resolves on its own — only stop() ever settles it, exactly like
+    // the real OpencodeServer.stop() aborting an in-flight start().
+    const stuckStart = new Promise<never>(() => {});
+    const createOpencodeServer = () => ({
+      start: () => stuckStart,
+      stop: async () => {
+        stopCalls++;
+      },
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+
+    // earlyStop's real effect (process.exit) must not tear down this worker
+    // — and must not throw either, or its `.finally(() => process.exit(1))`
+    // caller (a fire-and-forget `void` expression) turns that into an
+    // unhandled rejection.
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    // SIGINT self-removes via process.once() once it fires below, but the
+    // paired SIGTERM listener never does — snapshot and diff so cleanup
+    // removes only what this test added, not any other listener.
+    const priorSigint = process.listeners("SIGINT");
+    const priorSigterm = process.listeners("SIGTERM");
+    try {
+      // Fire-and-forget: runDaemonLoop is permanently suspended awaiting
+      // stuckStart, so nothing here ever awaits its return.
+      void runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }).catch(
+        () => {},
+      );
+      // Let bootstrap's sequential preflight awaits run their course and
+      // land on process.once(SIGINT/SIGTERM) before signaling.
+      const deadline = Date.now() + 5_000;
+      while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(stopCalls).toBe(1);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      for (const listener of process.listeners("SIGINT")) {
+        if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+      }
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+      }
     }
   });
 }, 20_000);
