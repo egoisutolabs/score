@@ -500,6 +500,9 @@ export async function runDaemonLoop(
           },
           agent,
           namespace,
+          // `agents` above is constructed to match agent.harness exactly, whichever
+          // AgentRuntime that turned out to be (TmuxService or OpencodeService).
+          dispatchableHarnesses: [agent.harness],
         },
         github,
         observations,
