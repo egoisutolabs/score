@@ -26,7 +26,7 @@ import {
   LoggingCommandRunner,
   requireSuccess,
 } from "@score/shared/adapters/command-runner.service";
-import { agentConfigFromCommand } from "@score/shared/agent-command";
+import { agentConfigFromCommand, KNOWN_HARNESSES } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/config.interface";
 import { logsDir, promptsDir, statusPath } from "@score/shared/config/layout";
@@ -459,6 +459,8 @@ async function runDaemonLoop(
         },
         agent,
         namespace,
+        // `tmux` is the only AgentRuntime constructed above, whatever the harness.
+        dispatchableHarnesses: KNOWN_HARNESSES,
       },
       github,
       observations,

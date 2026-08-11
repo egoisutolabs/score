@@ -25,6 +25,7 @@ const options: DispatchServiceOptions = {
     umbrellaLabel: "umbrella",
   },
   agent: { harness: "claude", model: "opus-4.6" },
+  dispatchableHarnesses: ["claude"],
 };
 
 function issue(number: number): IssueObservation {
@@ -311,6 +312,42 @@ test("an undispatchable harness fails without creating a worktree, and the issue
   const second = await service.run();
   expect(second.blocked).toEqual([]);
   expect(second.failed).toEqual([{ issueNumber: 2, message: 'unknown agent harness: "opencode"' }]);
+});
+
+test("dispatchability is whatever the composition root injects, not a hardcoded runtime assumption", async () => {
+  // Simulates a future composition root wiring a harness-capable AgentRuntime (e.g. OpencodeService)
+  // for "opencode" — DispatchService must not reject it on its own authority.
+  const opencodeCapableOptions: DispatchServiceOptions = {
+    ...options,
+    maxParallelIssues: 1,
+    agent: { harness: "opencode", model: "openai/gpt-5" },
+    dispatchableHarnesses: ["claude", "opencode"],
+  };
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(2)];
+    },
+    async observeIssue() {
+      return issue(2);
+    },
+    async observeDependency() {
+      return issue(2);
+    },
+  };
+
+  const workspace = new FakeWorkspace();
+  const agents = new FakeAgents();
+  const service = new DispatchService(opencodeCapableOptions, source, changes, workspace, agents, {
+    async write(): Promise<void> {},
+  });
+
+  const result = await service.run();
+  expect(result.failed).toEqual([]);
+  expect(result.started).toEqual([2]);
+  expect(workspace.created).toEqual([2]);
+  expect(agents.launches).toEqual([
+    { sessionName: "issue-2", agent: { harness: "opencode", model: "openai/gpt-5" } },
+  ]);
 });
 
 test("an older slug for the same issue number is still an in-flight witness", async () => {

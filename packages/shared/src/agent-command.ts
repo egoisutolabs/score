@@ -27,12 +27,17 @@ export function parseOpencodeModel(
 
 /**
  * Guards the transitional gap between MANAGED_HARNESSES (config validation,
- * which already accepts "opencode") and KNOWN_HARNESSES (what the current
- * TmuxService-only wiring can actually dispatch). Callers use this to fail
- * before creating any state, not just before building a launch argv.
+ * which already accepts "opencode") and whatever a specific runtime can
+ * actually dispatch. `knownHarnesses` defaults to KNOWN_HARNESSES for
+ * agentArgv's TmuxService seam; callers backed by a different AgentRuntime
+ * (or a composition layer choosing between runtimes) pass their own set
+ * rather than inheriting TmuxService's limits.
  */
-export function assertKnownHarness(agent: Pick<AgentConfig, "harness">): void {
-  if (!(KNOWN_HARNESSES as readonly string[]).includes(agent.harness)) {
+export function assertKnownHarness(
+  agent: Pick<AgentConfig, "harness">,
+  knownHarnesses: readonly string[] = KNOWN_HARNESSES,
+): void {
+  if (!knownHarnesses.includes(agent.harness)) {
     throw new Error(`unknown agent harness: ${JSON.stringify(agent.harness)}`);
   }
 }

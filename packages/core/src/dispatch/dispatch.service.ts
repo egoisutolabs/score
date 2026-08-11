@@ -24,6 +24,12 @@ export interface DispatchServiceOptions {
   readonly agent: AgentConfig;
   /** Managed mode: project key namespacing every session this service creates. */
   readonly namespace?: string;
+  /**
+   * Harnesses the injected AgentRuntime can actually dispatch. Set by the
+   * composition root that chose the runtime — core has no business knowing
+   * a specific implementation's capabilities.
+   */
+  readonly dispatchableHarnesses: readonly AgentConfig["harness"][];
 }
 
 interface DispatchRunOptions {
@@ -93,7 +99,7 @@ export class DispatchService {
     if (dryRun) return true;
     // Reject an undispatchable harness before touching the filesystem — otherwise the
     // worktree/briefing strand permanently (#alreadyInFlight sees them on every later tick).
-    assertKnownHarness(this.options.agent);
+    assertKnownHarness(this.options.agent, this.options.dispatchableHarnesses);
     await this.workspace.createWorktree(identity);
     await this.briefings.write(issue, identity);
     await this.agents.startImplementation(
