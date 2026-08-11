@@ -50,6 +50,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
+          # One sticky comment per PR, updated in place — without this every
+          # push stacks a fresh "Claude's review" comment on the timeline.
+          use_sticky_comment: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -126,8 +129,11 @@ jobs:
 
             Do not modify or push code. Do not approve, request changes, or merge.
             If you are not sure a finding is real, verify it or drop it.
+          # 40 turns starved integration-sized PRs (#31: 5 of 7 runs died at
+          # error_max_turns): pass 1 re-verifies every accumulated thread and
+          # pass 2 reads the full diff plus runs check/test/build.
           claude_args: |
-            --max-turns 40
+            --max-turns 80
             --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment,Bash(gh api graphql:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git show:*),Bash(bun run check),Bash(bun run test),Bash(bun run build),Bash(bun test:*),Read,Grep,Glob"
 
       - name: Record an incomplete review
