@@ -202,12 +202,16 @@ test("stop() during starting aborts the readiness wait and kills the child", asy
   await waitUntilGone(noUrl);
 });
 
-test("constructor rejects a non-positive startup deadline", () => {
+test("constructor rejects a non-positive or non-finite startup deadline", () => {
   expect(() => new OpencodeServer({ startupDeadlineMs: 0 })).toThrow();
   expect(() => new OpencodeServer({ startupDeadlineMs: -1 })).toThrow();
+  expect(() => new OpencodeServer({ startupDeadlineMs: Number.NaN })).toThrow();
+  expect(() => new OpencodeServer({ startupDeadlineMs: Number.POSITIVE_INFINITY })).toThrow();
 });
 
-test("constructor rejects a non-positive stop grace", () => {
+test("constructor rejects a non-positive or non-finite stop grace", () => {
   expect(() => new OpencodeServer({ stopGraceMs: 0 })).toThrow();
   expect(() => new OpencodeServer({ stopGraceMs: -1 })).toThrow();
+  expect(() => new OpencodeServer({ stopGraceMs: Number.NaN })).toThrow();
+  expect(() => new OpencodeServer({ stopGraceMs: Number.POSITIVE_INFINITY })).toThrow();
 });

@@ -32,9 +32,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isPositiveFinite(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
 function spawnChild(executable: string): ManagedChild {
   const child = spawn(executable, ["serve", "--hostname", "127.0.0.1", "--port", "0"], {
     stdio: ["ignore", "pipe", "ignore"],
+    // Own process group, so killChild reaches a launcher's whole descendant
+    // tree, not just the immediate child.
+    detached: true,
   });
   let exited = false;
   // Armed before any await: a child that dies before we ever look never
@@ -50,6 +57,16 @@ function spawnChild(executable: string): ManagedChild {
     });
   });
   return { process: child, exited: exitedPromise, hasExited: () => exited };
+}
+
+function killChild(managed: ManagedChild, signal: NodeJS.Signals): void {
+  const pid = managed.process.pid;
+  try {
+    if (pid !== undefined) process.kill(-pid, signal);
+    else managed.process.kill(signal);
+  } catch {
+    managed.process.kill(signal);
+  }
 }
 
 interface StdoutBuffer {
@@ -94,11 +111,11 @@ export class OpencodeServer {
   readonly #unexpectedExit: Promise<void>;
 
   constructor(options: OpencodeServerOptions = {}) {
-    if (options.startupDeadlineMs !== undefined && options.startupDeadlineMs <= 0) {
-      throw new Error("startupDeadlineMs must be positive");
+    if (options.startupDeadlineMs !== undefined && !isPositiveFinite(options.startupDeadlineMs)) {
+      throw new Error("startupDeadlineMs must be a positive, finite number");
     }
-    if (options.stopGraceMs !== undefined && options.stopGraceMs <= 0) {
-      throw new Error("stopGraceMs must be positive");
+    if (options.stopGraceMs !== undefined && !isPositiveFinite(options.stopGraceMs)) {
+      throw new Error("stopGraceMs must be a positive, finite number");
     }
     this.#executable = options.executable ?? "opencode";
     this.#startupDeadlineMs = options.startupDeadlineMs ?? DEFAULT_STARTUP_DEADLINE_MS;
@@ -214,14 +231,24 @@ export class OpencodeServer {
 
   async #kill(managed: ManagedChild): Promise<void> {
     if (managed.hasExited()) return;
-    managed.process.kill("SIGTERM");
-    const exitedInTime = await Promise.race([
-      managed.exited.then(() => true),
-      sleep(this.#stopGraceMs).then(() => false),
-    ]);
+    killChild(managed, "SIGTERM");
+    const exitedInTime = await this.#raceExitAgainstGrace(managed);
     if (!exitedInTime && !managed.hasExited()) {
-      managed.process.kill("SIGKILL");
+      killChild(managed, "SIGKILL");
       await managed.exited;
     }
+  }
+
+  // A plain Promise.race here would leave the losing setTimeout scheduled
+  // for the rest of #stopGraceMs, holding the event loop open even after
+  // stop() has resolved — clear it as soon as either side settles.
+  #raceExitAgainstGrace(managed: ManagedChild): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), this.#stopGraceMs);
+      managed.exited.then(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 }
