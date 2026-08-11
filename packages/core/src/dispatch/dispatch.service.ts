@@ -12,6 +12,7 @@ import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.inte
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import { assertKnownHarness } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import type { DispatchResult } from "./dispatch-result.interface";
 import type { IssueObservation } from "./issue.interface";
@@ -23,6 +24,12 @@ export interface DispatchServiceOptions {
   readonly agent: AgentConfig;
   /** Managed mode: project key namespacing every session this service creates. */
   readonly namespace?: string;
+  /**
+   * Harnesses the injected AgentRuntime can actually dispatch. Set by the
+   * composition root that chose the runtime — core has no business knowing
+   * a specific implementation's capabilities.
+   */
+  readonly dispatchableHarnesses: readonly AgentConfig["harness"][];
 }
 
 interface DispatchRunOptions {
@@ -89,6 +96,9 @@ export class DispatchService {
     if (!(await this.#dependenciesSatisfied(issue))) return false;
 
     const identity = createWorkIdentity(this.options.workspaceRoot, issue, this.options.namespace);
+    // Pure check, run before the dry-run return too: a dry-run preview must report the same
+    // deterministic failure a real pass would hit, not silently plan an undispatchable issue.
+    assertKnownHarness(this.options.agent, this.options.dispatchableHarnesses);
     if (dryRun) return true;
     await this.workspace.createWorktree(identity);
     await this.briefings.write(issue, identity);
