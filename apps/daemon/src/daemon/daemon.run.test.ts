@@ -666,7 +666,7 @@ test("SIGINT during opencode startup stops the not-yet-ready child, not just an 
         () => {},
       );
       // Let bootstrap's sequential preflight awaits run their course and
-      // land on process.once(SIGINT/SIGTERM) before signaling.
+      // land on the earlyStop registration before signaling.
       const deadline = Date.now() + 5_000;
       while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
         if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");
@@ -678,6 +678,75 @@ test("SIGINT during opencode startup stops the not-yet-ready child, not just an 
 
       expect(stopCalls).toBe(1);
       expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      for (const listener of process.listeners("SIGINT")) {
+        if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+      }
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+      }
+    }
+  });
+}, 20_000);
+
+test("a second SIGINT during a slow opencode shutdown escalation still reaches earlyStop", async () => {
+  // .once() is per event NAME: registering it for SIGINT and SIGTERM both
+  // still self-removes independently per name, so two DIFFERENT signals
+  // would each fire even with .once(). The real gap is the SAME signal
+  // arriving twice — e.g. an operator hitting Ctrl+C again while stop() is
+  // still escalating past a SIGTERM-ignoring child toward SIGKILL — which
+  // .once() would swallow on the second delivery. earlyStop must stay
+  // armed across repeats of the same signal, not just across signal names.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    let stopCalls = 0;
+    const stuckStart = new Promise<never>(() => {});
+    // Never resolves — simulates stop() still escalating when the second
+    // signal arrives, so a swallowed second signal is observable as
+    // stopCalls staying at 1 instead of advancing to 2.
+    const createOpencodeServer = () => ({
+      start: () => stuckStart,
+      stop: async () => {
+        stopCalls++;
+        await new Promise(() => {});
+      },
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const priorSigint = process.listeners("SIGINT");
+    const priorSigterm = process.listeners("SIGTERM");
+    try {
+      void runDaemonLoop(parsed, fileLog, { fileLog, status, createOpencodeServer, runner }).catch(
+        () => {},
+      );
+      const deadline = Date.now() + 5_000;
+      while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopCalls).toBe(1);
+
+      // The escalation is still stuck (stop() never resolves); a second
+      // SIGINT — the SAME signal name — must still reach earlyStop. A
+      // process.once() listener would have self-removed after the first
+      // delivery and silently swallow this one.
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopCalls).toBe(2);
     } finally {
       exitSpy.mockRestore();
       for (const listener of process.listeners("SIGINT")) {

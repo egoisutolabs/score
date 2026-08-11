@@ -467,14 +467,22 @@ export async function runDaemonLoop(
   // SIGINT/SIGTERM action, which skips `finally` blocks entirely and
   // orphans the child. This narrow net closes exactly that window; it is
   // removed the moment runPollingLoop's own handlers take over below.
+  //
+  // Kept armed with .on(), not .once(): OpencodeServer.stop() can take
+  // seconds to escalate past a SIGTERM-ignoring child to SIGKILL, and a
+  // second signal arriving during that escalation must hit this handler
+  // again — not the runtime's default action, which a one-shot listener
+  // would fall through to and force-exit before the kill completes.
+  // stopChild() and process.exit() are both idempotent, so repeat firing
+  // is harmless.
   const earlyStop = () => {
     void (stopChild?.() ?? Promise.resolve()).finally(() => process.exit(1));
   };
   const agents: AgentRuntime =
     agent.harness === "opencode"
       ? await (async () => {
-          process.once("SIGINT", earlyStop);
-          process.once("SIGTERM", earlyStop);
+          process.on("SIGINT", earlyStop);
+          process.on("SIGTERM", earlyStop);
           const server = (managedRuntime?.createOpencodeServer ?? (() => new OpencodeServer()))();
           stopChild = () => server.stop();
           handle = await server.start();
