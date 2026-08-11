@@ -743,7 +743,19 @@ export async function runDaemonLoop(
     // Idempotent no-ops if runPollingLoop already took the handoff above.
     process.off("SIGINT", earlyStop);
     process.off("SIGTERM", earlyStop);
+    // By now runPollingLoop's own graceful handlers have already run their
+    // course (a normal shutdown) and removed themselves — nothing is
+    // listening for the duration of this call. Re-arm earlyStop just around
+    // it: stop() can itself take seconds to escalate past a SIGTERM-ignoring
+    // child to SIGKILL, and a signal arriving during that window must still
+    // reach it rather than hit the runtime default and orphan the child.
+    if (opencodeHandle !== undefined) {
+      process.on("SIGINT", earlyStop);
+      process.on("SIGTERM", earlyStop);
+    }
     await opencodeHandle?.stop();
+    process.off("SIGINT", earlyStop);
+    process.off("SIGTERM", earlyStop);
   }
   if (childError) throw childError;
 }

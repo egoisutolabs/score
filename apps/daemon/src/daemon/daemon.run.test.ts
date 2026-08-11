@@ -822,6 +822,77 @@ test("a second SIGINT during a slow opencode shutdown escalation still reaches e
   });
 }, 20_000);
 
+test("a signal during the final child-stop call after the loop exits still reaches earlyStop", async () => {
+  // Once runPollingLoop returns (a normal --once pass here), its own
+  // graceful SIGINT/SIGTERM handlers have already run their course and
+  // removed themselves. Nothing protects the finally block's own
+  // `await opencodeHandle?.stop()` unless it's re-armed — and that stop()
+  // can itself take seconds to escalate past a SIGTERM-ignoring child.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Never fires — this run settles via --once, not a child exit.
+        unexpectedExit: new Promise(() => {}),
+        stop: async () => {
+          stopCalls++;
+          // Never resolves — simulates stop() still escalating (e.g. the
+          // SIGKILL grace period) when the signal below arrives.
+          await new Promise(() => {});
+        },
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+      const runner = new FakeRunner(managedResponses(repo));
+      const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      const priorSigint = process.listeners("SIGINT");
+      const priorSigterm = process.listeners("SIGTERM");
+      try {
+        void runDaemonLoop(parsed, new CaptureLogger(), undefined, {
+          createOpencodeServer,
+          runner,
+        }).catch(() => {});
+
+        // Wait for the (near-instant, --once) pass to complete and reach
+        // the final stop() call, observed via stopCalls incrementing.
+        const deadline = Date.now() + 5_000;
+        while (stopCalls === 0) {
+          if (Date.now() > deadline) throw new Error("timed out waiting for the final stop() call");
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        expect(stopCalls).toBe(1);
+
+        // A signal arriving while that stop() is still escalating must
+        // still reach earlyStop, re-armed for exactly this window. stop()
+        // never resolves here, so process.exit's .finally() never fires —
+        // stopCalls advancing to 2 is what proves earlyStop fired again,
+        // instead of the signal hitting the runtime default unprotected.
+        process.emit("SIGINT");
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(stopCalls).toBe(2);
+      } finally {
+        exitSpy.mockRestore();
+        for (const listener of process.listeners("SIGINT")) {
+          if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+        }
+        for (const listener of process.listeners("SIGTERM")) {
+          if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+        }
+      }
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
+
 test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
   await withEnv(
     {
