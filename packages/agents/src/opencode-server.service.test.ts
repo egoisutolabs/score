@@ -7,7 +7,7 @@ import type { ManagedChild } from "@score/agents/opencode-server.service";
 import { bufferStdout, OpencodeServer } from "@score/agents/opencode-server.service";
 import { afterEach, expect, test } from "vitest";
 
-const fixtureDir = fileURLToPath(new URL(".", import.meta.url));
+const fixtureDir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 const fixture = (name: string) => join(fixtureDir, `opencode-server-${name}.fixture.ts`);
 
 const happy = fixture("happy");
