@@ -1,5 +1,5 @@
 /**
- * Shared: runtime-free utilities and contracts used by every package —
+ * Shared: domain-independent utilities and contracts used by every package —
  * command running, config, validation, logging, legacy runtime discovery.
  * Nothing here may import from core, agents, or tracker.
  */
