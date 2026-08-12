@@ -32,7 +32,7 @@ interface FakeOpencode {
   readonly url: string;
   readonly requests: FakeRequest[];
   readonly sessions: SessionV2Info[];
-  failNext(status: number): void;
+  failNext(status: number, pathIncludes?: string): void;
   close(): Promise<void>;
 }
 
@@ -58,6 +58,7 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
   const sessions: SessionV2Info[] = [];
   let idCounter = 0;
   let nextStatus: number | undefined;
+  let failPathIncludes: string | undefined;
 
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -69,9 +70,13 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
     const query = Object.fromEntries(url.searchParams.entries());
     requests.push({ method, path: url.pathname, query, body });
 
-    if (nextStatus !== undefined) {
+    if (
+      nextStatus !== undefined &&
+      (failPathIncludes === undefined || url.pathname.includes(failPathIncludes))
+    ) {
       const status = nextStatus;
       nextStatus = undefined;
+      failPathIncludes = undefined;
       sendJson(res, status, { error: "forced failure" });
       return;
     }
@@ -150,8 +155,9 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
     url: `http://127.0.0.1:${port}`,
     requests,
     sessions,
-    failNext(status: number) {
+    failNext(status: number, pathIncludes?: string) {
       nextStatus = status;
+      failPathIncludes = pathIncludes;
     },
     close: () =>
       new Promise<void>((resolve, reject) => {
@@ -428,4 +434,27 @@ test("a wedged server fails the request within requestTimeoutMs instead of hangi
   await new Promise<void>((resolve, reject) =>
     hung.close((error) => (error ? reject(error) : resolve())),
   );
+});
+
+test("startImplementation reclaims the created session when the initial prompt fails (#32)", async () => {
+  const identity = workIdentity({ sessionName: "score-ns-issue-56", worktreePath: "/work/56" });
+  fake.failNext(500, "/prompt_async");
+
+  await expect(service.startImplementation(identity, "read TASK.md", AGENT)).rejects.toThrow(
+    /prompt_async.*500/,
+  );
+
+  // The created-but-never-briefed session must not survive: abort, then delete.
+  const paths = fake.requests.map((request) => `${request.method} ${request.path}`);
+  const promptIndex = paths.findIndex((path) => path.includes("/prompt_async"));
+  const abortIndex = paths.findIndex((path) => path.endsWith("/abort"));
+  const deleteIndex = paths.findIndex((path) => path.startsWith("DELETE /session/"));
+  expect(promptIndex).toBeGreaterThan(-1);
+  expect(abortIndex).toBeGreaterThan(promptIndex);
+  expect(deleteIndex).toBeGreaterThan(abortIndex);
+  expect(fake.sessions.some((candidate) => candidate.title === "score-ns-issue-56")).toBe(false);
+
+  // The next tick's retry starts clean instead of reading the leftover as in-flight.
+  await service.startImplementation(identity, "read TASK.md", AGENT);
+  expect(fake.sessions.some((candidate) => candidate.title === "score-ns-issue-56")).toBe(true);
 });

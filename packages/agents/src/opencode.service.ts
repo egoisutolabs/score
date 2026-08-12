@@ -58,12 +58,25 @@ export class OpencodeService implements AgentRuntime {
     } satisfies CreateSessionRequest)) as SessionV2Info | undefined;
     if (created === undefined) return; // dry-run: create above was a no-op
 
-    await this.#request(
-      "POST",
-      `/session/${created.id}/prompt_async`,
-      { directory: identity.worktreePath },
-      { model, parts: [{ type: "text", text: prompt }] } satisfies PromptAsyncRequest,
-    );
+    try {
+      await this.#request(
+        "POST",
+        `/session/${created.id}/prompt_async`,
+        { directory: identity.worktreePath },
+        { model, parts: [{ type: "text", text: prompt }] } satisfies PromptAsyncRequest,
+      );
+    } catch (error) {
+      // A created-but-never-briefed session reads as in-flight forever (#32):
+      // reclaim it best-effort so the next tick can retry, then surface the
+      // original failure. Abort-before-delete mirrors stop().
+      await this.#request("POST", `/session/${created.id}/abort`, {
+        directory: identity.worktreePath,
+      }).catch(() => {});
+      await this.#request("DELETE", `/session/${created.id}`, {
+        directory: identity.worktreePath,
+      }).catch(() => {});
+      throw error;
+    }
   }
 
   async ping(sessionName: string, message: string): Promise<void> {

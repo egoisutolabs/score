@@ -84,7 +84,7 @@ class FakeWorkspace implements WorkspaceDriver {
     return "";
   }
 
-  async removeWorktree(): Promise<void> {}
+  async removeWorktree(_worktree: WorktreeObservation): Promise<void> {}
   async deleteBranch(): Promise<boolean> {
     return true;
   }
@@ -441,4 +441,58 @@ test("mutation-time refresh does not invent a second eligibility-label gate", as
   });
 
   expect((await service.run()).started).toEqual([2]);
+});
+
+test("a mid-start failure rolls back the created worktree so the next tick retries (#32)", async () => {
+  const removed: WorktreeObservation[] = [];
+  class RollbackWorkspace extends FakeWorkspace {
+    override async removeWorktree(worktree: WorktreeObservation): Promise<void> {
+      removed.push(worktree);
+      const index = this.worktrees.findIndex((candidate) => candidate.path === worktree.path);
+      if (index >= 0) this.worktrees.splice(index, 1);
+    }
+  }
+  class DiesBeforeBriefAgents extends FakeAgents {
+    failuresLeft = 1;
+    override async startImplementation(
+      identity: WorkIdentity,
+      prompt: string,
+      agent: AgentConfig,
+    ): Promise<void> {
+      if (this.failuresLeft > 0) {
+        this.failuresLeft -= 1;
+        throw new Error("child died before the brief was delivered");
+      }
+      await super.startImplementation(identity, prompt, agent);
+    }
+  }
+  const workspace = new RollbackWorkspace();
+  const agents = new DiesBeforeBriefAgents();
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(2)];
+    },
+    async observeIssue() {
+      return issue(2);
+    },
+    async observeDependency() {
+      return issue(2);
+    },
+  };
+  const service = new DispatchService(options, source, changes, workspace, agents, {
+    async write(): Promise<void> {},
+  });
+
+  const first = await service.run();
+  expect(first.failed).toEqual([
+    { issueNumber: 2, message: "child died before the brief was delivered" },
+  ]);
+  expect(removed).toHaveLength(1);
+  expect(removed[0]?.branch.startsWith("issue-2-")).toBe(true);
+  expect(workspace.worktrees).toEqual([]);
+
+  // With the leftover reclaimed, the same pass shape dispatches the issue cleanly.
+  const second = await service.run();
+  expect(second.started).toEqual([2]);
+  expect(agents.started).toEqual([2]);
 });

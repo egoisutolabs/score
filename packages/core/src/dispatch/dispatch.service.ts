@@ -101,12 +101,24 @@ export class DispatchService {
     assertKnownHarness(this.options.agent, this.options.dispatchableHarnesses);
     if (dryRun) return true;
     await this.workspace.createWorktree(identity);
-    await this.briefings.write(issue, identity);
-    await this.agents.startImplementation(
-      identity,
-      "Read TASK.md and implement it end-to-end. Open a PR with Fixes in the body. Stop after reporting the PR URL.",
-      this.options.agent,
-    );
+    try {
+      await this.briefings.write(issue, identity);
+      await this.agents.startImplementation(
+        identity,
+        "Read TASK.md and implement it end-to-end. Open a PR with Fixes in the body. Stop after reporting the PR URL.",
+        this.options.agent,
+      );
+    } catch (error) {
+      // The worktree was created this tick (#alreadyInFlight ruled out an older
+      // one), so a mid-start failure must reclaim it — otherwise the leftover
+      // reads as in-flight forever and the issue is never retried (#32). The
+      // branch may survive; createWorktree reuses it on the retry. Best-effort:
+      // a failed rollback leaves today's stall, never a new failure mode.
+      await this.workspace
+        .removeWorktree({ path: identity.worktreePath, branch: identity.branch, locked: false })
+        .catch(() => {});
+      throw error;
+    }
     return true;
   }
 
