@@ -49,7 +49,9 @@ jobs:
         continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
+          # No track_progress: its todo-checklist scaffold is prepended to
+          # every comment update and buries the actual findings; the job link
+          # already covers "is it still running".
           # One sticky comment per PR, updated in place — without this every
           # push stacks a fresh "Claude's review" comment on the timeline.
           use_sticky_comment: true
