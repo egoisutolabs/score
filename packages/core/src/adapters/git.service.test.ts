@@ -186,3 +186,31 @@ test("worktree creation fails closed when no legacy base branch can be resolved"
   ).rejects.toThrow("no origin/HEAD, no main, no master");
   expect(runner.commands.some((command) => command[1] === "worktree")).toBe(false);
 });
+
+test("seedClaudeDirectory: false leaves the worktree without a copied .claude", async () => {
+  const root = await sandbox();
+  const repositoryPath = join(root, "repo");
+  const workspaceRoot = join(root, "wt", "repo");
+  const work = identity(workspaceRoot);
+  await mkdir(join(repositoryPath, ".claude"), { recursive: true });
+  await writeFile(join(repositoryPath, ".claude", "settings.json"), "legacy-settings");
+  const runner = new ScriptRunner(async (command, options) => {
+    const args = command.slice(1);
+    if (args[0] === "symbolic-ref") {
+      return result(command, options, 0, "refs/remotes/origin/main\n");
+    }
+    if (args[0] === "show-ref") return result(command, options, 1);
+    if (args[0] === "worktree") await mkdir(work.worktreePath, { recursive: true });
+    return result(command, options);
+  });
+
+  await new GitService(runner, {
+    repositoryPath,
+    workspaceRoot,
+    seedClaudeDirectory: false,
+  }).createWorktree(work);
+
+  await expect(
+    readFile(join(work.worktreePath, ".claude", "settings.json"), "utf8"),
+  ).rejects.toThrow();
+});

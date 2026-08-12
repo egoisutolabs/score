@@ -461,6 +461,10 @@ export async function runDaemonLoop(
     repositoryPath: runtime.repositoryRoot,
     workspaceRoot,
     dryRun,
+    // Claude-trust seeding is TmuxService plumbing; seeding it for opencode
+    // would make cleanup's ["TASK.md"] allowlist report every merged worktree
+    // BLOCKED_DIRTY over dirt Score itself created.
+    seedClaudeDirectory: agent.harness !== "opencode",
   });
   // Exactly one AgentRuntime per daemon (locked decision 3): phases never
   // branch on harness, they just share this instance. Opencode owns a single
@@ -577,7 +581,7 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10));
+    const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10), namespace);
     const repair = new RepairService(
       {
         agent,
