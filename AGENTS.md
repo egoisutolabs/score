@@ -18,6 +18,22 @@
   sensible home for a local-VCS adapter, and a package for one file isn't either.
 - Preserve the three separate legacy boundaries: autopilot, repair, and landing.
 - Do not add policy that is absent from `legacy/` when working on parity.
+- Structure is part of the work, not an afterthought: new behavior starts in
+  a feature folder (`packages/<pkg>/src/<feature>/`) — never accrete
+  unrelated modules into one directory. Two or more test fixtures go in
+  `<feature>/fixtures/` beside the test that uses them. A folder
+  approaching ~10 modules gets split by sub-feature.
+- Every feature folder and each package's `src/` keeps an `index.ts` front
+  door: a short header comment stating what the feature owns (and refuses
+  to do), plus `export *` of its public modules — a table of contents for
+  readers. Deep imports stay valid; the front door exists for
+  comprehension, not import ceremony. Creating a folder without one, or
+  adding a module without re-exporting it, leaves the door stale — update
+  it in the same change.
+- Comments state constraints and the why — never what the next line does.
+  Non-obvious behavior carries its reason at the decision site. If you
+  change code that is non-obvious and uncommented, leave it commented as
+  part of the change; sweeping unrelated files for comments is scope creep.
 - Run `bun run check`, `bun run test`, and `bun run build` from this directory.
 
 ## Code Review Rules
@@ -26,6 +42,10 @@
   state corruption, tests that would pass even if the behavior were wrong,
   and violations of the rules above (Node instead of Bun, Zod, policy not
   present in legacy/ for parity work, merged legacy boundaries).
+- Structure and readability violations are real defects: fixtures outside
+  `fixtures/`, new modules dumped outside a feature folder, a new folder
+  without an `index.ts` front door, a front door left stale by the diff,
+  and changed non-obvious logic left uncommented.
 - Do not comment on style, formatting, naming taste, or hypothetical
   future-proofing. If it works and is tested, it passes.
 - Treat scope creep as a defect: changes unrelated to the PR's stated issue.
