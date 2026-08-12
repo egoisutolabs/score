@@ -1,19 +1,24 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { GitService } from "@score/core/adapters/git.service";
+import { StatusWriter } from "@score/core/daemon/status.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
-import type { ScoreConfig } from "@score/shared/config/config.interface";
+import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
 import { resolveProjects } from "@score/shared/config/resolve";
+import { createFileLogger } from "@score/shared/file-log";
 import type { Logger, LogLine } from "@score/shared/log";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   bootstrapDaemon,
   parseDaemonArguments,
   runDaemon,
+  runDaemonLoop,
   selfHealStagedMerge,
 } from "./daemon.run";
 
@@ -99,7 +104,10 @@ async function withEnv(vars: Record<string, string>, body: () => Promise<void>):
 }
 
 /** Writes a valid resolved.json for `demo` under a temp SCORE_HOME and returns both dirs. */
-async function managedFixture(mainLocation: string): Promise<{ home: string; worktree: string }> {
+async function managedFixture(
+  mainLocation: string,
+  agent: AgentConfig = { harness: "claude", model: "claude-sonnet-5" },
+): Promise<{ home: string; worktree: string }> {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const worktree = join(home, "wt-demo");
   const config: ScoreConfig = {
@@ -113,7 +121,7 @@ async function managedFixture(mainLocation: string): Promise<{ home: string; wor
         config: {
           tick_interval_ms: 5000,
           max_parallel: 2,
-          agent: { harness: "claude", model: "claude-sonnet-5" },
+          agent,
         },
       },
     },
@@ -137,6 +145,44 @@ function managedResponses(repo: string) {
     if (command[1] === "set-environment") return { exitCode: 1 };
     if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
     return {};
+  };
+}
+
+const SEEDED_ISSUE_NUMBER = 7;
+const SEEDED_ISSUE_TITLE = "Demo issue";
+/** Matches createWorkIdentity's `issue-<n>-<slug(title)>` branch naming. */
+const SEEDED_ISSUE_BRANCH = `issue-${SEEDED_ISSUE_NUMBER}-demo-issue`;
+
+/**
+ * Same git/gh proofs as managedResponses, plus one real open, dispatchable
+ * issue and empty PR lists. A real candidate forces dispatch (not just
+ * repair's unconditional listSessions) through the shared AgentRuntime, and
+ * lets a dry-run test prove suppression against a call that would otherwise
+ * happen — a candidate-free backlog can't tell either apart.
+ */
+function managedResponsesOpencode(repo: string) {
+  const base = managedResponses(repo);
+  const issueJson = JSON.stringify({
+    number: SEEDED_ISSUE_NUMBER,
+    title: SEEDED_ISSUE_TITLE,
+    body: "",
+    // isOpenChildIssue requires an eligibleLabelPrefix match (default "epic:").
+    labels: [{ name: "epic:demo" }],
+    state: "OPEN",
+    stateReason: null,
+    url: `https://github.com/egoisutolabs/demo/issues/${SEEDED_ISSUE_NUMBER}`,
+  });
+  return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
+    if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
+      return { stdout: `[${issueJson}]\n` };
+    }
+    if (command[0] === "gh" && command[1] === "issue" && command[2] === "view") {
+      return { stdout: `${issueJson}\n` };
+    }
+    if (command[0] === "gh" && command[1] === "pr") {
+      return { stdout: "[]\n" };
+    }
+    return base(command);
   };
 }
 
@@ -355,6 +401,497 @@ test("managed bootstrap fails when main_location is not the git toplevel", async
     );
   });
 });
+
+test("managed opencode bootstrap preflights opencode --version and skips tmux entirely", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    const boot = await bootstrapDaemon(parsed, runner);
+
+    expect(boot.agent).toEqual({ harness: "opencode", model: "anthropic/claude-sonnet-5" });
+    // A FakeRunner proves no tmux argv is ever issued for this harness.
+    expect(runner.calls.some((call) => call.command[0] === "tmux")).toBe(false);
+    expect(
+      runner.calls.some(
+        (call) => call.command[0] === "opencode" && call.command[1] === "--version",
+      ),
+    ).toBe(true);
+  });
+});
+
+test("OPENCODE_SERVER_PASSWORD fails bootstrap before any opencode call, naming the variable", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home, OPENCODE_SERVER_PASSWORD: "secret" }, async () => {
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(/OPENCODE_SERVER_PASSWORD/);
+    expect(runner.calls.some((call) => call.command[0] === "opencode")).toBe(false);
+  });
+});
+
+/** Records every request a fake `opencode serve` receives. */
+async function startFakeOpencodeServer(): Promise<{
+  baseUrl: string;
+  requests: { method: string; path: string }[];
+  close: () => void;
+}> {
+  const requests: { method: string; path: string }[] = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const method = request.method ?? "GET";
+    requests.push({ method, path: url.pathname });
+    const json = (body: unknown) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (method === "GET" && url.pathname === "/api/session") {
+      json({ data: [], cursor: {} });
+      return;
+    }
+    // POST /session creates one; every session-scoped mutation below (prompt,
+    // abort, delete) just needs to succeed — nothing reads its body.
+    if (method === "POST" && url.pathname === "/session") {
+      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
+      return;
+    }
+    if (
+      (method === "POST" && /^\/session\/[^/]+\/(prompt_async|abort)$/.test(url.pathname)) ||
+      (method === "DELETE" && /^\/session\/[^/]+$/.test(url.pathname))
+    ) {
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    if (method === "GET" && /^\/session\/[^/]+$/.test(url.pathname)) {
+      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
+      return;
+    }
+    response.writeHead(404);
+    response.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("expected a bound TCP address");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => server.close(),
+  };
+}
+
+async function runOpencodeLoop(dryRun: boolean): Promise<{
+  startCalls: number;
+  stopCalls: number;
+  requests: { method: string; path: string }[];
+}> {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home, worktree } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  // Pre-existing worktree dir: createWorktree() short-circuits on it (real
+  // git plumbing is out of scope for a FakeRunner), so the briefing write
+  // that follows has somewhere real to land TASK.md.
+  await mkdir(join(worktree, SEEDED_ISSUE_BRANCH), { recursive: true });
+  let result!: {
+    startCalls: number;
+    stopCalls: number;
+    requests: { method: string; path: string }[];
+  };
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let startCalls = 0;
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Never resolves: these runs settle via --once, not a child exit.
+        unexpectedExit: new Promise(() => {}),
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const createOpencodeServer = () => ({
+        start: async () => {
+          startCalls++;
+          return handle;
+        },
+        stop: () => handle.stop(),
+      });
+
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const status = new StatusWriter(join(runsDir, "status.json"));
+      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      const args = dryRun
+        ? ["--project", "demo", "--once", "--dry-run"]
+        : ["--project", "demo", "--once"];
+      const parsed = parseDaemonArguments(args);
+
+      await runDaemonLoop(parsed, fileLog, { fileLog, status }, { createOpencodeServer, runner });
+
+      result = { startCalls, stopCalls, requests: stub.requests };
+    } finally {
+      stub.close();
+    }
+  });
+  return result;
+}
+
+test("managed opencode: starts the child once and every phase shares that OpencodeService instance", async () => {
+  const { startCalls, stopCalls, requests } = await runOpencodeLoop(false);
+
+  expect(startCalls).toBe(1);
+  expect(stopCalls).toBe(1);
+  // Repair's ledger.startPass calls agents.listSessions() every tick
+  // unconditionally (a GET); dispatch only calls startImplementation (a
+  // POST) because a real candidate was seeded. Both landing on the one fake
+  // server proves cleanup+dispatch and repair share the same instance.
+  expect(requests.some((r) => r.method === "GET" && r.path === "/api/session")).toBe(true);
+  expect(requests.some((r) => r.method === "POST" && r.path === "/session")).toBe(true);
+  expect(
+    requests.some((r) => r.method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(r.path)),
+  ).toBe(true);
+});
+
+test("managed opencode --dry-run: the child still starts and stops, with zero mutating requests", async () => {
+  const { startCalls, stopCalls, requests } = await runOpencodeLoop(true);
+
+  expect(startCalls).toBe(1);
+  expect(stopCalls).toBe(1);
+  // Same seeded candidate as the non-dry-run test above — proven there to
+  // produce a POST — makes zero mutations here a real assertion, not a
+  // vacuous one from an empty backlog.
+  expect(requests.some((r) => r.method === "POST" || r.method === "DELETE")).toBe(false);
+});
+
+test("managed opencode: an unexpected child exit rejects runDaemonLoop with the child error and stops the child exactly once", async () => {
+  // Exercises the onReady/childError wiring inside runDaemonLoop itself —
+  // not the standalone reimplementation in managed-loop.fixture.ts — so a
+  // regression that drops the throw or breaks the requestStop wiring here
+  // fails a test that actually calls the production entry point.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Already resolved: the child "exited" before the loop even starts,
+        // so the very first tick's shouldStop() check settles the race
+        // deterministically instead of depending on real time passing.
+        unexpectedExit: Promise.resolve(),
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const status = new StatusWriter(join(runsDir, "status.json"));
+      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      // once:false — a fatal exit must interrupt the long-running loop, not
+      // just be reachable when the loop was already going to stop anyway.
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+
+      await expect(
+        runDaemonLoop(parsed, fileLog, { fileLog, status }, { createOpencodeServer, runner }),
+      ).rejects.toThrow("opencode child exited unexpectedly");
+
+      expect(stopCalls).toBe(1);
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
+
+test("opencode without --managed: an unexpected child exit wakes an idle sleep immediately, not just under managedRuntime", async () => {
+  // Mirrors runDaemon's own unmanaged call site (daemon.run.ts:371):
+  // runDaemonLoop(parsed, log) with NO third argument. `reactive` falls
+  // back to `opencodeHandle !== undefined` specifically for this shape —
+  // a bare `--project X` run without `--managed` still owns the opencode
+  // child it spawned and must wake its idle sleep the same way a managed
+  // run does, not wait out the full (5s, per managedFixture) tick.
+  //
+  // A plain "it eventually rejects" assertion would NOT catch a dropped
+  // `|| opencodeHandle !== undefined` fallback: onReady's childError/reject
+  // wiring is unconditional on opencodeHandle alone, so the loop still
+  // rejects eventually either way — only the non-interruptible sleep
+  // actually waiting out the full tick before noticing exposes the
+  // regression, hence asserting elapsed time here.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      let resolveExit!: () => void;
+      const unexpectedExit = new Promise<void>((resolve) => {
+        resolveExit = resolve;
+      });
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        unexpectedExit,
+        stop: async () => {
+          stopCalls++;
+        },
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+      const runner = new FakeRunner(managedResponses(repo));
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+
+      const startedAt = Date.now();
+      const loopPromise = runDaemonLoop(parsed, new CaptureLogger(), undefined, {
+        createOpencodeServer,
+        runner,
+      });
+      // Comfortably after the first (near-instant, FakeRunner-backed) pass
+      // has entered the idle sleep, comfortably before the fixture's 5s tick.
+      setTimeout(resolveExit, 300);
+
+      await expect(loopPromise).rejects.toThrow("opencode child exited unexpectedly");
+
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(stopCalls).toBe(1);
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
+
+test("SIGINT during opencode startup stops the not-yet-ready child, not just an already-ready one", async () => {
+  // The child is alive for the entire spawn-to-ready window (up to
+  // startupDeadlineMs) before start() ever resolves. A signal net keyed off
+  // the resolved handle would silently no-op for that whole window; this
+  // proves stopChild is reachable before start() settles, not just after.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    let stopCalls = 0;
+    // Never resolves on its own — only stop() ever settles it, exactly like
+    // the real OpencodeServer.stop() aborting an in-flight start().
+    const stuckStart = new Promise<never>(() => {});
+    const createOpencodeServer = () => ({
+      start: () => stuckStart,
+      stop: async () => {
+        stopCalls++;
+      },
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+
+    // earlyStop's real effect (process.exit) must not tear down this worker
+    // — and must not throw either, or its `.finally(() => process.exit(1))`
+    // caller (a fire-and-forget `void` expression) turns that into an
+    // unhandled rejection.
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    // SIGINT self-removes via process.once() once it fires below, but the
+    // paired SIGTERM listener never does — snapshot and diff so cleanup
+    // removes only what this test added, not any other listener.
+    const priorSigint = process.listeners("SIGINT");
+    const priorSigterm = process.listeners("SIGTERM");
+    try {
+      // Fire-and-forget: runDaemonLoop is permanently suspended awaiting
+      // stuckStart, so nothing here ever awaits its return.
+      void runDaemonLoop(
+        parsed,
+        fileLog,
+        { fileLog, status },
+        { createOpencodeServer, runner },
+      ).catch(() => {});
+      // Let bootstrap's sequential preflight awaits run their course and
+      // land on the earlyStop registration before signaling.
+      const deadline = Date.now() + 5_000;
+      while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(stopCalls).toBe(1);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      for (const listener of process.listeners("SIGINT")) {
+        if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+      }
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+      }
+    }
+  });
+}, 20_000);
+
+test("a second SIGINT during a slow opencode shutdown escalation still reaches earlyStop", async () => {
+  // .once() is per event NAME: registering it for SIGINT and SIGTERM both
+  // still self-removes independently per name, so two DIFFERENT signals
+  // would each fire even with .once(). The real gap is the SAME signal
+  // arriving twice — e.g. an operator hitting Ctrl+C again while stop() is
+  // still escalating past a SIGTERM-ignoring child toward SIGKILL — which
+  // .once() would swallow on the second delivery. earlyStop must stay
+  // armed across repeats of the same signal, not just across signal names.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    let stopCalls = 0;
+    const stuckStart = new Promise<never>(() => {});
+    // Never resolves — simulates stop() still escalating when the second
+    // signal arrives, so a swallowed second signal is observable as
+    // stopCalls staying at 1 instead of advancing to 2.
+    const createOpencodeServer = () => ({
+      start: () => stuckStart,
+      stop: async () => {
+        stopCalls++;
+        await new Promise(() => {});
+      },
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const runner = new FakeRunner(managedResponses(repo));
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const priorSigint = process.listeners("SIGINT");
+    const priorSigterm = process.listeners("SIGTERM");
+    try {
+      void runDaemonLoop(
+        parsed,
+        fileLog,
+        { fileLog, status },
+        { createOpencodeServer, runner },
+      ).catch(() => {});
+      const deadline = Date.now() + 5_000;
+      while (!process.listeners("SIGINT").some((listener) => !priorSigint.includes(listener))) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for SIGINT registration");
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopCalls).toBe(1);
+
+      // The escalation is still stuck (stop() never resolves); a second
+      // SIGINT — the SAME signal name — must still reach earlyStop. A
+      // process.once() listener would have self-removed after the first
+      // delivery and silently swallow this one.
+      process.emit("SIGINT");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopCalls).toBe(2);
+    } finally {
+      exitSpy.mockRestore();
+      for (const listener of process.listeners("SIGINT")) {
+        if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+      }
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+      }
+    }
+  });
+}, 20_000);
+
+test("a signal during the final child-stop call after the loop exits still reaches earlyStop", async () => {
+  // Once runPollingLoop returns (a normal --once pass here), its own
+  // graceful SIGINT/SIGTERM handlers have already run their course and
+  // removed themselves. Nothing protects the finally block's own
+  // `await opencodeHandle?.stop()` unless it's re-armed — and that stop()
+  // can itself take seconds to escalate past a SIGTERM-ignoring child.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      let stopCalls = 0;
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Never fires — this run settles via --once, not a child exit.
+        unexpectedExit: new Promise(() => {}),
+        stop: async () => {
+          stopCalls++;
+          // Never resolves — simulates stop() still escalating (e.g. the
+          // SIGKILL grace period) when the signal below arrives.
+          await new Promise(() => {});
+        },
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+      const runner = new FakeRunner(managedResponses(repo));
+      const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+      const priorSigint = process.listeners("SIGINT");
+      const priorSigterm = process.listeners("SIGTERM");
+      try {
+        void runDaemonLoop(parsed, new CaptureLogger(), undefined, {
+          createOpencodeServer,
+          runner,
+        }).catch(() => {});
+
+        // Wait for the (near-instant, --once) pass to complete and reach
+        // the final stop() call, observed via stopCalls incrementing.
+        const deadline = Date.now() + 5_000;
+        while (stopCalls === 0) {
+          if (Date.now() > deadline) throw new Error("timed out waiting for the final stop() call");
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        expect(stopCalls).toBe(1);
+
+        // A signal arriving while that stop() is still escalating must
+        // still reach earlyStop, re-armed for exactly this window. stop()
+        // never resolves here, so process.exit's .finally() never fires —
+        // stopCalls advancing to 2 is what proves earlyStop fired again,
+        // instead of the signal hitting the runtime default unprotected.
+        process.emit("SIGINT");
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(stopCalls).toBe(2);
+      } finally {
+        exitSpy.mockRestore();
+        for (const listener of process.listeners("SIGINT")) {
+          if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+        }
+        for (const listener of process.listeners("SIGTERM")) {
+          if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+        }
+      }
+    } finally {
+      stub.close();
+    }
+  });
+}, 20_000);
 
 test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
   await withEnv(

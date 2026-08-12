@@ -11,10 +11,14 @@ import type { WorkIdentity } from "@score/core/dispatch/work.interface";
 import { parseOpencodeModel } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
 export interface OpencodeServiceOptions {
   /** Project key namespacing every session this adapter looks up or creates. */
   readonly namespace: string;
   readonly dryRun?: boolean;
+  /** Bounds every HTTP call, so a wedged server fails the phase instead of hanging it forever. */
+  readonly requestTimeoutMs?: number;
 }
 
 const ALLOW_ALL_PERMISSION: readonly SessionPermission[] = [
@@ -54,12 +58,25 @@ export class OpencodeService implements AgentRuntime {
     } satisfies CreateSessionRequest)) as SessionV2Info | undefined;
     if (created === undefined) return; // dry-run: create above was a no-op
 
-    await this.#request(
-      "POST",
-      `/session/${created.id}/prompt_async`,
-      { directory: identity.worktreePath },
-      { model, parts: [{ type: "text", text: prompt }] } satisfies PromptAsyncRequest,
-    );
+    try {
+      await this.#request(
+        "POST",
+        `/session/${created.id}/prompt_async`,
+        { directory: identity.worktreePath },
+        { model, parts: [{ type: "text", text: prompt }] } satisfies PromptAsyncRequest,
+      );
+    } catch (error) {
+      // A created-but-never-briefed session reads as in-flight forever (#32):
+      // reclaim it best-effort so the next tick can retry, then surface the
+      // original failure. Abort-before-delete mirrors stop().
+      await this.#request("POST", `/session/${created.id}/abort`, {
+        directory: identity.worktreePath,
+      }).catch(() => {});
+      await this.#request("DELETE", `/session/${created.id}`, {
+        directory: identity.worktreePath,
+      }).catch(() => {});
+      throw error;
+    }
   }
 
   async ping(sessionName: string, message: string): Promise<void> {
@@ -169,6 +186,7 @@ export class OpencodeService implements AgentRuntime {
     }
     const response = await fetch(url, {
       method,
+      signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
       ...(body !== undefined && {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),

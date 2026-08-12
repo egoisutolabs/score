@@ -91,3 +91,15 @@ test("a dry run records nothing, so the next real pass still acts", () => {
   ledger.startPass(1, new Set(["score-issue-3"]));
   expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(true);
 });
+
+test("a namespaced spawn is tracked under the session name the adapter actually creates", () => {
+  const ledger = new RepairLedger(10, "demo");
+  ledger.startPass(0, new Set());
+  expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(true);
+  ledger.finishPass([{ pullRequestNumber: 9, action: "SPAWNED", dryRun: false, target: "/wt/x" }]);
+
+  // The adapter created score-demo-shepherd-pr-9; the liveness check must
+  // match it, or every tick tears down and recreates the live repair.
+  ledger.startPass(1, new Set(["score-demo-shepherd-pr-9"]));
+  expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(false);
+});

@@ -14,6 +14,14 @@ interface GitServiceOptions {
   readonly executable?: string;
   readonly timeoutMs?: number;
   readonly dryRun?: boolean;
+  /**
+   * Copy the primary checkout's untracked .claude/ into new worktrees
+   * (claude-trust seeding). Default true; composition turns it off for
+   * harnesses that never read it — otherwise the seed itself makes every
+   * merged-worktree cleanup report BLOCKED_DIRTY under an allowlist that
+   * rightly excludes .claude/.
+   */
+  readonly seedClaudeDirectory?: boolean;
 }
 
 /** Local Git adapter; callers remain responsible for policy and role authorization. */
@@ -75,6 +83,7 @@ export class GitService implements WorkspaceDriver {
       : ["worktree", "add", "-b", identity.branch, identity.worktreePath, baseBranch];
     requireSuccess(await this.#run(worktreeArgs, true));
 
+    if (this.options.seedClaudeDirectory === false) return;
     const claudeSource = join(this.options.repositoryPath, ".claude");
     if (await isDirectory(claudeSource)) {
       await cp(claudeSource, join(identity.worktreePath, ".claude"), { recursive: true });

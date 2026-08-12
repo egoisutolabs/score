@@ -64,6 +64,75 @@ Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
 `ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/daemon.run.ts`
 and `apps/daemon/src/repair/repair.run.ts`.
 
+## Managed mode
+
+`score config init` writes `~/.score/config.jsonc`; `score up <project>` runs
+the daemon supervised (launchd/systemd), reading only that project's
+`resolved.json` — no env tuning. Each project's `agent.harness` is either
+`"claude"` (tmux sessions, unchanged) or `"opencode"` (a durable HTTP session
+per issue against a locally-owned `opencode serve` child):
+
+```jsonc
+"score": {
+  // ...
+  "config": {
+    "agent": { "harness": "opencode", "model": "anthropic/claude-sonnet-5" },
+    // ...
+  },
+},
+```
+
+### One child per daemon
+
+A managed `harness: "opencode"` project starts exactly one `opencode serve`
+child before the poll loop begins, and every phase (cleanup, dispatch, repair)
+shares that same `OpencodeService` instance — sessions are addressed by exact
+title, never by a locally-cached ID, so a restart resolves the same
+conversation instead of creating a new one. Bootstrap preflights `opencode
+--version` (in place of `tmux -V`) and refuses to start if
+`OPENCODE_SERVER_PASSWORD` is set — the adapter has no HTTP auth support in
+v1, so a passworded child would spawn and then be unreachable. `--dry-run`
+still starts and stops the child (so the lifecycle is exercised end to end)
+while every create/prompt/abort/delete call is suppressed.
+
+### Unexpected exit is fatal, never mid-phase
+
+If the child dies without the daemon having asked it to stop, the current
+phase is allowed to finish, the rest of that pass is skipped, and the daemon
+logs `fatal: opencode child exited unexpectedly`, writes it to
+`status.last_error`, and exits nonzero. The supervisor restarts the process;
+because opencode sessions are durable and title-addressed, the new daemon
+resolves the exact same session by title and resumes it with its prior
+context intact — the same shutdown path SIGTERM already used, just triggered
+by the child instead of a signal.
+
+### Real-binary smoke
+
+Verified manually against `opencode 1.17.15` (`opencode serve --hostname
+127.0.0.1 --port 0`), driving the same HTTP calls `OpencodeService` makes:
+
+1. **Create**: `POST /session` with `title: "score-demo-smoke-1"` → session
+   `ses_0101ed83cffe375BS6n4I31fgr`.
+2. **Prompt**: `POST /session/{id}/prompt_async`, *"Reply with exactly one
+   word and nothing else: pineapple"* → assistant replies `pineapple`.
+3. **Kill child**: `kill -9` the `opencode serve` process — the next request
+   against its port refuses the connection.
+4. **Restart**: a fresh `opencode serve` starts on a new port.
+5. **Resolve same title**: `GET /api/session?search=score-demo-smoke-1`
+   returns exactly one match — the same `ses_0101ed83cffe375BS6n4I31fgr`.
+6. **Resume**: `POST /session/{id}/prompt_async`, *"What single word did you
+   reply with earlier in this conversation? Answer with just that word."*
+   → assistant replies `pineapple`, proving the resumed session retained the
+   pre-restart context rather than starting a fresh conversation:
+
+   ```
+   user:      Reply with exactly one word and nothing else: pineapple
+   assistant: pineapple
+   [child killed, opencode serve restarted, same title resolved]
+   user:      What single word did you reply with earlier in this conversation? Answer with just that word.
+   assistant: pineapple
+   ```
+
 ## Supervisor platforms
 
 `score up / down / tui` pick the supervisor by platform: launchd

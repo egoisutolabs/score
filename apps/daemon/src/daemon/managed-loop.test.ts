@@ -26,7 +26,9 @@ interface Fixture {
   exited(): Promise<number | null>;
 }
 
-async function startFixture(mode: "sleep" | "midpass"): Promise<Fixture> {
+async function startFixture(
+  mode: "sleep" | "midpass" | "opencode-sleep" | "opencode-midpass",
+): Promise<Fixture> {
   const dir = await mkdtemp(join(tmpdir(), "score-managed-loop-"));
   sandboxes.push(dir);
   const statusPath = join(dir, "status.json");
@@ -105,4 +107,41 @@ test("a second SIGTERM is idempotent", async () => {
   expect(code).toBe(0);
   expect(fx.stdout()).toContain("clean exit");
   expect(await readStatus(fx.statusPath)).toMatchObject({ state: "stopping" });
+}, 20_000);
+
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+test("unexpected child exit during the idle sleep wakes immediately and exits fatally", async () => {
+  const fx = await startFixture("opencode-sleep");
+  await fx.waitFor("pass 0 end");
+  const settledAt = Date.now();
+  const code = await fx.exited();
+  // The fake handle fires ~200ms after spawn, well inside the 60s tick — a
+  // real full-tick wait would still be sleeping when this assertion runs.
+  expect(Date.now() - settledAt).toBeLessThan(5_000);
+  expect(code).toBe(1);
+  const output = fx.stdout();
+  expect(output).toContain("fatal: fixture child exited unexpectedly");
+  expect(countOccurrences(output, "handle stop called")).toBe(1);
+  expect(await readStatus(fx.statusPath)).toMatchObject({
+    last_error: "fixture child exited unexpectedly",
+  });
+}, 20_000);
+
+test("unexpected child exit mid-phase finishes the current phase, skips the rest, exits fatally", async () => {
+  const fx = await startFixture("opencode-midpass");
+  await fx.waitFor("phase one start");
+  const code = await fx.exited();
+  expect(code).toBe(1);
+  const output = fx.stdout();
+  // The in-flight phase completes; nothing after it starts (locked decision 6).
+  expect(output).toContain("phase one done");
+  expect(output).not.toContain("phase two start");
+  expect(output).toContain("fatal: fixture child exited unexpectedly");
+  expect(countOccurrences(output, "handle stop called")).toBe(1);
+  expect(await readStatus(fx.statusPath)).toMatchObject({
+    last_error: "fixture child exited unexpectedly",
+  });
 }, 20_000);

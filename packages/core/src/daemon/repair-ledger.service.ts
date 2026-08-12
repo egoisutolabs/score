@@ -1,3 +1,4 @@
+import { repairSessionName } from "@score/core/dispatch/dispatch.identity";
 import type { RepairDefects } from "@score/core/repair/repair.policy";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 
@@ -32,7 +33,13 @@ export class RepairLedger {
   #tick = 0;
   #liveSessions: ReadonlySet<string> = new Set();
 
-  constructor(private readonly staleTicks: number) {}
+  constructor(
+    private readonly staleTicks: number,
+    /** Managed mode's project key: spawned repairs are recorded under the
+     * namespaced session name the adapters actually create, so the liveness
+     * check matches and the next tick does not tear down a live repair. */
+    private readonly namespace?: string,
+  ) {}
 
   /** Call once before each repair pass with the tick and the live tmux sessions. */
   startPass(tick: number, liveSessions: ReadonlySet<string>): void {
@@ -78,7 +85,7 @@ export class RepairLedger {
         sessionName:
           result.action === "PINGED"
             ? (result.target ?? "")
-            : `shepherd-pr-${result.pullRequestNumber}`,
+            : repairSessionName(this.namespace, result.pullRequestNumber),
       });
     }
     for (const number of this.#entries.keys()) {
