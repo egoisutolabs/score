@@ -207,9 +207,17 @@ export class TmuxService implements AgentRuntime {
       // A failed restore still throws (the session would linger forever once
       // its agent exits), but the live agent must not survive it: the caller's
       // rollback deletes the worktree under it, and the session would block
-      // every retry as ALREADY_IN_FLIGHT. Reclaim first, then propagate.
+      // every retry as ALREADY_IN_FLIGHT. Reclaim first, then propagate —
+      // and if the reclaim itself fails with the session surviving, name the
+      // blocker in the error (same surfacing as the dead path below) instead
+      // of throwing one that hides it.
       if (restore.exitCode !== 0 || restore.timedOut) {
-        await this.#run(["kill-session", "-t", sessionName], true);
+        const killed = await this.#run(["kill-session", "-t", sessionName], true);
+        if (killed.exitCode !== 0 && (await this.sessionExists(sessionName))) {
+          throw new Error(
+            `could not restore exit behavior for tmux session '${sessionName}' (set-option exited ${restore.exitCode}${restore.timedOut ? " after timing out" : ""}), and the session could not be killed and will block retries — run: tmux kill-session -t ${sessionName}`,
+          );
+        }
       }
       requireSuccess(restore);
       // The alive verdict was sampled before the restore landed; a death in

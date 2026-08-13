@@ -362,6 +362,35 @@ test("a live agent whose option restore fails is reclaimed before the throw", as
   expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
 });
 
+test("a restore failure whose reclaim also fails names the surviving session", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "0\n" }, // list-panes: pane alive
+    { stdout: "" }, // capture-pane
+    { exitCode: 1 }, // set-option off fails
+    { exitCode: 1 }, // kill-session fails too
+    0, // has-session: the session survives
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  // A blocked retry must be named in the error, not hidden behind the plain
+  // set-option failure the double fault started with.
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow(
+    "could not restore exit behavior for tmux session 'issue-7' (set-option exited 1), and the session could not be killed and will block retries — run: tmux kill-session -t issue-7",
+  );
+});
+
 test("a spawn losing a name race does not kill the session it collided with", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
