@@ -117,11 +117,11 @@ test("a non-advancing review-thread cursor stops the loop instead of spinning fo
       },
     });
   // Proven unresolved threads survive the cycle as a lower bound; the
-  // repeated page is never re-requested, so nothing double-counts.
+  // repeated page may repeat its nodes, so none of it is counted.
   const positive = new RecordingRunner();
   positive.responses = [page([{ isResolved: false }], "C1"), page([{ isResolved: false }], "C1")];
   const github = new GitHubService(positive, { repositoryPath: "/repo", repository: "o/r" });
-  expect(await github.unresolvedThreadCount(7)).toBe(2);
+  expect(await github.unresolvedThreadCount(7)).toBe(1);
   expect(positive.commands).toHaveLength(2);
 
   const empty = new RecordingRunner();

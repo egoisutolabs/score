@@ -207,16 +207,17 @@ export class GitHubService implements WorkSource, ChangeHost {
         if (unresolved > 0) return unresolved;
         throw error;
       }
+      // A repeated cursor would re-issue the same successful query forever
+      // (the runner timeout bounds one command, not this loop), and a page
+      // that repeats a cursor may repeat its nodes too — so the whole page
+      // is malformed evidence, handled like a failed page before any of it
+      // is counted: keep the previously proven lower bound, else propagate.
+      if (page.endCursor !== null && seenCursors.has(page.endCursor)) {
+        if (unresolved > 0) return unresolved;
+        throw new Error(`github.graphql.reviewThreads cursor did not advance (${page.endCursor})`);
+      }
       unresolved += page.unresolved;
       cursor = page.endCursor;
-      // A repeated cursor would re-issue the same successful query forever
-      // (the runner timeout bounds one command, not this loop). Treat it as
-      // malformed pagination evidence, like a failed page: keep a proven
-      // lower bound, otherwise propagate.
-      if (cursor !== null && seenCursors.has(cursor)) {
-        if (unresolved > 0) return unresolved;
-        throw new Error(`github.graphql.reviewThreads cursor did not advance (${cursor})`);
-      }
       if (cursor !== null) seenCursors.add(cursor);
     } while (cursor !== null);
     return unresolved;
