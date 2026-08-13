@@ -392,11 +392,15 @@ export function proveLandingAuthorship(stray: StrayCommitEvidence): LandingAutho
   // The stamp is required, not corroborating (D1): checks 1-3 are satisfiable
   // by an ordinary operator merge made with the same ambient identity, so an
   // unstamped candidate — including strays predating the stamp — is never
-  // auto-reset; it surfaces as a warning and is resolved by hand once.
-  if (commit.committerEmail !== LANDING_COMMITTER.email) {
+  // auto-reset; it surfaces as a warning and is resolved by hand once. Both
+  // halves of the identity must match: commitMerge stamps name and email.
+  if (
+    commit.committerName !== LANDING_COMMITTER.name ||
+    commit.committerEmail !== LANDING_COMMITTER.email
+  ) {
     return {
       proven: false,
-      evidence: `committer ${commit.committerEmail} is not landing's stamp ${LANDING_COMMITTER.email}`,
+      evidence: `committer ${commit.committerName} <${commit.committerEmail}> is not landing's stamp ${LANDING_COMMITTER.name} <${LANDING_COMMITTER.email}>`,
     };
   }
   return { proven: true, pullRequestNumber: Number(template[1]) };
@@ -407,6 +411,16 @@ export interface ReconcileUnpushedMergeOptions {
   readonly defaultBranch: string;
   readonly repositoryOwner: string;
 }
+
+/**
+ * "clean": no wedge (heads equal, behind origin, or a merge in progress that
+ * the staged-merge path owns) — landing may run. "recovered": the wedge was
+ * reset away and verified — landing may run. "blocked": an unreconciled
+ * commit is still ahead of origin (refused, dirty, parked checkout, or
+ * dry-run) — landing MUST NOT run this pass, or it would commit a new merge
+ * on top and build the local-only chain D1 forbids, then push both.
+ */
+export type ReconcileOutcome = "clean" | "recovered" | "blocked";
 
 /**
  * A reset that reported success but left the wrong head: evidence of checkout
@@ -435,14 +449,14 @@ export async function reconcileUnpushedLandingMerge(
     | "fetchOrigin"
     | "isAncestor"
     | "observePrimaryCheckout"
-    | "resetToRemoteHead"
+    | "resetToCommit"
   >,
   log: Logger,
   options: ReconcileUnpushedMergeOptions,
-): Promise<void> {
+): Promise<ReconcileOutcome> {
   const { dryRun, defaultBranch, repositoryOwner } = options;
   // A merge in progress is selfHealStagedMerge's territory, not a stray commit.
-  if (await git.mergeInProgress()) return;
+  if (await git.mergeInProgress()) return "clean";
   // D1: fetch before evaluating anything — startup reaches here before any
   // phase fetch, so the origin/<default> tracking ref may predate the outage;
   // comparing or resetting against a stale ref would re-land from a stale
@@ -451,22 +465,22 @@ export async function reconcileUnpushedLandingMerge(
   const remoteRef = `origin/${defaultBranch}`;
   const local = await git.observeCommit(defaultBranch);
   const origin = await git.observeCommit(remoteRef);
-  if (local.sha === origin.sha) return;
+  if (local.sha === origin.sha) return "clean";
   // Behind origin is cleanup's normal auto-pull, not a wedge.
-  if (await git.isAncestor(local.sha, origin.sha)) return;
+  if (await git.isAncestor(local.sha, origin.sha)) return "clean";
 
   const { branch, status } = await git.observePrimaryCheckout();
   if (branch !== defaultBranch) {
     log.warn(
       `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the checkout is on ${branch}; leaving it untouched`,
     );
-    return;
+    return "blocked";
   }
   if (meaningfulStatusLines(status).length > 0) {
     log.warn(
       `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a hard reset must never eat operator edits`,
     );
-    return;
+    return "blocked";
   }
   const firstParent = local.parents[0];
   const proof = proveLandingAuthorship({
@@ -479,25 +493,29 @@ export async function reconcileUnpushedLandingMerge(
     log.warn(
       `unpushed commit ${local.sha} on ${defaultBranch} fails the landing-authorship proof (${proof.evidence}); leaving the checkout untouched`,
     );
-    return;
+    return "blocked";
   }
   if (dryRun) {
     log.warn(
-      `would reset ${defaultBranch} to ${remoteRef}, dropping unpushed landing merge ${local.sha}; PR #${proof.pullRequestNumber} would re-land through the normal landing tick`,
+      `would reset ${defaultBranch} to ${origin.sha}, dropping unpushed landing merge ${local.sha}; PR #${proof.pullRequestNumber} would re-land through the normal landing tick`,
     );
-    return;
+    return "blocked";
   }
-  await git.resetToRemoteHead(defaultBranch);
+  // The observed SHA, not the ref: a linked worktree's fetch can move the
+  // shared origin/<default> between observation and reset, and verification
+  // must compare against the head this recovery actually vetted.
+  await git.resetToCommit(origin.sha);
   // Fail closed like the staged-merge heal: prove the reset actually landed.
   const after = await git.observeCommit(defaultBranch);
   if (after.sha !== origin.sha) {
     throw new RecoveryVerificationError(
-      `reset --hard ${remoteRef} left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
+      `reset --hard left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
     );
   }
   log.warn(
     `reset unpushed landing merge ${local.sha} away; PR #${proof.pullRequestNumber} re-lands through the normal landing tick`,
   );
+  return "recovered";
 }
 
 /** The subset of OpencodeServer's own shape earlyStop needs: stop() must be
@@ -766,6 +784,11 @@ export async function runDaemonLoop(
     const gateVerdicts = new Map<number, string>();
     let passError: string | null = null;
     let stopping = false;
+    // Set per pass by the D1 reconciliation below. While an unreconciled
+    // commit sits ahead of origin (recovery refused, or reconciliation itself
+    // failed), landing must not run: it would see a clean tree, commit a new
+    // merge on top, and build — or even push — the chain D1 forbids.
+    let landingBlocked = false;
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -784,6 +807,12 @@ export async function runDaemonLoop(
         name: "landing",
         everyTicks: 2,
         run: async () => {
+          if (landingBlocked) {
+            log.warn(
+              "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
+            );
+            return;
+          }
           const results = await landing.runTick();
           // undefined = no gate verdict this tick; the last known failure stands.
           const gateVerdict = gateFailureFrom(results);
@@ -849,22 +878,25 @@ export async function runDaemonLoop(
         // startup (the first pass runs immediately, so this is the startup
         // check too): a caught pushDefaultBranch failure strands a committed
         // merge while the daemon lives, and landing must see the recovered
-        // checkout, never stage on top of the wedge. Transient git failures
-        // (a fetch blip, say) degrade to a warning like any phase error —
+        // checkout, never stage on top of the wedge. Unconditional, not
+        // managed-only: every mode that runs this loop lands merges on this
+        // checkout, so every mode owns the recovery of its own wedge.
+        // Transient git failures (a fetch blip, say) degrade to a warning
+        // like any phase error — but they also block landing this pass, and
         // only failed post-reset verification may crash the daemon.
-        if (managedRuntime) {
-          try {
-            await reconcileUnpushedLandingMerge(git, log, {
+        try {
+          landingBlocked =
+            (await reconcileUnpushedLandingMerge(git, log, {
               dryRun,
               defaultBranch: runtime.defaultBranch,
               repositoryOwner: runtime.repository.split("/")[0] as string,
-            });
-          } catch (error) {
-            if (error instanceof RecoveryVerificationError) throw error;
-            const message = error instanceof Error ? error.message : String(error);
-            log.warn(`✗ reconciliation failed: ${message}`);
-            passError = `reconcile: ${message}`;
-          }
+            })) === "blocked";
+        } catch (error) {
+          if (error instanceof RecoveryVerificationError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`✗ reconciliation failed: ${message}`);
+          passError = `reconcile: ${message}`;
+          landingBlocked = true;
         }
 
         await daemon.runPass();

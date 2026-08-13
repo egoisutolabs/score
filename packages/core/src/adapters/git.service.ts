@@ -127,7 +127,13 @@ export class GitService implements WorkspaceDriver {
     const branch = requireSuccess(
       await this.#run(["rev-parse", "--abbrev-ref", "HEAD"]),
     ).stdout.trim();
-    const status = requireSuccess(await this.#run(["status", "--porcelain"])).stdout;
+    // Per-file untracked listing: the default mode collapses a wholly
+    // untracked directory to one "?? dir/" line, which hides harness-owned
+    // files (e.g. .claude/scheduled_tasks.lock) from exact-path filters and
+    // would wedge landing and D1 recovery behind phantom dirt.
+    const status = requireSuccess(
+      await this.#run(["status", "--porcelain", "--untracked-files=all"]),
+    ).stdout;
     return { branch, status };
   }
 
@@ -198,8 +204,13 @@ export class GitService implements WorkspaceDriver {
     return (await this.#run(["merge-base", "--is-ancestor", ancestor, descendant])).exitCode === 0;
   }
 
-  async resetToRemoteHead(defaultBranch: string): Promise<void> {
-    requireSuccess(await this.#run(["reset", "--hard", `origin/${defaultBranch}`], true));
+  /**
+   * Pinned to an exact SHA, never a ref: a linked worktree can fetch and move
+   * the shared origin/<default> ref between observation and reset, and the
+   * recovery must land on the head it vetted, not wherever the ref points now.
+   */
+  async resetToCommit(sha: string): Promise<void> {
+    requireSuccess(await this.#run(["reset", "--hard", sha], true));
   }
 
   async fastForwardDefaultBranch(defaultBranch: string): Promise<boolean> {

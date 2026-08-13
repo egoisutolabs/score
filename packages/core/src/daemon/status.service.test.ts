@@ -124,3 +124,18 @@ test("a reader polling during continuous writes never sees a partial file", asyn
   expect(reads).toBeGreaterThan(0);
   expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ state: "running", tick: 499 });
 });
+
+test("push-failed is a green gate outcome: it clears a stale verdict and the standing failure", () => {
+  // The merged tree passed every gate; only the push to origin failed. A
+  // retained build-red would send repair after an already-green PR.
+  const verdicts = new Map<number, string>([[7, "daemon:check — TS2345"]]);
+  applyGateVerdicts(verdicts, [
+    { pullRequestNumber: 7, tag: "push-failed", note: "merge committed but push failed" },
+  ]);
+  expect(verdicts.has(7)).toBe(false);
+  expect(
+    gateFailureFrom([
+      { pullRequestNumber: 7, tag: "push-failed", note: "merge committed but push failed" },
+    ]),
+  ).toBeNull();
+});

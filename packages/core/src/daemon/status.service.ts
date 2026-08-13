@@ -21,7 +21,10 @@ export interface StatusFile {
 }
 
 /** Tags that only appear after #runGates ran the local gates and they passed. */
-const GREEN_GATE_TAGS: ReadonlySet<string> = new Set(["soaking", "ready", "merged"]);
+// push-failed is a green GATE outcome: the merged tree passed every gate and
+// only the push to origin failed afterwards, so a stale build-red verdict must
+// clear instead of sending repair after an already-green PR.
+const GREEN_GATE_TAGS: ReadonlySet<string> = new Set(["soaking", "ready", "merged", "push-failed"]);
 
 /**
  * The gate verdict a landing tick produced, if any: the latest build-red

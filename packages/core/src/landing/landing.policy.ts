@@ -103,12 +103,17 @@ export const VERIFY_TIMEOUT_MS = 30 * 60_000;
  * Working-tree lines that count as real dirt on the primary checkout. The
  * scheduler's lock file is harness-generated churn, not an operator edit —
  * counting it would stall landing (and D1 unpushed-merge recovery) forever.
- * Shared so both writers to the primary checkout agree on what "clean" means.
+ * Exact porcelain path only ("XY <path>"): a substring match would also bless
+ * operator files that merely contain the name (docs/.claude/…lock.backup) and
+ * let a hard reset eat them. Shared so both writers to the primary checkout
+ * agree on what "clean" means; relies on --untracked-files=all so the lock
+ * appears as its own line, never collapsed into "?? .claude/".
  */
 export function meaningfulStatusLines(status: string): readonly string[] {
   return status
     .split(/\r?\n/)
-    .filter((line) => line.trim() && !line.includes(".claude/scheduled_tasks.lock"));
+    .filter((line) => line.trim() !== "")
+    .filter((line) => line.slice(3) !== ".claude/scheduled_tasks.lock");
 }
 
 export function gatesFor(repositoryRoot: string): readonly BuildGate[] {
