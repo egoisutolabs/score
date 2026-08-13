@@ -49,9 +49,13 @@ jobs:
         continue-on-error: true
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # No track_progress: its todo-checklist scaffold is prepended to
-          # every comment update and buries the actual findings; the job link
-          # already covers "is it still running".
+          # track_progress must stay: it is what CREATES the PR comment that
+          # mcp__github_comment__update_claude_comment later edits. Removing
+          # it (PR #35) made every review run verdict-less — four clean runs
+          # on PR #36 posted nothing, because the update tool had no target.
+          # The todo-checklist scaffold it prepends is tolerable now that
+          # use_sticky_comment keeps everything in one comment per PR.
+          track_progress: true
           # One sticky comment per PR, updated in place — without this every
           # push stacks a fresh "Claude's review" comment on the timeline.
           use_sticky_comment: true
