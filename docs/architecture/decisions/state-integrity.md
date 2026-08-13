@@ -63,7 +63,7 @@ reports and mutates nothing.
 
 - `packages/core/src/landing/landing.service.ts:158-159` (commit → push
   adjacency, the death window).
-- `apps/daemon/src/daemon/daemon.run.ts:301` (existing staged-merge
+- `apps/daemon/src/daemon/daemon.run.ts:316` (existing staged-merge
   self-heal this decision extends).
 - Live probe in the epic's Current state table: the wedge presents as
   `--ff-only` pull failures every tick with no `MERGE_HEAD` to abort.
