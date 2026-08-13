@@ -391,6 +391,30 @@ test("a restore failure whose reclaim also fails names the surviving session", a
   );
 });
 
+test("a partial spawn failure whose reclaim also fails names the surviving session", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    { exitCode: 1, stderr: "set-option failed" }, // new-session ok, chained set-option fails
+    { exitCode: 1 }, // kill-session fails too
+    0, // has-session: the partially-created session survives
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow(
+    "spawning tmux session 'issue-7' failed (exit 1), and the partially-created session could not be killed and will block retries — run: tmux kill-session -t issue-7",
+  );
+});
+
 test("a spawn losing a name race does not kill the session it collided with", async () => {
   const runner = new RecordingRunner();
   runner.responses = [

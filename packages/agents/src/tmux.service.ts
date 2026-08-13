@@ -155,7 +155,15 @@ export class TmuxService implements AgentRuntime {
       (spawn.exitCode !== 0 || spawn.timedOut) &&
       !spawn.stderr.includes("duplicate session")
     ) {
-      await this.#run(["kill-session", "-t", sessionName], true);
+      const killed = await this.#run(["kill-session", "-t", sessionName], true);
+      // Same surfacing as the birth-check paths: a partially-created session
+      // that survives its kill blocks every retry as ALREADY_IN_FLIGHT —
+      // name it rather than throwing a spawn error that hides it.
+      if (killed.exitCode !== 0 && (await this.sessionExists(sessionName))) {
+        throw new Error(
+          `spawning tmux session '${sessionName}' failed (exit ${spawn.exitCode}${spawn.timedOut ? " after timing out" : ""}), and the partially-created session could not be killed and will block retries — run: tmux kill-session -t ${sessionName}`,
+        );
+      }
     }
     requireSuccess(spawn);
   }
