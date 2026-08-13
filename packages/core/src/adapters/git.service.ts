@@ -199,15 +199,21 @@ export class GitService implements WorkspaceDriver {
   }
 
   /**
-   * Recovery reset with both race guards a bare `reset --hard` lacks: the
-   * branch moves via compare-and-swap (fails if a commit landed on it after
-   * `expectedHead` was observed), then the index and worktree follow through
-   * a two-tree merge that refuses to overwrite files modified in the window
-   * — `reset --hard` would silently discard both kinds of concurrent
-   * operator work. Pinned to exact SHAs, never refs: a linked worktree's
-   * fetch can move origin/<default> mid-recovery.
+   * Recovery reset with both race guards a bare `reset --hard` lacks, ordered
+   * tree-then-ref for failure consistency. The two-tree merge validates and
+   * syncs the index/worktree while the branch still points at `expectedHead`
+   * — it refuses (mutating nothing) if a file changed since the caller's
+   * checks. Only then does the ref move, by compare-and-swap, so a commit
+   * that arrived after observation aborts the recovery instead of being
+   * discarded; the ref is never left pointing where the tree doesn't match.
+   * A kill between the two steps leaves the branch on `expectedHead` with
+   * the tree already at `to` — the caller detects that state and re-runs
+   * this (the tree sync no-ops, the ref move completes). Pinned to exact
+   * SHAs, never refs: a linked worktree's fetch can move origin/<default>
+   * mid-recovery.
    */
   async resetBranchToCommit(branch: string, to: string, expectedHead: string): Promise<void> {
+    requireSuccess(await this.#run(["read-tree", "-m", "-u", expectedHead, to], true));
     requireSuccess(
       await this.#run(
         [
@@ -221,7 +227,14 @@ export class GitService implements WorkspaceDriver {
         true,
       ),
     );
-    requireSuccess(await this.#run(["read-tree", "-m", "-u", expectedHead, to], true));
+  }
+
+  /** True when both the index and the working tree hold exactly `sha`'s tree. */
+  async treeMatchesCommit(sha: string): Promise<boolean> {
+    // diff --quiet: exit 1 on differences; any other failure also reads as
+    // "no match", which fails the caller's recovery checks closed.
+    if ((await this.#run(["diff", "--quiet", "--cached", sha])).exitCode !== 0) return false;
+    return (await this.#run(["diff", "--quiet", sha])).exitCode === 0;
   }
 
   async fastForwardDefaultBranch(defaultBranch: string): Promise<boolean> {

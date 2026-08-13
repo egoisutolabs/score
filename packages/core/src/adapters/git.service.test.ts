@@ -217,7 +217,7 @@ test("commitMerge stamps landing's committer through the environment, beating in
   });
 });
 
-test("resetBranchToCommit swaps the ref against the expected head, then syncs the tree non-destructively", async () => {
+test("resetBranchToCommit syncs the tree non-destructively first, then CAS-moves the ref", async () => {
   const runner = new ScriptRunner((command, options) => result(command, options));
 
   await new GitService(runner, {
@@ -225,7 +225,10 @@ test("resetBranchToCommit swaps the ref against the expected head, then syncs th
     workspaceRoot: "/wt",
   }).resetBranchToCommit("main", "originsha", "wedgesha");
 
+  // Tree before ref: a tree-sync failure must leave the ref untouched, so
+  // the branch is never left pointing where the working tree doesn't match.
   expect(runner.commands.map((command) => command.slice(1))).toEqual([
+    ["read-tree", "-m", "-u", "wedgesha", "originsha"],
     [
       "update-ref",
       "-m",
@@ -234,7 +237,6 @@ test("resetBranchToCommit swaps the ref against the expected head, then syncs th
       "originsha",
       "wedgesha",
     ],
-    ["read-tree", "-m", "-u", "wedgesha", "originsha"],
   ]);
 });
 

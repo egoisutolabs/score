@@ -402,6 +402,7 @@ export async function reconcileUnpushedLandingMerge(
     | "isAncestor"
     | "observePrimaryCheckout"
     | "resetBranchToCommit"
+    | "treeMatchesCommit"
   >,
   log: Logger,
   options: ReconcileUnpushedMergeOptions,
@@ -428,9 +429,14 @@ export async function reconcileUnpushedLandingMerge(
     );
     return "blocked";
   }
-  if (meaningfulStatusLines(status).length > 0) {
+  // One kind of "dirt" is recovery's own: a daemon killed between the tree
+  // sync and the ref move leaves the index/worktree already at origin's
+  // exact tree with the branch still on the wedge. Completing that recovery
+  // touches nothing an operator could have added (the sync no-ops), so it
+  // falls through to the proof; any other dirt refuses.
+  if (meaningfulStatusLines(status).length > 0 && !(await git.treeMatchesCommit(origin.sha))) {
     log.warn(
-      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a hard reset must never eat operator edits`,
+      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a reset must never eat operator edits`,
     );
     return "blocked";
   }

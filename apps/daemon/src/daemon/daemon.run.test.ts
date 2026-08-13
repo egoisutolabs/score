@@ -1245,6 +1245,40 @@ test("the recovery reset is compare-and-swap: an operator commit after observati
   expect(fixture.gitCli("rev-parse", "main")).toBe(operatorSha);
 });
 
+test("a mid-window edit aborts the recovery reset before anything moves", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  const wedgeSha = fixture.gitCli("rev-parse", "main");
+  const originSha = fixture.gitCli("rev-parse", "origin/main");
+  // The operator edits a tracked file the reset would rewrite, after the
+  // daemon's checks but before the reset executes. The tree sync runs first
+  // and refuses — the ref must not have moved, and the edit must survive.
+  await writeFile(join(fixture.repo, "feature.txt"), "operator-edit\n");
+
+  await expect(fixture.git.resetBranchToCommit("main", originSha, wedgeSha)).rejects.toThrow();
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(wedgeSha);
+  expect(await readFile(join(fixture.repo, "feature.txt"), "utf8")).toBe("operator-edit\n");
+});
+
+test("a crash between recovery's tree sync and its ref move completes on the next pass", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  const wedgeSha = fixture.gitCli("rev-parse", "main");
+  const originSha = fixture.gitCli("rev-parse", "origin/main");
+  // The kill window: index/worktree already hold origin's exact tree while
+  // the branch still points at the wedge. Reconciliation must recognize this
+  // as its own unfinished work — not operator dirt — and finish the job.
+  fixture.gitCli("read-tree", "-m", "-u", wedgeSha, originSha);
+  const log = new CaptureLogger();
+
+  const outcome = await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(outcome).toBe("recovered");
+  expect(fixture.gitCli("rev-parse", "main")).toBe(originSha);
+  expect(fixture.gitCli("status", "--porcelain")).toBe("");
+});
+
 test("the committer stamp survives inherited GIT_COMMITTER_* overrides", async () => {
   // A daemon started from a shell exporting GIT_COMMITTER_* must still stamp
   // landing's identity, or its own wedge would fail check 4 forever.
