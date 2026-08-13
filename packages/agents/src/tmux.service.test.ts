@@ -261,6 +261,32 @@ test("a timed-out liveness probe fails open instead of killing a possibly-live a
   ]);
 });
 
+test("a capture timeout cannot overturn a confirmed death", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "1\n" }, // list-panes: confirmed dead
+    { exitCode: -1, timedOut: true }, // capture-pane times out independently
+    0, // kill-session
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  // The fail-open path exists for an unknown liveness verdict, not a missing
+  // output capture — a confirmed-dead pane must still fail the launch.
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("agent died at birth in tmux session 'issue-7' (no output captured)");
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
+});
+
 test("a live agent whose option restore fails is reclaimed before the throw", async () => {
   const runner = new RecordingRunner();
   runner.responses = [

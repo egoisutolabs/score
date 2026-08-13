@@ -166,21 +166,27 @@ export class TmuxService implements AgentRuntime {
     if (this.options.dryRun) return;
     await sleep(this.#birthGraceMs);
     const panes = await this.#run(["list-panes", "-t", sessionName, "-F", "#{pane_dead}"]);
-    const capture = await this.#run(["capture-pane", "-p", "-t", sessionName]);
-    // A timed-out probe is an unresponsive server, not proof of death.
-    // Killing a possibly-live agent over an observation failure is strictly
-    // worse than missing a death (which merely degrades to the pre-birth-check
-    // behavior), so fail open, best-effort restoring normal exit behavior.
-    if (panes.timedOut || capture.timedOut) {
+    // A timed-out liveness probe is an unresponsive server, not proof of
+    // death. Killing a possibly-live agent over an observation failure is
+    // strictly worse than missing a death (which merely degrades to the
+    // pre-birth-check behavior), so fail open, best-effort restoring normal
+    // exit behavior.
+    if (panes.timedOut) {
       await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true);
       return;
     }
-    // list-panes failing means the session is gone entirely (remain-on-exit
-    // could not hold it) — dead by definition, with no output to capture.
-    const dead =
-      panes.exitCode !== 0 ||
-      panes.stdout.includes("1") ||
-      (wrapperExitMarker && /^EXIT:\d+/m.test(capture.stdout));
+    // list-panes failing cleanly means the session is gone entirely
+    // (remain-on-exit could not hold it) — dead by definition.
+    const paneDead = panes.exitCode !== 0 || panes.stdout.includes("1");
+    const capture = await this.#run(["capture-pane", "-p", "-t", sessionName]);
+    // A capture timeout only blinds the EXIT-marker check, never the verdict:
+    // a confirmed-dead pane stays dead (just with no output to report), and a
+    // confirmed-alive pane fails open exactly as above.
+    if (!paneDead && capture.timedOut) {
+      await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true);
+      return;
+    }
+    const dead = paneDead || (wrapperExitMarker && /^EXIT:\d+/m.test(capture.stdout));
     if (!dead) {
       const restore = await this.#run(
         ["set-option", "-t", sessionName, "remain-on-exit", "off"],
