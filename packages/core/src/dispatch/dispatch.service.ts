@@ -15,7 +15,7 @@ import {
 import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.interface";
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import { assertKnownHarness } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import type { DispatchResult } from "./dispatch-result.interface";
@@ -46,7 +46,7 @@ export class DispatchService {
     private readonly options: DispatchServiceOptions,
     private readonly workSource: WorkSource,
     private readonly changeHost: ChangeHost,
-    private readonly workspace: WorkspaceDriver,
+    private readonly workspace: WorktreeProvisioner,
     private readonly agents: AgentRuntime,
     private readonly briefings: TaskBriefingWriter,
   ) {}

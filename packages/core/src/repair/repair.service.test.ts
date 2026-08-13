@@ -1,14 +1,11 @@
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
-import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
+import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestObservation } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import { DEFAULT_SESSION_SUFFIX } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
-import type {
-  PrimaryCheckoutObservation,
-  WorkspaceDriver,
-} from "@score/core/workspace-driver.interface";
+import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import { expect, test } from "vitest";
 
@@ -26,32 +23,14 @@ function change(): PullRequestObservation {
   };
 }
 
-class RepairWorkspace implements WorkspaceDriver {
+class RepairWorkspace
+  implements Pick<WorktreeProvisioner, "observeWorktrees">, Pick<LandingWorkspace, "fetchOrigin">
+{
   worktrees: WorktreeObservation[] = [];
   async observeWorktrees() {
     return this.worktrees;
   }
-  async createWorktree(_identity: WorkIdentity): Promise<void> {}
-  async status() {
-    return "";
-  }
-  async removeWorktree() {}
-  async deleteBranch() {
-    return true;
-  }
-  async observePrimaryCheckout(): Promise<PrimaryCheckoutObservation> {
-    return { branch: "main", status: "" };
-  }
   async fetchOrigin() {}
-  async stageMerge() {
-    return true;
-  }
-  async abortMerge() {}
-  async commitMerge() {}
-  async pushDefaultBranch() {}
-  async fastForwardDefaultBranch() {
-    return true;
-  }
 }
 
 class RepairAgents implements AgentRuntime {

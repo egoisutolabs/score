@@ -10,7 +10,7 @@ import {
   listLandingCandidates,
   meaningfulStatusLines,
 } from "@score/core/landing/landing.policy";
-import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import type { LandingWorkspace } from "@score/core/workspace-driver.interface";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 
 export interface LandingServiceOptions {
@@ -51,7 +51,7 @@ export class LandingService {
   constructor(
     private readonly options: LandingServiceOptions,
     private readonly changes: ChangeHost,
-    private readonly workspace: WorkspaceDriver,
+    private readonly workspace: LandingWorkspace,
     private readonly runner: CommandRunner,
   ) {}
 

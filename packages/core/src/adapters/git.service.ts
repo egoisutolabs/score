@@ -2,8 +2,9 @@ import { cp, mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type {
+  LandingWorkspace,
   PrimaryCheckoutObservation,
-  WorkspaceDriver,
+  WorktreeProvisioner,
 } from "@score/core/workspace-driver.interface";
 import { requireSuccess } from "@score/shared/adapters/command-runner.service";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
@@ -44,7 +45,7 @@ export interface CommitObservation {
 }
 
 /** Local Git adapter; callers remain responsible for policy and role authorization. */
-export class GitService implements WorkspaceDriver {
+export class GitService implements WorktreeProvisioner, LandingWorkspace {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
 

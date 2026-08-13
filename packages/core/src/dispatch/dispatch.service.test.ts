@@ -8,10 +8,7 @@ import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/wor
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type { PullRequestObservation } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type {
-  PrimaryCheckoutObservation,
-  WorkspaceDriver,
-} from "@score/core/workspace-driver.interface";
+import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import { expect, test } from "vitest";
 import type { IssueObservation } from "./issue.interface";
@@ -66,7 +63,7 @@ class FakeWorkSource implements WorkSource {
   }
 }
 
-class FakeWorkspace implements WorkspaceDriver {
+class FakeWorkspace implements WorktreeProvisioner {
   readonly worktrees: WorktreeObservation[] = [];
   readonly created: number[] = [];
 
@@ -86,22 +83,6 @@ class FakeWorkspace implements WorkspaceDriver {
 
   async removeWorktree(_worktree: WorktreeObservation): Promise<void> {}
   async deleteBranch(): Promise<boolean> {
-    return true;
-  }
-
-  async observePrimaryCheckout(): Promise<PrimaryCheckoutObservation> {
-    return { branch: "main", status: "" };
-  }
-
-  async fetchOrigin(): Promise<void> {}
-  async stageMerge(): Promise<boolean> {
-    return true;
-  }
-  async abortMerge(): Promise<void> {}
-  async commitMerge(): Promise<void> {}
-  async pushDefaultBranch(): Promise<void> {}
-
-  async fastForwardDefaultBranch(): Promise<boolean> {
     return true;
   }
 }
