@@ -469,7 +469,8 @@ test("repair spawn writes the prompt under promptsDir and namespaces the session
 
 test("startRepair: kill-session finds nothing after a death before spawn — tolerated, spawn proceeds (SELF-HEALED)", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0]; // kill-session: no such session; new-session: ok
+  // kill-session: no such session; new-session ok; then an alive birth check.
+  runner.responses = [1, 0, ...ALIVE_BIRTH];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
@@ -479,11 +480,19 @@ test("startRepair: kill-session finds nothing after a death before spawn — tol
     trustConfigPath,
     namespace: "demo",
     promptsDir,
+    birthGraceMs: 0,
   });
 
   await service.startRepair(12, work.worktreePath, "fix PR #12", { harness: "claude" });
 
-  expect(runner.commands.map((command) => command[1])).toEqual(["kill-session", "new-session"]);
+  expect(runner.commands.map((command) => command[1])).toEqual([
+    "kill-session",
+    "new-session",
+    "list-panes",
+    "capture-pane",
+    "set-option",
+    "list-panes",
+  ]);
 });
 
 test("startRepair: child dies at new-session — next pass overwrites the prompt and recovers kill-first (RETRIED)", async () => {
@@ -497,26 +506,39 @@ test("startRepair: child dies at new-session — next pass overwrites the prompt
     trustConfigPath,
     namespace: "demo",
     promptsDir,
+    birthGraceMs: 0,
   });
   const promptPath = join(promptsDir, "shepherd-pr-12.prompt");
 
-  runner.responses = [0, 1]; // kill-session ok, new-session dies
+  // kill-session ok, new-session dies, best-effort reclaim of the maybe-created session
+  runner.responses = [0, 1, 0];
   await expect(
     service.startRepair(12, work.worktreePath, "first brief", { harness: "claude" }),
   ).rejects.toThrow(/exited 1/);
-  // Leftover: only the prompt file; no session was created.
+  // Leftover: only the prompt file; no session survived the failed spawn.
   expect(await readFile(promptPath, "utf8")).toBe("first brief\n");
+  expect(runner.commands.map((command) => command[1])).toEqual([
+    "kill-session",
+    "new-session",
+    "kill-session",
+  ]);
 
-  runner.responses = [1, 0]; // nothing to kill (spawn never happened), then spawn ok
+  // nothing to kill (spawn never happened), then spawn ok and an alive birth check
+  runner.responses = [1, 0, ...ALIVE_BIRTH];
   await service.startRepair(12, work.worktreePath, "second brief", { harness: "claude" });
 
   // Overwritten, not duplicated: exactly the new brief, delivered via $(cat).
   expect(await readFile(promptPath, "utf8")).toBe("second brief\n");
-  expect(runner.commands.slice(2).map((command) => command[1])).toEqual([
+  expect(runner.commands.slice(3).map((command) => command[1])).toEqual([
     "kill-session",
     "new-session",
+    "list-panes",
+    "capture-pane",
+    "set-option",
+    "list-panes",
   ]);
-  expect(runner.commands.at(-1)?.at(-1)).toContain(`"$(cat '${promptPath}')"`);
+  const retriedSpawn = runner.commands[4]?.[9] ?? "";
+  expect(retriedSpawn).toContain(`"$(cat '${promptPath}')"`);
 });
 
 test("unmanaged repair spawn keeps today's /tmp prompt path and bare session name", async () => {
