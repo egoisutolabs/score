@@ -77,21 +77,16 @@ export class TmuxService implements AgentRuntime {
     }
 
     await this.#preseedTrust(identity.worktreePath);
-    requireSuccess(
-      await this.#run(
-        [
-          "new-session",
-          "-d",
-          "-s",
-          identity.sessionName,
-          "-c",
-          identity.worktreePath,
-          encodeTmuxShellCommand(agentArgv(agent, prompt)),
-          ...remainOnExit(identity.sessionName),
-        ],
-        true,
-      ),
-    );
+    await this.#spawnHeldSession(identity.sessionName, [
+      "new-session",
+      "-d",
+      "-s",
+      identity.sessionName,
+      "-c",
+      identity.worktreePath,
+      encodeTmuxShellCommand(agentArgv(agent, prompt)),
+      ...remainOnExit(identity.sessionName),
+    ]);
     await this.#assertBornAlive(identity.sessionName, false);
   }
 
@@ -124,28 +119,38 @@ export class TmuxService implements AgentRuntime {
     // wrapper, so agentArgv's copy of it is dropped (it is always last).
     const agentCommand = encodeTmuxShellCommand(agentArgv(agent, message).slice(0, -1));
     const shell = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; export GITHUB_TOKEN="$(gh auth token)"; ${agentCommand} "$(cat '${promptPath}')" --permission-mode bypassPermissions; echo EXIT:$?; echo '--- done; press enter to close ---'; read`;
-    requireSuccess(
-      await this.#run(
-        [
-          "new-session",
-          "-d",
-          "-s",
-          sessionName,
-          "-c",
-          worktreePath,
-          "bash",
-          "-lc",
-          shell,
-          ...remainOnExit(sessionName),
-        ],
-        true,
-      ),
-    );
+    await this.#spawnHeldSession(sessionName, [
+      "new-session",
+      "-d",
+      "-s",
+      sessionName,
+      "-c",
+      worktreePath,
+      "bash",
+      "-lc",
+      shell,
+      ...remainOnExit(sessionName),
+    ]);
     await this.#assertBornAlive(sessionName, true);
   }
 
   async stop(sessionName: string): Promise<void> {
     await this.#run(["kill-session", "-t", sessionName], true);
+  }
+
+  /**
+   * new-session and the chained remain-on-exit set share one exit status, so
+   * a failure can still have created the session with a live agent inside.
+   * Reclaim before throwing: the caller's rollback deletes the worktree, and
+   * a stranded session would block every retry as ALREADY_IN_FLIGHT. The
+   * kill is harmless when the session was never created.
+   */
+  async #spawnHeldSession(sessionName: string, args: readonly string[]): Promise<void> {
+    const spawn = await this.#run(args, true);
+    if (!spawn.dryRun && (spawn.exitCode !== 0 || spawn.timedOut)) {
+      await this.#run(["kill-session", "-t", sessionName], true);
+    }
+    requireSuccess(spawn);
   }
 
   /**
@@ -186,7 +191,7 @@ export class TmuxService implements AgentRuntime {
       await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true);
       return;
     }
-    const dead = paneDead || (wrapperExitMarker && /^EXIT:\d+/m.test(capture.stdout));
+    let dead = paneDead || (wrapperExitMarker && /^EXIT:\d+/m.test(capture.stdout));
     if (!dead) {
       const restore = await this.#run(
         ["set-option", "-t", sessionName, "remain-on-exit", "off"],
@@ -200,7 +205,14 @@ export class TmuxService implements AgentRuntime {
         await this.#run(["kill-session", "-t", sessionName], true);
       }
       requireSuccess(restore);
-      return;
+      // The alive verdict was sampled before the restore landed; a death in
+      // that gap still ran under remain-on-exit and would linger as a dead
+      // pane forever. From the restore onward deaths close the session
+      // normally, so one re-probe here completes the verdict for the whole
+      // observation window. Timed out → unknown, fail open as above.
+      const recheck = await this.#run(["list-panes", "-t", sessionName, "-F", "#{pane_dead}"]);
+      dead = !recheck.timedOut && (recheck.exitCode !== 0 || recheck.stdout.includes("1"));
+      if (!dead) return;
     }
     const killed = await this.#run(["kill-session", "-t", sessionName], true);
     // A remain-on-exit session never dies on its own, so a failed kill that

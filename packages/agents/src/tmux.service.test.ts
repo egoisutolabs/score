@@ -46,8 +46,8 @@ const REMAIN_ON_EXIT = (session: string) => [
   "remain-on-exit",
   "on",
 ];
-/** list-panes says alive; capture-pane empty; set-option off succeeds. */
-const ALIVE_BIRTH = [{ stdout: "0\n" }, { stdout: "" }, 0];
+/** list-panes says alive; capture-pane empty; set-option off succeeds; recheck alive. */
+const ALIVE_BIRTH = [{ stdout: "0\n" }, { stdout: "" }, 0, { stdout: "0\n" }];
 
 async function workIdentity(createDirectory: boolean): Promise<WorkIdentity> {
   const root = await mkdtemp(join(tmpdir(), "score-tmux-test-"));
@@ -123,6 +123,7 @@ test("implementation launch starts the restored interactive Claude command", asy
     ["tmux", "list-panes", "-t", "issue-7", "-F", "#{pane_dead}"],
     ["tmux", "capture-pane", "-p", "-t", "issue-7"],
     ["tmux", "set-option", "-t", "issue-7", "remain-on-exit", "off"],
+    ["tmux", "list-panes", "-t", "issue-7", "-F", "#{pane_dead}"],
   ]);
   const launch = runner.commands[1]?.join(" ") ?? "";
   expect(launch).not.toContain(" -p ");
@@ -208,6 +209,7 @@ test("an EXIT-looking line in a live implementation pane is not a death signal",
     { stdout: "0\n" }, // list-panes: pane alive
     { stdout: "EXIT:1\nsome TUI content\n" }, // coincidental pane content
     0, // set-option off
+    { stdout: "0\n" }, // recheck: still alive
   ];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
@@ -221,14 +223,57 @@ test("an EXIT-looking line in a live implementation pane is not a death signal",
   // The EXIT marker belongs to the repair wrapper only; a live implementation
   // pane containing such a line must not be killed.
   await service.startImplementation(work, "do the task", { harness: "claude" });
-  expect(runner.commands.at(-1)).toEqual([
-    "tmux",
-    "set-option",
-    "-t",
-    "issue-7",
-    "remain-on-exit",
-    "off",
-  ]);
+  expect(runner.commands.some((command) => command[1] === "kill-session")).toBe(false);
+});
+
+test("a death between the liveness sample and the option restore is still caught", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "0\n" }, // list-panes: alive at sample time
+    { stdout: "" }, // capture-pane
+    0, // set-option off succeeds
+    { stdout: "1\n" }, // recheck: died in the gap, held by remain-on-exit
+    0, // kill-session
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("agent died at birth in tmux session 'issue-7'");
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
+});
+
+test("a spawn whose chained remain-on-exit set fails reclaims any created session", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    { exitCode: 1 }, // new-session ; set-option — aggregate failure
+    0, // kill-session
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  // The session may exist with a live agent even though the aggregate command
+  // failed; the launch error must not strand it.
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("exited 1");
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
 });
 
 test("a timed-out liveness probe fails open instead of killing a possibly-live agent", async () => {
