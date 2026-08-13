@@ -150,13 +150,13 @@ describe.skipIf(!hasFfi)("tui app", () => {
   it("matches the checked-in 80x24 frame", async () => {
     const { renderOnce, captureCharFrame } = await setup(80, 24);
     await renderOnce();
-    await expect(captureCharFrame()).toMatchFileSnapshot("__frames__/frame-80x24.txt");
+    await expect(captureCharFrame()).toMatchFileSnapshot("fixtures/frame-80x24.txt");
   });
 
   it("matches the checked-in 120x40 frame", async () => {
     const { renderOnce, captureCharFrame } = await setup(120, 40);
     await renderOnce();
-    await expect(captureCharFrame()).toMatchFileSnapshot("__frames__/frame-120x40.txt");
+    await expect(captureCharFrame()).toMatchFileSnapshot("fixtures/frame-120x40.txt");
   });
 
   it("q resolves done without ever touching the adapter", async () => {
