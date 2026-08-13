@@ -46,6 +46,11 @@
   `fixtures/`, new modules dumped outside a feature folder, a new folder
   without an `index.ts` front door, a front door left stale by the diff,
   and changed non-obvious logic left uncommented.
+- Violations of `INVARIANTS.md` are real defects: a new multi-step
+  external mutation without a rollback/reconcile path proven by a
+  next-tick test, an identity shape (session name, branch prefix)
+  derived outside `dispatch.identity.ts`, or a push to origin outside
+  landing's tick.
 - Do not comment on style, formatting, naming taste, or hypothetical
   future-proofing. If it works and is tested, it passes.
 - Treat scope creep as a defect: changes unrelated to the PR's stated issue.
