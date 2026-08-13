@@ -229,11 +229,15 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
       // Every preflight runs inside main_location, so cwd never matters.
       for (const call of runner.calls) expect(call.cwd).toBe(repo);
       // The tmux env scrub mutates a live server, so it must carry the
-      // dry-run mutation gate BunCommandRunner short-circuits on.
+      // dry-run mutation gate BunCommandRunner short-circuits on. The model
+      // probe spends quota, which is no preview either — same gate.
       const scrub = runner.calls.find((call) => call.command[1] === "set-environment");
       expect(scrub).toMatchObject({ mutates: true, dryRun: true });
+      expect(runner.calls.at(-1)).toMatchObject({ mutates: true, dryRun: true });
       // Read-only preflights must NOT be gated, or dry-run could not verify.
-      for (const call of runner.calls.filter((c) => c.command[1] !== "set-environment")) {
+      for (const call of runner.calls.filter(
+        (c) => c.command[1] !== "set-environment" && c.command[0] !== "claude",
+      )) {
         expect(call.mutates).toBeUndefined();
       }
       expect(runner.calls.map((call) => call.command[0])).toEqual([

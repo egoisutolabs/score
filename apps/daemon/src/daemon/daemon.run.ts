@@ -298,13 +298,14 @@ async function preflightManagedRuntime(
   // parks at the REPL as a zombie (observed live on #45), evading the tmux
   // birth check and every other runtime signal. One bounded print-mode call
   // proves the model with the CLI's own error before any dispatch. It is
-  // billable, so it runs LAST: a supervisor restart-looping on some cheaper
-  // local misconfiguration must never burn a model call per restart.
+  // billable, so it runs LAST (a supervisor restart-looping on some cheaper
+  // local misconfiguration must never burn a model call per restart) and
+  // rides the dry-run mutation gate: spending quota is not a preview.
   if (project.agent.harness !== "opencode" && project.agent.model !== undefined) {
     requireSuccess(
       await runner.run(
         ["claude", "--model", project.agent.model, "-p", "Reply with the single word: ok"],
-        { cwd: project.mainLocation },
+        { cwd: project.mainLocation, mutates: true, dryRun },
       ),
     );
   }
