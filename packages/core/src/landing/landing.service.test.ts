@@ -313,3 +313,56 @@ test("a cheap conflict blocker wins before the review-thread query", async () =>
   );
   expect((await service.runTick())[0]?.tag).toBe("conflict");
 });
+
+test("a failed push halts the remaining landing candidates for that tick (D1)", async () => {
+  // Landing otherwise continues to the next candidate, and a second merge
+  // committed on top of the unpushed first builds a local-only chain that
+  // D1 recovery deliberately refuses (its head's first parent is not an
+  // ancestor of origin) — so the halt is what keeps the wedge recoverable.
+  class FailingPushWorkspace extends FakeWorkspace {
+    override async pushDefaultBranch(): Promise<void> {
+      this.effects.push("push");
+      throw new Error("origin unreachable");
+    }
+  }
+  const changes: ChangeHost = {
+    ...host(),
+    async observeOpenChanges() {
+      return [
+        pullRequest({ number: 7, headSha: "aaa111" }),
+        pullRequest({ number: 8, headRefName: "issue-8-x", headSha: "bbb222" }),
+      ];
+    },
+  };
+  const workspace = new FailingPushWorkspace();
+  const service = new LandingService(
+    {
+      repositoryRoot: "/repo",
+      repository: "owner/repo",
+      defaultBranch: "main",
+      dryRun: false,
+      noMerge: false,
+      maxMerges: 5,
+      soakTicks: 2,
+      skipLabels: [],
+      onlyIssueBranches: false,
+    },
+    changes,
+    workspace,
+    runner,
+  );
+
+  // Tick 1: both candidates soak green.
+  expect((await service.runTick()).map((result) => result.tag)).toEqual(["soaking", "soaking"]);
+  // Tick 2: PR 7 commits and its push fails — PR 8 must not even stage.
+  const results = await service.runTick();
+  expect(results[0]).toMatchObject({
+    pullRequestNumber: 7,
+    tag: "push-failed",
+    note: expect.stringContaining("push failed"),
+  });
+  expect(results[1]).toMatchObject({ pullRequestNumber: 8, tag: "skipped" });
+  const tickTwo = workspace.effects.slice(workspace.effects.indexOf("commit"));
+  expect(tickTwo).toEqual(["commit", "push"]);
+  expect(workspace.effects.filter((effect) => effect === "stage:bbb222")).toHaveLength(1);
+});

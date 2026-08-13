@@ -110,6 +110,7 @@ async function withEnv(vars: Record<string, string>, body: () => Promise<void>):
 async function managedFixture(
   mainLocation: string,
   agent: AgentConfig = { harness: "claude", model: "claude-sonnet-5" },
+  tickIntervalMs = 5000,
 ): Promise<{ home: string; worktree: string }> {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const worktree = join(home, "wt-demo");
@@ -122,7 +123,7 @@ async function managedFixture(
         worktree_location: worktree,
         github_repo: "egoisutolabs/demo",
         config: {
-          tick_interval_ms: 5000,
+          tick_interval_ms: tickIntervalMs,
           max_parallel: 2,
           agent,
         },
@@ -1088,7 +1089,6 @@ const PROVEN_STRAY: StrayCommitEvidence = {
   },
   firstParentReachableFromOrigin: true,
   repositoryOwner: "egoisutolabs",
-  checkoutCommitterEmail: "operator@test.invalid",
 };
 
 test("the landing-authorship proof passes all four checks and names the PR to re-land", () => {
@@ -1134,23 +1134,21 @@ test("proof check 3 fails messages off landing's template, including a foreign o
   ).toMatchObject({ proven: false });
 });
 
-test("proof check 4 fails a foreign committer but accepts the checkout's own pre-stamp identity", () => {
-  expect(
-    proveLandingAuthorship({
-      ...PROVEN_STRAY,
-      commit: { ...PROVEN_STRAY.commit, committerEmail: "foreign@elsewhere.invalid" },
-    }),
-  ).toEqual({
-    proven: false,
-    evidence:
-      "committer foreign@elsewhere.invalid is neither landing's stamp nor this checkout's identity",
-  });
-  expect(
-    proveLandingAuthorship({
-      ...PROVEN_STRAY,
-      commit: { ...PROVEN_STRAY.commit, committerEmail: "operator@test.invalid" },
-    }),
-  ).toEqual({ proven: true, pullRequestNumber: 12 });
+test("proof check 4 requires landing's stamp — the checkout's own ambient identity fails too", () => {
+  // Required, not corroborating (D1): checks 1-3 are satisfiable by an
+  // operator merge under the same ambient identity, so nothing unstamped
+  // may auto-reset — including strays predating the stamp.
+  for (const committerEmail of ["foreign@elsewhere.invalid", "operator@test.invalid"]) {
+    expect(
+      proveLandingAuthorship({
+        ...PROVEN_STRAY,
+        commit: { ...PROVEN_STRAY.commit, committerEmail },
+      }),
+    ).toEqual({
+      proven: false,
+      evidence: `committer ${committerEmail} is not landing's stamp ${LANDING_COMMITTER.email}`,
+    });
+  }
 });
 
 const WEDGE_PR_NUMBER = 9;
@@ -1335,15 +1333,32 @@ test("check 4 fixture: a merge from a foreign committer is warned and left untou
       GIT_COMMITTER_EMAIL: "foreign@elsewhere.invalid",
     },
   });
-  await expectUntouched(fixture, /committer foreign@elsewhere\.invalid is neither landing's stamp/);
+  await expectUntouched(fixture, /committer foreign@elsewhere\.invalid is not landing's stamp/);
 });
 
-test("a pre-stamp stray carrying the checkout's own identity still recovers via checks 1-3", async () => {
+test("an unstamped merge matching checks 1-3 stays untouched — pre-stamp strays are manual (D1)", async () => {
   const fixture = await wedgeFixture();
   expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
   // What commitMerge wrote before the landing stamp existed: a plain commit,
-  // committer = the checkout's configured identity.
+  // committer = the checkout's ambient identity. An operator merge looks the
+  // same, so this must surface as a warning, never auto-reset.
   fixture.gitCli("commit", "-m", WEDGE_MESSAGE);
+  await expectUntouched(fixture, /committer score@test\.invalid is not landing's stamp/);
+});
+
+test("the scheduler lock file does not count as dirt — recovery still resets over it", async () => {
+  const fixture = await wedgeFixture();
+  // A tracked .claude/ (as on a real checkout), so the untracked lock shows
+  // as its own porcelain line instead of a collapsed "?? .claude/" dir.
+  await mkdir(join(fixture.repo, ".claude"), { recursive: true });
+  await writeFile(join(fixture.repo, ".claude", "settings.json"), "{}\n");
+  fixture.gitCli("add", ".claude/settings.json");
+  fixture.gitCli("commit", "-m", "track claude dir");
+  fixture.gitCli("push", "origin", "main");
+  await commitWedge(fixture);
+  // Harness-generated churn, not an operator edit; counting it as dirt would
+  // wedge recovery forever on a live daemon.
+  await writeFile(join(fixture.repo, ".claude", "scheduled_tasks.lock"), "lock\n");
   const log = new CaptureLogger();
 
   await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
@@ -1396,23 +1411,44 @@ test("dry-run over the wedge reports the would-be reset and mutates nothing", as
   ]);
 });
 
-test("the pass loop itself reconciles the wedge — no restart needed after a caught push failure", async () => {
-  // A pushDefaultBranch throw is caught by the phase error handler, so the
-  // daemon lives on with the wedge in place. This drives runDaemonLoop's own
-  // pass callback (not the helper directly) over a faked wedge and proves
-  // the reset happens inside a normal pass.
+test("a push failure inside one pass is reconciled by a later pass of the same daemon — no restart", async () => {
+  // The wedge is created BY the loop itself: landing soaks the PR green on
+  // tick 0, merges on tick 2, and its push fails (the throw is caught, the
+  // daemon lives). The next pass's reconciliation must then reset the wedge
+  // — a startup-only recovery would never fire here, which is exactly the
+  // regression this test pins.
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedFixture(repo);
+  const { home } = await managedFixture(repo, undefined, 25);
   await withEnv({ SCORE_HOME: home }, async () => {
+    const prJson = JSON.stringify({
+      number: 9,
+      title: "Fix the thing",
+      headRefName: "issue-9-fix",
+      headRefOid: "fff",
+      mergeable: "MERGEABLE",
+      reviewDecision: null,
+    });
+    let wedged = false;
     let resetDone = false;
     const base = managedResponses(repo);
     const originCommit = "ooo\n\nboot\nboot@test.invalid\ninitial";
-    const wedgeCommit =
-      "aaa\nooo fff\nscore-landing\nlanding@score.invalid\nMerge pull request #5 from egoisutolabs/issue-5-x\n\nTitle";
+    // What GitService.commitMerge writes: landing's stamp, landing's template.
+    const wedgeCommit = `aaa\nooo fff\n${LANDING_COMMITTER.name}\n${LANDING_COMMITTER.email}\nMerge pull request #9 from egoisutolabs/issue-9-fix\n\nFix the thing`;
     const runner = new FakeRunner((command) => {
-      if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
-        return { stdout: "[]\n" };
+      if (command[0] === "gh" && command[1] === "pr" && command[2] === "list") {
+        // After recovery the PR is left for the next landing cycle; an empty
+        // backlog keeps the tail of the test deterministic.
+        return { stdout: resetDone ? "[]\n" : `[${prJson}]\n` };
       }
+      if (command[0] === "gh" && command[1] === "issue") return { stdout: "[]\n" };
+      if (command[0] === "gh" && command[1] === "api") {
+        return {
+          stdout: '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n',
+        };
+      }
+      // The merged-tree gate (make verify) is green every tick.
+      if (command[0] === "make") return {};
+      if (command[0] !== "git") return base(command);
       if (command[1] === "rev-parse" && command.includes("MERGE_HEAD")) return { exitCode: 1 };
       if (
         command[1] === "rev-parse" &&
@@ -1422,14 +1458,19 @@ test("the pass loop itself reconciles the wedge — no restart needed after a ca
         return { stdout: "develop\n" };
       }
       if (command[1] === "log") {
-        const atWedge = !resetDone && command.at(-1) === "develop";
+        const atWedge = wedged && command.at(-1) === "develop";
         return { stdout: `${atWedge ? wedgeCommit : originCommit}\n` };
       }
-      // Neither "is develop behind origin" (local head aaa) nor any other
-      // ancestry holds except the wedge's first parent ooo == origin head.
+      // Only the wedge's first parent ooo is an ancestor of origin's head;
+      // the wedge head aaa itself is not (so "behind origin" reads false).
       if (command[1] === "merge-base") return { exitCode: command[3] === "aaa" ? 1 : 0 };
-      if (command[1] === "var") return { stdout: "score <score@test.invalid> 1700000000 +0000\n" };
+      if (command.includes("commit")) {
+        wedged = true;
+        return {};
+      }
+      if (command[1] === "push") return { exitCode: 1 };
       if (command[1] === "reset") {
+        wedged = false;
         resetDone = true;
         return {};
       }
@@ -1440,10 +1481,39 @@ test("the pass loop itself reconciles the wedge — no restart needed after a ca
     const fileLog = createFileLogger(join(runsDir, "logs"), false);
     const status = new StatusWriter(join(runsDir, "status.json"));
     const log = new CaptureLogger();
-    const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+    const resetWarn =
+      "reset unpushed landing merge aaa away; PR #9 re-lands through the normal landing tick";
+    const priorSigint = process.listeners("SIGINT");
+    const priorSigterm = process.listeners("SIGTERM");
+    try {
+      // No --once: the whole point is a multi-pass life. Stopped via SIGINT
+      // (runPollingLoop's own graceful path) once recovery is observed.
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+      const loopPromise = runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+      const deadline = Date.now() + 15_000;
+      while (!log.logged.some((line) => line.text === resetWarn) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      process.emit("SIGINT");
+      await loopPromise;
+    } finally {
+      for (const listener of process.listeners("SIGINT")) {
+        if (!priorSigint.includes(listener)) process.off("SIGINT", listener as () => void);
+      }
+      for (const listener of process.listeners("SIGTERM")) {
+        if (!priorSigterm.includes(listener)) process.off("SIGTERM", listener as () => void);
+      }
+    }
 
-    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
-
+    // The wedge was created by landing's own failed push, then healed by a
+    // later pass: exactly one commit, one push attempt, one reset — in order.
+    const commitIndex = runner.calls.findIndex((call) => call.command.includes("commit"));
+    const pushIndex = runner.calls.findIndex((call) => call.command[1] === "push");
+    const resetIndex = runner.calls.findIndex((call) => call.command[1] === "reset");
+    expect(commitIndex).toBeGreaterThan(-1);
+    expect(pushIndex).toBeGreaterThan(commitIndex);
+    expect(resetIndex).toBeGreaterThan(pushIndex);
+    expect(runner.calls.filter((call) => call.command[1] === "push")).toHaveLength(1);
     expect(runner.calls.filter((call) => call.command[1] === "reset")).toEqual([
       {
         command: ["git", "reset", "--hard", "origin/develop"],
@@ -1452,9 +1522,41 @@ test("the pass loop itself reconciles the wedge — no restart needed after a ca
         dryRun: false,
       },
     ]);
+    // The failed push surfaced as attention, and recovery named the PR.
     expect(log.logged).toContainEqual({
       level: "warn",
-      text: "reset unpushed landing merge aaa away; PR #5 re-lands through the normal landing tick",
+      text: "needs attention (push-failed): #9",
     });
+    expect(log.logged).toContainEqual({ level: "warn", text: resetWarn });
+  });
+}, 20_000);
+
+test("a transient reconcile failure warns and the pass continues — only reset verification may crash", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const base = managedResponses(repo);
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
+        return { stdout: "[]\n" };
+      }
+      if (command[1] === "rev-parse" && command.includes("MERGE_HEAD")) return { exitCode: 1 };
+      // The network blip: every fetch fails, including reconciliation's.
+      if (command[1] === "fetch") return { exitCode: 1 };
+      return base(command);
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const log = new CaptureLogger();
+    const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+
+    // The pass must complete, not reject: reconciliation degrades to a
+    // warning like any phase error instead of killing the daemon.
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+
+    expect(log.logged.some((line) => line.text.startsWith("✗ reconciliation failed:"))).toBe(true);
+    expect(runner.calls.some((call) => call.command[1] === "reset")).toBe(false);
   });
 });

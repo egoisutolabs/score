@@ -20,6 +20,7 @@ import {
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
+import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
@@ -349,8 +350,6 @@ export interface StrayCommitEvidence {
   readonly firstParentReachableFromOrigin: boolean;
   /** Owner half of the GitHub repo; landing's merge template embeds it. */
   readonly repositoryOwner: string;
-  /** What a plain `git commit` in this checkout stamps — pre-stamp daemons wrote merges with it. */
-  readonly checkoutCommitterEmail: string;
 }
 
 export type LandingAuthorshipProof =
@@ -390,16 +389,14 @@ export function proveLandingAuthorship(stray: StrayCommitEvidence): LandingAutho
       evidence: `message ${JSON.stringify(firstLine)} does not match landing's merge template`,
     };
   }
-  // Merges committed before the landing stamp existed carry the checkout's
-  // own identity; checks 1-3 vouch for those older strays. Anything else is
-  // foreign — an operator's deliberate commit stays untouched.
-  if (
-    commit.committerEmail !== LANDING_COMMITTER.email &&
-    commit.committerEmail !== stray.checkoutCommitterEmail
-  ) {
+  // The stamp is required, not corroborating (D1): checks 1-3 are satisfiable
+  // by an ordinary operator merge made with the same ambient identity, so an
+  // unstamped candidate — including strays predating the stamp — is never
+  // auto-reset; it surfaces as a warning and is resolved by hand once.
+  if (commit.committerEmail !== LANDING_COMMITTER.email) {
     return {
       proven: false,
-      evidence: `committer ${commit.committerEmail} is neither landing's stamp nor this checkout's identity`,
+      evidence: `committer ${commit.committerEmail} is not landing's stamp ${LANDING_COMMITTER.email}`,
     };
   }
   return { proven: true, pullRequestNumber: Number(template[1]) };
@@ -410,6 +407,13 @@ export interface ReconcileUnpushedMergeOptions {
   readonly defaultBranch: string;
   readonly repositoryOwner: string;
 }
+
+/**
+ * A reset that reported success but left the wrong head: evidence of checkout
+ * corruption. Must crash the daemon (supervisor restarts it with the repo
+ * untouched further) — never degrade to a warning like transient git errors.
+ */
+export class RecoveryVerificationError extends Error {}
 
 /**
  * D1 recovery for a merge committed but never pushed: a daemon that died — or
@@ -431,7 +435,6 @@ export async function reconcileUnpushedLandingMerge(
     | "fetchOrigin"
     | "isAncestor"
     | "observePrimaryCheckout"
-    | "observeCommitterIdentity"
     | "resetToRemoteHead"
   >,
   log: Logger,
@@ -440,13 +443,13 @@ export async function reconcileUnpushedLandingMerge(
   const { dryRun, defaultBranch, repositoryOwner } = options;
   // A merge in progress is selfHealStagedMerge's territory, not a stray commit.
   if (await git.mergeInProgress()) return;
+  // D1: fetch before evaluating anything — startup reaches here before any
+  // phase fetch, so the origin/<default> tracking ref may predate the outage;
+  // comparing or resetting against a stale ref would re-land from a stale
+  // base, or misread a push that actually landed as a wedge.
+  await git.fetchOrigin();
   const remoteRef = `origin/${defaultBranch}`;
   const local = await git.observeCommit(defaultBranch);
-  if (local.sha === (await git.observeCommit(remoteRef)).sha) return;
-  // Heads differ per the (possibly stale) tracking ref — judge against the
-  // real remote: the "failed" push may have landed after all, and an origin
-  // that advanced during the outage must be reset to, not past.
-  await git.fetchOrigin();
   const origin = await git.observeCommit(remoteRef);
   if (local.sha === origin.sha) return;
   // Behind origin is cleanup's normal auto-pull, not a wedge.
@@ -459,7 +462,7 @@ export async function reconcileUnpushedLandingMerge(
     );
     return;
   }
-  if (status.trim().length > 0) {
+  if (meaningfulStatusLines(status).length > 0) {
     log.warn(
       `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a hard reset must never eat operator edits`,
     );
@@ -471,7 +474,6 @@ export async function reconcileUnpushedLandingMerge(
     firstParentReachableFromOrigin:
       firstParent !== undefined && (await git.isAncestor(firstParent, origin.sha)),
     repositoryOwner,
-    checkoutCommitterEmail: (await git.observeCommitterIdentity()).email,
   });
   if (!proof.proven) {
     log.warn(
@@ -489,7 +491,7 @@ export async function reconcileUnpushedLandingMerge(
   // Fail closed like the staged-merge heal: prove the reset actually landed.
   const after = await git.observeCommit(defaultBranch);
   if (after.sha !== origin.sha) {
-    throw new Error(
+    throw new RecoveryVerificationError(
       `reset --hard ${remoteRef} left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
     );
   }
@@ -847,13 +849,22 @@ export async function runDaemonLoop(
         // startup (the first pass runs immediately, so this is the startup
         // check too): a caught pushDefaultBranch failure strands a committed
         // merge while the daemon lives, and landing must see the recovered
-        // checkout, never stage on top of the wedge.
+        // checkout, never stage on top of the wedge. Transient git failures
+        // (a fetch blip, say) degrade to a warning like any phase error —
+        // only failed post-reset verification may crash the daemon.
         if (managedRuntime) {
-          await reconcileUnpushedLandingMerge(git, log, {
-            dryRun,
-            defaultBranch: runtime.defaultBranch,
-            repositoryOwner: runtime.repository.split("/")[0] as string,
-          });
+          try {
+            await reconcileUnpushedLandingMerge(git, log, {
+              dryRun,
+              defaultBranch: runtime.defaultBranch,
+              repositoryOwner: runtime.repository.split("/")[0] as string,
+            });
+          } catch (error) {
+            if (error instanceof RecoveryVerificationError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            log.warn(`✗ reconciliation failed: ${message}`);
+            passError = `reconcile: ${message}`;
+          }
         }
 
         await daemon.runPass();

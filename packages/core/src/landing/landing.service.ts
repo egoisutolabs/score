@@ -8,6 +8,7 @@ import {
   evaluatePreconditions,
   gatesFor,
   listLandingCandidates,
+  meaningfulStatusLines,
 } from "@score/core/landing/landing.policy";
 import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
@@ -36,6 +37,17 @@ export class LandingService {
    */
   readonly #readyTicks = new Map<number, { readonly headSha: string; readonly ticks: number }>();
 
+  /**
+   * D1: a committed merge whose push failed halts the remaining candidates
+   * for the rest of the tick. Continuing would commit a second merge on top
+   * of the unpushed first, building a local-only chain whose head fails
+   * recovery's authorship proof forever (its first parent is the unpushed
+   * merge, not an ancestor of origin). One stray is provably recoverable; a
+   * chain is not — so landing never creates one, and the next pass's
+   * reconciliation clears the single stray before any new candidate stages.
+   */
+  #pushFailedThisTick = false;
+
   constructor(
     private readonly options: LandingServiceOptions,
     private readonly changes: ChangeHost,
@@ -44,6 +56,7 @@ export class LandingService {
   ) {}
 
   async runTick(): Promise<readonly LandingResult[]> {
+    this.#pushFailedThisTick = false;
     await this.workspace.fetchOrigin();
     const canMerge = this.options.dryRun || (await this.#mainCheckoutReady());
     const changes = listLandingCandidates(await this.changes.observeOpenChanges(), this.options);
@@ -57,6 +70,7 @@ export class LandingService {
     for (const change of changes) {
       if (
         !canMerge ||
+        this.#pushFailedThisTick ||
         (!this.options.dryRun && !this.options.noMerge && merges >= this.options.maxMerges)
       ) {
         results.push({ pullRequestNumber: change.number, tag: "skipped", note: "not processed" });
@@ -156,7 +170,17 @@ export class LandingService {
     const owner = this.options.repository.split("/")[0];
     const message = `Merge pull request #${change.number} from ${owner}/${change.headRefName}\n\n${change.title}`;
     await this.workspace.commitMerge(message);
-    await this.workspace.pushDefaultBranch(this.options.defaultBranch);
+    try {
+      await this.workspace.pushDefaultBranch(this.options.defaultBranch);
+    } catch (error) {
+      this.#pushFailedThisTick = true;
+      // No keepTimer: the re-land pays a fresh soak after recovery (D1).
+      return {
+        pullRequestNumber: change.number,
+        tag: "push-failed",
+        note: `merge committed but push failed (${errorMessage(error)}); halting landing this tick — reconciliation resets and re-lands (D1)`,
+      };
+    }
     return {
       pullRequestNumber: change.number,
       tag: "merged",
@@ -167,10 +191,7 @@ export class LandingService {
   async #mainCheckoutReady(): Promise<boolean> {
     const checkout = await this.workspace.observePrimaryCheckout();
     if (checkout.branch !== this.options.defaultBranch) return false;
-    const meaningfulStatus = checkout.status
-      .split(/\r?\n/)
-      .filter((line) => line.trim() && !line.includes(".claude/scheduled_tasks.lock"));
-    return meaningfulStatus.length === 0;
+    return meaningfulStatusLines(checkout.status).length === 0;
   }
 
   async #runGates(gates: readonly BuildGate[]): Promise<string | null> {

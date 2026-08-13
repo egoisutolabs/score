@@ -198,17 +198,6 @@ export class GitService implements WorkspaceDriver {
     return (await this.#run(["merge-base", "--is-ancestor", ancestor, descendant])).exitCode === 0;
   }
 
-  /** The identity a plain `git commit` in this checkout would stamp as committer. */
-  async observeCommitterIdentity(): Promise<{ readonly name: string; readonly email: string }> {
-    const ident = requireSuccess(await this.#run(["var", "GIT_COMMITTER_IDENT"])).stdout.trim();
-    const open = ident.lastIndexOf("<");
-    const close = ident.lastIndexOf(">");
-    if (open === -1 || close < open) {
-      throw new Error(`cannot parse a committer identity from ${JSON.stringify(ident)}`);
-    }
-    return { name: ident.slice(0, open).trim(), email: ident.slice(open + 1, close) };
-  }
-
   async resetToRemoteHead(defaultBranch: string): Promise<void> {
     requireSuccess(await this.#run(["reset", "--hard", `origin/${defaultBranch}`], true));
   }

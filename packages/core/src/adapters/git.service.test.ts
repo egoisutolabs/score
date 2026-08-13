@@ -254,19 +254,6 @@ test("observeCommit reports a root commit as parentless, not as one empty parent
   expect(commit.parents).toEqual([]);
 });
 
-test("observeCommitterIdentity parses the effective ident, including names with spaces", async () => {
-  const runner = new ScriptRunner((command, options) =>
-    result(command, options, 0, "Ada Lovelace <ada@example.invalid> 1700000000 +0100\n"),
-  );
-
-  const identity = await new GitService(runner, {
-    repositoryPath: "/repo",
-    workspaceRoot: "/wt",
-  }).observeCommitterIdentity();
-
-  expect(identity).toEqual({ name: "Ada Lovelace", email: "ada@example.invalid" });
-});
-
 test("seedClaudeDirectory: false leaves the worktree without a copied .claude", async () => {
   const root = await sandbox();
   const repositoryPath = join(root, "repo");

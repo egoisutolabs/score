@@ -99,6 +99,18 @@ export function evaluatePreconditions(
 /** Set generously above the worst observed pass, like the supervisor kill timeout. */
 export const VERIFY_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * Working-tree lines that count as real dirt on the primary checkout. The
+ * scheduler's lock file is harness-generated churn, not an operator edit —
+ * counting it would stall landing (and D1 unpushed-merge recovery) forever.
+ * Shared so both writers to the primary checkout agree on what "clean" means.
+ */
+export function meaningfulStatusLines(status: string): readonly string[] {
+  return status
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.includes(".claude/scheduled_tasks.lock"));
+}
+
 export function gatesFor(repositoryRoot: string): readonly BuildGate[] {
   return [
     {
