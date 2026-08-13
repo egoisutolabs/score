@@ -154,6 +154,32 @@ test("an agent that dies at birth fails the launch with its dying output", async
   expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
 });
 
+test("a dead session that survives the kill is named in the error, not silently ignored", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "1\n" }, // list-panes: pane dead
+    { stdout: "crashed\n" },
+    { exitCode: 1 }, // kill-session fails
+    0, // has-session: the remain-on-exit session lingers
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow(
+    "agent died at birth in tmux session 'issue-7' (dead session could not be killed and will block retries — run: tmux kill-session -t issue-7): crashed",
+  );
+});
+
 test("a session that vanished entirely at birth still fails the launch", async () => {
   const runner = new RecordingRunner();
   runner.responses = [1, 0, { exitCode: 1 }, { exitCode: 1 }, 0];

@@ -175,10 +175,18 @@ export class TmuxService implements AgentRuntime {
       );
       return;
     }
-    await this.#run(["kill-session", "-t", sessionName], true);
+    const killed = await this.#run(["kill-session", "-t", sessionName], true);
+    // A remain-on-exit session never dies on its own, so a failed kill that
+    // leaves it behind would block every retry as ALREADY_IN_FLIGHT — name
+    // that in the error instead of silently ignoring the kill result.
+    const lingering = killed.exitCode !== 0 && (await this.sessionExists(sessionName));
     const output = capture.stdout.trim().split("\n").filter(Boolean).slice(-15).join("\n");
     throw new Error(
-      `agent died at birth in tmux session '${sessionName}'${output ? `: ${output}` : " (no output captured)"}`,
+      `agent died at birth in tmux session '${sessionName}'${
+        lingering
+          ? ` (dead session could not be killed and will block retries — run: tmux kill-session -t ${sessionName})`
+          : ""
+      }${output ? `: ${output}` : " (no output captured)"}`,
     );
   }
 
