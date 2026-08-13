@@ -16,15 +16,30 @@ Umbrella: TODO(graduate-epic)
 
 ## D1 — A committed-but-unpushed landing merge is reset and re-landed
 
-*Amended 2026-08-13 after PR #39 review (five findings incorporated; the
-policy survived, its predicate, trigger, and preconditions changed).*
+*Amended 2026-08-13 after PR #39 review (two rounds; the policy
+survived — its predicate, trigger, preconditions, and landing's
+within-pass behavior changed).*
 
 **Decision:** Reconciliation runs **every pass** (startup is merely the
-first): whenever the local default branch is ahead of `origin` with no
-`MERGE_HEAD`, and the working tree is **clean**, and the stray commit is
-provably landing-authored, the local default branch is reset to `origin`.
-The pull request — still open, because origin never saw the merge —
-re-gates, re-soaks, and re-merges on the normal landing tick.
+first). The helper **fetches origin before evaluating anything** —
+startup reaches it before any phase fetch, so the `origin/<default>`
+tracking ref may predate the outage, and comparing or resetting against
+a stale ref would re-land from a stale base. After the refresh: whenever
+the primary checkout is **on the default branch**, ahead of `origin`
+with no `MERGE_HEAD`, the working tree is **clean**, and the stray
+commit is provably landing-authored, the local default branch is reset
+to `origin`. The pull request — still open, because origin never saw
+the merge — re-gates, re-soaks, and re-merges on the normal landing
+tick.
+
+A committed merge whose push fails also **halts landing for the rest of
+that pass**: `runTick` otherwise continues to the next candidate, and a
+second merge committed on top of an unpushed first builds a local-only
+chain whose second commit fails check 2 forever (its first parent is
+the unpushed merge, not an ancestor of origin). One stranded merge is
+provably recoverable; a chain is not — so landing never creates one,
+and the next pass's reconciliation clears the single stray before any
+new candidate is staged.
 
 The landing-authorship proof:
 
@@ -34,15 +49,24 @@ The landing-authorship proof:
    not strand the recovery;
 3. its message matches landing's own template
    (`Merge pull request #N from <owner>/<branch>`);
-4. for commits made after this epic lands: its committer is the distinct
-   identity landing now stamps on merge commits (`commitMerge` gains a
-   metadata-only committer stamp so this check is provable; older strays
-   rely on checks 1–3).
+4. its committer is the distinct identity landing stamps on merge
+   commits (`commitMerge` gains a metadata-only committer stamp so this
+   check is provable). The stamp is **required, not corroborating**:
+   checks 1–3 are satisfiable by an ordinary operator merge made with
+   the same ambient identity, so an unstamped candidate is never
+   auto-reset. Strays predating the stamp are therefore surfaced with a
+   warning and resolved by hand once — a bounded one-time cost that
+   buys an enforceable boundary, instead of a "before the epic" cutoff
+   no reconciler can actually test a commit against.
 
-Preconditions and refusals: a **dirty working tree refuses recovery
-loudly** (`reset --hard` must never eat operator edits); anything not
-provably landing-authored is operator property — warn and leave
-untouched; dry-run reports and mutates nothing.
+Preconditions and refusals: recovery only ever acts on a primary
+checkout that is **on the default branch** (mirroring
+`selfHealStagedMerge` — `reset --hard` moves the currently checked-out
+ref, so running it on an operator's feature branch would hijack their
+branch and worktree); a **dirty working tree refuses recovery loudly**
+(`reset --hard` must never eat operator edits); anything not provably
+landing-authored is operator property — warn and leave untouched;
+dry-run reports and mutates nothing.
 
 **Failure presentation** (corrected by review): immediately after the
 crash, local `main` is a *descendant* of origin — `--ff-only` pulls
@@ -80,16 +104,23 @@ would never fire).
 
 - A reconciliation helper beside `selfHealStagedMerge` in
   `apps/daemon/src/daemon/daemon.run.ts`, invoked at startup **and once
-  per pass** (cheap: one local-vs-origin head comparison when nothing is
-  stranded).
+  per pass**. It fetches origin first, then compares heads (still
+  cheap: one fetch plus one local comparison when nothing is stranded).
 - `GitService.commitMerge` gains a metadata-only committer stamp (the
-  one deliberate touch to landing — it changes no gate, no message, no
-  flow).
+  one deliberate touch to landing's merge itself — it changes no gate,
+  no message, no flow).
+- `LandingService.runTick` stops processing further candidates once a
+  committed merge fails to push (today it catches the throw and
+  continues, which is how a local-only chain would form).
 - Fixture-repo tests must cover: landing-authored commit → reset and
   successful re-land; the same **with origin advanced** (check 2's
-  ancestor form); operator commit → untouched with a warning; **dirty
-  working tree → loud refusal, no reset**; push-failed-daemon-alive →
-  reconciled on a later pass without restart; dry-run inertness.
+  ancestor form, exercising the pre-reset fetch); operator commit —
+  including an unstamped merge matching checks 1–3 — → untouched with
+  a warning; **dirty working tree → loud refusal, no reset**; checkout
+  on a non-default branch → untouched; push-failed-daemon-alive →
+  reconciled on a later pass without restart; push failure with a
+  second eligible candidate in the same pass → pass halts, no chain;
+  dry-run inertness.
 - The soak counters reset with the daemon (existing conservative-reset
   stance), so the re-landed PR pays a fresh soak — accepted cost.
 
