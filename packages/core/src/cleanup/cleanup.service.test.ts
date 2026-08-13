@@ -125,6 +125,45 @@ test("local branch deletion failure remains nonfatal after worktree removal", as
   expect(workspace.fastForwards).toBe(1);
 });
 
+// Boundary audit (#42): child dies between removeWorktree and deleteBranch —
+// or deleteBranch simply fails (GitService reports nonzero `branch -d` as
+// `false`, never a throw). The leftover local branch must be benign.
+test("cleanup: deleteBranch fails after removeWorktree — next pass reports NOT_FOUND, no retry loop (BENIGN-LEFTOVER)", async () => {
+  class StrandedWorkspace extends CleanupWorkspace {
+    live: WorktreeObservation[] = [worktree];
+    override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
+      return this.live;
+    }
+    override async removeWorktree(): Promise<void> {
+      this.live = [];
+    }
+  }
+  const workspace = new StrandedWorkspace();
+  const service = new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: false,
+    },
+    host,
+    workspace,
+    makeAgents(),
+  );
+
+  const first = await service.run(false);
+  expect(first[0]?.action).toBe("CLEANED"); // branch-delete failure is a warning, not failed cleanup
+  expect(workspace.deleted).toBe(1);
+
+  // Next tick still observes the merged PR, but the worktree is gone: cleanup
+  // must not loop on the leftover branch. Its other half of benignity — a
+  // same-numbered redispatch reattaching to it — is pinned by git.service.test.ts
+  // "existing issue branches are attached without creating a second branch".
+  const second = await service.run(false);
+  expect(second[0]?.action).toBe("NOT_FOUND");
+  expect(workspace.deleted).toBe(1);
+});
+
 test("namespaced cleanup stops the exact session its dispatch created", async () => {
   const agents = makeAgents();
   const result = await new CleanupService(
