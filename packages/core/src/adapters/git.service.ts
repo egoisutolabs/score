@@ -24,6 +24,25 @@ interface GitServiceOptions {
   readonly seedClaudeDirectory?: boolean;
 }
 
+/**
+ * Committer identity stamped on landing's merge commits — metadata only, the
+ * author stays the checkout's configured user. Unpushed-merge recovery reads
+ * it back as proof the daemon, not an operator, made a stray default-branch
+ * merge (D1, issue #41).
+ */
+export const LANDING_COMMITTER = {
+  name: "score-landing",
+  email: "landing@score.invalid",
+} as const;
+
+export interface CommitObservation {
+  readonly sha: string;
+  readonly parents: readonly string[];
+  readonly committerName: string;
+  readonly committerEmail: string;
+  readonly message: string;
+}
+
 /** Local Git adapter; callers remain responsible for policy and role authorization. */
 export class GitService implements WorkspaceDriver {
   readonly #executable: string;
@@ -133,11 +152,65 @@ export class GitService implements WorkspaceDriver {
   }
 
   async commitMerge(message: string): Promise<void> {
-    requireSuccess(await this.#run(["-c", "commit.gpgsign=false", "commit", "-m", message], true));
+    requireSuccess(
+      await this.#run(
+        [
+          "-c",
+          "commit.gpgsign=false",
+          "-c",
+          `committer.name=${LANDING_COMMITTER.name}`,
+          "-c",
+          `committer.email=${LANDING_COMMITTER.email}`,
+          "commit",
+          "-m",
+          message,
+        ],
+        true,
+      ),
+    );
   }
 
   async pushDefaultBranch(defaultBranch: string): Promise<void> {
     requireSuccess(await this.#run(["push", "origin", defaultBranch], true));
+  }
+
+  /** Parents, committer, and full message of one commit — the recovery proof's raw evidence. */
+  async observeCommit(ref: string): Promise<CommitObservation> {
+    const stdout = requireSuccess(
+      await this.#run(["log", "-1", "--format=%H%n%P%n%cn%n%ce%n%B", ref]),
+    ).stdout;
+    const [sha = "", parents = "", committerName = "", committerEmail = "", ...body] =
+      stdout.split("\n");
+    return {
+      sha,
+      parents: parents === "" ? [] : parents.split(" "),
+      committerName,
+      committerEmail,
+      // %B carries git's own trailing newline(s); strip only those.
+      message: body.join("\n").replace(/\n+$/, ""),
+    };
+  }
+
+  /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    // Exit 1 means "not an ancestor"; any other failure (e.g. a bad ref) also
+    // reads as unproven, which fails the recovery proof closed.
+    return (await this.#run(["merge-base", "--is-ancestor", ancestor, descendant])).exitCode === 0;
+  }
+
+  /** The identity a plain `git commit` in this checkout would stamp as committer. */
+  async observeCommitterIdentity(): Promise<{ readonly name: string; readonly email: string }> {
+    const ident = requireSuccess(await this.#run(["var", "GIT_COMMITTER_IDENT"])).stdout.trim();
+    const open = ident.lastIndexOf("<");
+    const close = ident.lastIndexOf(">");
+    if (open === -1 || close < open) {
+      throw new Error(`cannot parse a committer identity from ${JSON.stringify(ident)}`);
+    }
+    return { name: ident.slice(0, open).trim(), email: ident.slice(open + 1, close) };
+  }
+
+  async resetToRemoteHead(defaultBranch: string): Promise<void> {
+    requireSuccess(await this.#run(["reset", "--hard", `origin/${defaultBranch}`], true));
   }
 
   async fastForwardDefaultBranch(defaultBranch: string): Promise<boolean> {

@@ -5,7 +5,8 @@ import { OpencodeService } from "@score/agents/opencode.service";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { OpencodeServer } from "@score/agents/opencode-server.service";
 import { TmuxService } from "@score/agents/tmux.service";
-import { GitService } from "@score/core/adapters/git.service";
+import type { CommitObservation } from "@score/core/adapters/git.service";
+import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { CleanupService } from "@score/core/cleanup/cleanup.service";
 import type { DaemonPhase } from "@score/core/daemon/daemon.service";
@@ -310,8 +311,8 @@ async function preflightManagedRuntime(
  * if the abort does not clear MERGE_HEAD, throw so the supervisor restarts
  * with the repository untouched beyond git's own state. (A kill between
  * commitMerge and push leaves a different wedge — committed-but-unpushed
- * merge, no MERGE_HEAD; recovering that is a policy decision outside locked
- * decision 9, tracked on issue #4.)
+ * merge, no MERGE_HEAD; reconcileUnpushedLandingMerge below recovers that
+ * one, per locked decision D1: reset and re-land.)
  */
 export async function selfHealStagedMerge(
   git: Pick<GitService, "mergeInProgress" | "abortMerge" | "observePrimaryCheckout">,
@@ -339,6 +340,162 @@ export async function selfHealStagedMerge(
     throw new Error("failed to abort the staged merge left by a previous run");
   }
   log.warn("recovered staged merge left by a previous run");
+}
+
+/** Evidence for the landing-authorship proof, gathered by the caller. */
+export interface StrayCommitEvidence {
+  readonly commit: CommitObservation;
+  /** commit.parents[0] is an ancestor of (or equal to) origin's default-branch head. */
+  readonly firstParentReachableFromOrigin: boolean;
+  /** Owner half of the GitHub repo; landing's merge template embeds it. */
+  readonly repositoryOwner: string;
+  /** What a plain `git commit` in this checkout stamps — pre-stamp daemons wrote merges with it. */
+  readonly checkoutCommitterEmail: string;
+}
+
+export type LandingAuthorshipProof =
+  | { readonly proven: true; readonly pullRequestNumber: number }
+  | { readonly proven: false; readonly evidence: string };
+
+/**
+ * The four-check landing-authorship proof (D1, issue #41): a stray unpushed
+ * default-branch head may only be reset away when it is provably landing's
+ * own merge — a merge commit, grown directly from origin's history, carrying
+ * landing's exact message template, stamped with landing's committer
+ * identity. Pure, so each check is unit-testable without a repository.
+ */
+export function proveLandingAuthorship(stray: StrayCommitEvidence): LandingAuthorshipProof {
+  const { commit } = stray;
+  if (commit.parents.length !== 2) {
+    return {
+      proven: false,
+      evidence: `not a merge commit (${commit.parents.length} parent(s))`,
+    };
+  }
+  if (!stray.firstParentReachableFromOrigin) {
+    // Ancestor-of, not equal-to: origin advancing during the outage must not
+    // strand recovery. This check is also the "more than one stray commit"
+    // guard — any commit stacked between origin's head and this merge makes
+    // the first parent unreachable from origin.
+    return {
+      proven: false,
+      evidence: `first parent ${commit.parents[0]} is not an ancestor of origin's head`,
+    };
+  }
+  const firstLine = commit.message.split("\n", 1)[0] ?? "";
+  const template = firstLine.match(/^Merge pull request #(\d+) from (\S+)$/);
+  if (template === null || !(template[2] as string).startsWith(`${stray.repositoryOwner}/`)) {
+    return {
+      proven: false,
+      evidence: `message ${JSON.stringify(firstLine)} does not match landing's merge template`,
+    };
+  }
+  // Merges committed before the landing stamp existed carry the checkout's
+  // own identity; checks 1-3 vouch for those older strays. Anything else is
+  // foreign — an operator's deliberate commit stays untouched.
+  if (
+    commit.committerEmail !== LANDING_COMMITTER.email &&
+    commit.committerEmail !== stray.checkoutCommitterEmail
+  ) {
+    return {
+      proven: false,
+      evidence: `committer ${commit.committerEmail} is neither landing's stamp nor this checkout's identity`,
+    };
+  }
+  return { proven: true, pullRequestNumber: Number(template[1]) };
+}
+
+export interface ReconcileUnpushedMergeOptions {
+  readonly dryRun: boolean;
+  readonly defaultBranch: string;
+  readonly repositoryOwner: string;
+}
+
+/**
+ * D1 recovery for a merge committed but never pushed: a daemon that died — or
+ * caught a pushDefaultBranch failure and lived — between commitMerge and push
+ * leaves the local default branch ahead of origin with no MERGE_HEAD, and the
+ * still-open PR in silent limbo. When the stray head passes the
+ * landing-authorship proof and the working tree is clean, reset hard to
+ * origin and let the normal landing tick re-gate, re-soak, and re-merge the
+ * PR. Recovery never pushes (landing stays the only push site); anything
+ * unproven is warned with the observed evidence and left untouched — the
+ * operator property. Runs once per pass, not only at startup, because the
+ * caught-push-failure strand happens while the daemon lives.
+ */
+export async function reconcileUnpushedLandingMerge(
+  git: Pick<
+    GitService,
+    | "mergeInProgress"
+    | "observeCommit"
+    | "fetchOrigin"
+    | "isAncestor"
+    | "observePrimaryCheckout"
+    | "observeCommitterIdentity"
+    | "resetToRemoteHead"
+  >,
+  log: Logger,
+  options: ReconcileUnpushedMergeOptions,
+): Promise<void> {
+  const { dryRun, defaultBranch, repositoryOwner } = options;
+  // A merge in progress is selfHealStagedMerge's territory, not a stray commit.
+  if (await git.mergeInProgress()) return;
+  const remoteRef = `origin/${defaultBranch}`;
+  const local = await git.observeCommit(defaultBranch);
+  if (local.sha === (await git.observeCommit(remoteRef)).sha) return;
+  // Heads differ per the (possibly stale) tracking ref — judge against the
+  // real remote: the "failed" push may have landed after all, and an origin
+  // that advanced during the outage must be reset to, not past.
+  await git.fetchOrigin();
+  const origin = await git.observeCommit(remoteRef);
+  if (local.sha === origin.sha) return;
+  // Behind origin is cleanup's normal auto-pull, not a wedge.
+  if (await git.isAncestor(local.sha, origin.sha)) return;
+
+  const { branch, status } = await git.observePrimaryCheckout();
+  if (branch !== defaultBranch) {
+    log.warn(
+      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the checkout is on ${branch}; leaving it untouched`,
+    );
+    return;
+  }
+  if (status.trim().length > 0) {
+    log.warn(
+      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a hard reset must never eat operator edits`,
+    );
+    return;
+  }
+  const firstParent = local.parents[0];
+  const proof = proveLandingAuthorship({
+    commit: local,
+    firstParentReachableFromOrigin:
+      firstParent !== undefined && (await git.isAncestor(firstParent, origin.sha)),
+    repositoryOwner,
+    checkoutCommitterEmail: (await git.observeCommitterIdentity()).email,
+  });
+  if (!proof.proven) {
+    log.warn(
+      `unpushed commit ${local.sha} on ${defaultBranch} fails the landing-authorship proof (${proof.evidence}); leaving the checkout untouched`,
+    );
+    return;
+  }
+  if (dryRun) {
+    log.warn(
+      `would reset ${defaultBranch} to ${remoteRef}, dropping unpushed landing merge ${local.sha}; PR #${proof.pullRequestNumber} would re-land through the normal landing tick`,
+    );
+    return;
+  }
+  await git.resetToRemoteHead(defaultBranch);
+  // Fail closed like the staged-merge heal: prove the reset actually landed.
+  const after = await git.observeCommit(defaultBranch);
+  if (after.sha !== origin.sha) {
+    throw new Error(
+      `reset --hard ${remoteRef} left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
+    );
+  }
+  log.warn(
+    `reset unpushed landing merge ${local.sha} away; PR #${proof.pullRequestNumber} re-lands through the normal landing tick`,
+  );
 }
 
 /** The subset of OpencodeServer's own shape earlyStop needs: stop() must be
@@ -685,6 +842,19 @@ export async function runDaemonLoop(
         });
         observations.startPass();
         for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
+
+        // D1 reconciliation runs before the phases of every pass, not only at
+        // startup (the first pass runs immediately, so this is the startup
+        // check too): a caught pushDefaultBranch failure strands a committed
+        // merge while the daemon lives, and landing must see the recovered
+        // checkout, never stage on top of the wedge.
+        if (managedRuntime) {
+          await reconcileUnpushedLandingMerge(git, log, {
+            dryRun,
+            defaultBranch: runtime.defaultBranch,
+            repositoryOwner: runtime.repository.split("/")[0] as string,
+          });
+        }
 
         await daemon.runPass();
 

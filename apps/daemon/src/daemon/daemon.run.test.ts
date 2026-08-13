@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
-import { GitService } from "@score/core/adapters/git.service";
+import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
 import { StatusWriter } from "@score/core/daemon/status.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
@@ -14,9 +14,12 @@ import { resolveProjects } from "@score/shared/config/resolve";
 import { createFileLogger } from "@score/shared/file-log";
 import type { Logger, LogLine } from "@score/shared/log";
 import { expect, test, vi } from "vitest";
+import type { StrayCommitEvidence } from "./daemon.run";
 import {
   bootstrapDaemon,
   parseDaemonArguments,
+  proveLandingAuthorship,
+  reconcileUnpushedLandingMerge,
   runDaemon,
   runDaemonLoop,
   selfHealStagedMerge,
@@ -1073,4 +1076,385 @@ test("self-heal never aborts a merge in progress on a non-default branch", async
       text: "MERGE_HEAD present on operator-work, not main; not landing's merge, leaving it untouched",
     },
   ]);
+});
+
+const PROVEN_STRAY: StrayCommitEvidence = {
+  commit: {
+    sha: "mergesha",
+    parents: ["originsha", "featuresha"],
+    committerName: LANDING_COMMITTER.name,
+    committerEmail: LANDING_COMMITTER.email,
+    message: "Merge pull request #12 from egoisutolabs/issue-12-fix\n\nFix the thing",
+  },
+  firstParentReachableFromOrigin: true,
+  repositoryOwner: "egoisutolabs",
+  checkoutCommitterEmail: "operator@test.invalid",
+};
+
+test("the landing-authorship proof passes all four checks and names the PR to re-land", () => {
+  expect(proveLandingAuthorship(PROVEN_STRAY)).toEqual({ proven: true, pullRequestNumber: 12 });
+});
+
+test("proof check 1 fails a non-merge commit", () => {
+  expect(
+    proveLandingAuthorship({
+      ...PROVEN_STRAY,
+      commit: { ...PROVEN_STRAY.commit, parents: ["originsha"] },
+    }),
+  ).toEqual({ proven: false, evidence: "not a merge commit (1 parent(s))" });
+});
+
+test("proof check 2 fails a first parent outside origin's history", () => {
+  expect(
+    proveLandingAuthorship({ ...PROVEN_STRAY, firstParentReachableFromOrigin: false }),
+  ).toEqual({
+    proven: false,
+    evidence: "first parent originsha is not an ancestor of origin's head",
+  });
+});
+
+test("proof check 3 fails messages off landing's template, including a foreign owner", () => {
+  expect(
+    proveLandingAuthorship({
+      ...PROVEN_STRAY,
+      commit: { ...PROVEN_STRAY.commit, message: "Merge branch 'issue-12-fix'" },
+    }),
+  ).toEqual({
+    proven: false,
+    evidence: `message "Merge branch 'issue-12-fix'" does not match landing's merge template`,
+  });
+  expect(
+    proveLandingAuthorship({
+      ...PROVEN_STRAY,
+      commit: {
+        ...PROVEN_STRAY.commit,
+        message: "Merge pull request #12 from someoneelse/issue-12-fix\n\nFix the thing",
+      },
+    }),
+  ).toMatchObject({ proven: false });
+});
+
+test("proof check 4 fails a foreign committer but accepts the checkout's own pre-stamp identity", () => {
+  expect(
+    proveLandingAuthorship({
+      ...PROVEN_STRAY,
+      commit: { ...PROVEN_STRAY.commit, committerEmail: "foreign@elsewhere.invalid" },
+    }),
+  ).toEqual({
+    proven: false,
+    evidence:
+      "committer foreign@elsewhere.invalid is neither landing's stamp nor this checkout's identity",
+  });
+  expect(
+    proveLandingAuthorship({
+      ...PROVEN_STRAY,
+      commit: { ...PROVEN_STRAY.commit, committerEmail: "operator@test.invalid" },
+    }),
+  ).toEqual({ proven: true, pullRequestNumber: 12 });
+});
+
+const WEDGE_PR_NUMBER = 9;
+const WEDGE_MESSAGE = `Merge pull request #${WEDGE_PR_NUMBER} from egoisutolabs/issue-9-fix\n\nFix the thing`;
+const RECONCILE_OPTIONS = {
+  dryRun: false,
+  defaultBranch: "main",
+  repositoryOwner: "egoisutolabs",
+} as const;
+
+interface WedgeFixture {
+  readonly repo: string;
+  readonly originPath: string;
+  readonly git: GitService;
+  readonly gitCli: (...args: string[]) => string;
+  readonly featureSha: string;
+}
+
+/**
+ * A real clone plus bare origin, one commit on main pushed, and PR #9's
+ * branch committed locally — the raw material for every wedge variant.
+ */
+async function wedgeFixture(): Promise<WedgeFixture> {
+  const root = await mkdtemp(join(tmpdir(), "score-wedge-"));
+  const originPath = join(root, "origin.git");
+  execFileSync("git", ["init", "--bare", "--initial-branch=main", originPath], {
+    stdio: "ignore",
+  });
+  const repo = join(root, "repo");
+  execFileSync("git", ["clone", originPath, repo], { stdio: "ignore" });
+  const gitCli = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  gitCli("config", "user.email", "score@test.invalid");
+  gitCli("config", "user.name", "score");
+  gitCli("config", "commit.gpgsign", "false");
+  await writeFile(join(repo, "README.md"), "fixture\n");
+  gitCli("add", "README.md");
+  gitCli("commit", "-m", "initial");
+  gitCli("push", "-u", "origin", "main");
+  gitCli("checkout", "-b", "issue-9-fix");
+  await writeFile(join(repo, "feature.txt"), "feature\n");
+  gitCli("add", "feature.txt");
+  gitCli("commit", "-m", "feature");
+  const featureSha = gitCli("rev-parse", "HEAD");
+  gitCli("checkout", "main");
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+  return { repo, originPath, git, gitCli, featureSha };
+}
+
+/** Commit the wedge exactly the way landing does: production staging + stamp, no push. */
+async function commitWedge(fixture: WedgeFixture): Promise<void> {
+  expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
+  await fixture.git.commitMerge(WEDGE_MESSAGE);
+}
+
+/** Reconciles, then asserts main did not move and exactly one warning matched. */
+async function expectUntouched(fixture: WedgeFixture, evidence: RegExp): Promise<void> {
+  const before = fixture.gitCli("rev-parse", "main");
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(before);
+  expect(log.logged).toEqual([{ level: "warn", text: expect.stringMatching(evidence) }]);
+}
+
+test("reconcile is silent when local main matches origin", async () => {
+  const fixture = await wedgeFixture();
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(log.logged).toEqual([]);
+});
+
+test("reconcile resets a landing-authored unpushed merge and the PR re-stages cleanly", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  // The stamp is metadata-only: author stays the checkout user, committer is landing's.
+  expect(fixture.gitCli("log", "-1", "--format=%ae %ce")).toBe(
+    `score@test.invalid ${LANDING_COMMITTER.email}`,
+  );
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(fixture.gitCli("rev-parse", "origin/main"));
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: expect.stringContaining(
+        `PR #${WEDGE_PR_NUMBER} re-lands through the normal landing tick`,
+      ),
+    },
+  ]);
+  // The still-open PR's branch survived and re-stages cleanly on the recovered checkout.
+  expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
+  await fixture.git.abortMerge();
+});
+
+test("reconcile still recovers when origin advanced during the outage", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  // Someone else lands work on origin while the daemon is down.
+  const other = join(await mkdtemp(join(tmpdir(), "score-elsewhere-")), "repo");
+  execFileSync("git", ["clone", fixture.originPath, other], { stdio: "ignore" });
+  const otherCli = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: other,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  otherCli("config", "user.email", "other@test.invalid");
+  otherCli("config", "user.name", "other");
+  otherCli("config", "commit.gpgsign", "false");
+  await writeFile(join(other, "other.txt"), "other\n");
+  otherCli("add", "other.txt");
+  otherCli("commit", "-m", "someone else's landing");
+  otherCli("push", "origin", "main");
+  const advancedSha = otherCli("rev-parse", "main");
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  // Check 2's ancestor form: the wedge's first parent is an ancestor of, not
+  // equal to, the advanced origin head — recovery resets to the newer origin.
+  expect(fixture.gitCli("rev-parse", "main")).toBe(advancedSha);
+  expect(log.logged).toEqual([
+    { level: "warn", text: expect.stringContaining(`PR #${WEDGE_PR_NUMBER}`) },
+  ]);
+});
+
+test("check 1 fixture: a non-merge stray commit is warned and left untouched", async () => {
+  const fixture = await wedgeFixture();
+  // Template message and landing's stamp, but a plain commit — check 1 alone fails.
+  execFileSync("git", ["commit", "--allow-empty", "-m", WEDGE_MESSAGE], {
+    cwd: fixture.repo,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      GIT_COMMITTER_NAME: LANDING_COMMITTER.name,
+      GIT_COMMITTER_EMAIL: LANDING_COMMITTER.email,
+    },
+  });
+  await expectUntouched(fixture, /not a merge commit \(1 parent\(s\)\)/);
+});
+
+test("check 2 fixture: a merge grown from a commit outside origin is warned and left untouched", async () => {
+  const fixture = await wedgeFixture();
+  // An operator commit slips under the merge: the merge's first parent is no
+  // longer reachable from origin — multi-commit divergence stays untouched.
+  await writeFile(join(fixture.repo, "operator.txt"), "operator\n");
+  fixture.gitCli("add", "operator.txt");
+  fixture.gitCli("commit", "-m", "operator work");
+  await commitWedge(fixture);
+  await expectUntouched(fixture, /first parent \w+ is not an ancestor of origin's head/);
+});
+
+test("check 3 fixture: a merge with a foreign message is warned and left untouched", async () => {
+  const fixture = await wedgeFixture();
+  expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
+  await fixture.git.commitMerge("Merge branch 'issue-9-fix'");
+  await expectUntouched(fixture, /does not match landing's merge template/);
+});
+
+test("check 4 fixture: a merge from a foreign committer is warned and left untouched", async () => {
+  const fixture = await wedgeFixture();
+  expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
+  execFileSync("git", ["commit", "-m", WEDGE_MESSAGE], {
+    cwd: fixture.repo,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      GIT_COMMITTER_NAME: "Foreign",
+      GIT_COMMITTER_EMAIL: "foreign@elsewhere.invalid",
+    },
+  });
+  await expectUntouched(fixture, /committer foreign@elsewhere\.invalid is neither landing's stamp/);
+});
+
+test("a pre-stamp stray carrying the checkout's own identity still recovers via checks 1-3", async () => {
+  const fixture = await wedgeFixture();
+  expect(await fixture.git.stageMerge(fixture.featureSha)).toBe(true);
+  // What commitMerge wrote before the landing stamp existed: a plain commit,
+  // committer = the checkout's configured identity.
+  fixture.gitCli("commit", "-m", WEDGE_MESSAGE);
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(fixture.gitCli("rev-parse", "origin/main"));
+  expect(log.logged).toEqual([
+    { level: "warn", text: expect.stringContaining(`PR #${WEDGE_PR_NUMBER}`) },
+  ]);
+});
+
+test("a dirty working tree over the wedge refuses recovery loudly and resets nothing", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  await writeFile(join(fixture.repo, "README.md"), "operator edit\n");
+  const before = fixture.gitCli("rev-parse", "main");
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(before);
+  expect(await readFile(join(fixture.repo, "README.md"), "utf8")).toBe("operator edit\n");
+  expect(log.logged).toEqual([
+    { level: "warn", text: expect.stringMatching(/working tree is dirty; refusing recovery/) },
+  ]);
+});
+
+test("a wedge with the checkout parked on another branch is warned and left untouched", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  fixture.gitCli("checkout", "-b", "operator-work");
+  await expectUntouched(fixture, /checkout is on operator-work; leaving it untouched/);
+});
+
+test("dry-run over the wedge reports the would-be reset and mutates nothing", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  const before = fixture.gitCli("rev-parse", "main");
+  const log = new CaptureLogger();
+
+  await reconcileUnpushedLandingMerge(fixture.git, log, { ...RECONCILE_OPTIONS, dryRun: true });
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(before);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: expect.stringMatching(
+        /would reset main to origin\/main.*PR #9 would re-land through the normal landing tick/,
+      ),
+    },
+  ]);
+});
+
+test("the pass loop itself reconciles the wedge — no restart needed after a caught push failure", async () => {
+  // A pushDefaultBranch throw is caught by the phase error handler, so the
+  // daemon lives on with the wedge in place. This drives runDaemonLoop's own
+  // pass callback (not the helper directly) over a faked wedge and proves
+  // the reset happens inside a normal pass.
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    let resetDone = false;
+    const base = managedResponses(repo);
+    const originCommit = "ooo\n\nboot\nboot@test.invalid\ninitial";
+    const wedgeCommit =
+      "aaa\nooo fff\nscore-landing\nlanding@score.invalid\nMerge pull request #5 from egoisutolabs/issue-5-x\n\nTitle";
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
+        return { stdout: "[]\n" };
+      }
+      if (command[1] === "rev-parse" && command.includes("MERGE_HEAD")) return { exitCode: 1 };
+      if (
+        command[1] === "rev-parse" &&
+        command.includes("--abbrev-ref") &&
+        command.includes("HEAD")
+      ) {
+        return { stdout: "develop\n" };
+      }
+      if (command[1] === "log") {
+        const atWedge = !resetDone && command.at(-1) === "develop";
+        return { stdout: `${atWedge ? wedgeCommit : originCommit}\n` };
+      }
+      // Neither "is develop behind origin" (local head aaa) nor any other
+      // ancestry holds except the wedge's first parent ooo == origin head.
+      if (command[1] === "merge-base") return { exitCode: command[3] === "aaa" ? 1 : 0 };
+      if (command[1] === "var") return { stdout: "score <score@test.invalid> 1700000000 +0000\n" };
+      if (command[1] === "reset") {
+        resetDone = true;
+        return {};
+      }
+      return base(command);
+    });
+
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const log = new CaptureLogger();
+    const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+
+    expect(runner.calls.filter((call) => call.command[1] === "reset")).toEqual([
+      {
+        command: ["git", "reset", "--hard", "origin/develop"],
+        cwd: repo,
+        mutates: true,
+        dryRun: false,
+      },
+    ]);
+    expect(log.logged).toContainEqual({
+      level: "warn",
+      text: "reset unpushed landing merge aaa away; PR #5 re-lands through the normal landing tick",
+    });
+  });
 });

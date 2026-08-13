@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitService, parseWorktreePorcelain } from "@score/core/adapters/git.service";
+import {
+  GitService,
+  LANDING_COMMITTER,
+  parseWorktreePorcelain,
+} from "@score/core/adapters/git.service";
 import type { WorkIdentity } from "@score/core/dispatch/work.interface";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
@@ -185,6 +189,82 @@ test("worktree creation fails closed when no legacy base branch can be resolved"
     new GitService(runner, { repositoryPath, workspaceRoot }).createWorktree(work),
   ).rejects.toThrow("no origin/HEAD, no main, no master");
   expect(runner.commands.some((command) => command[1] === "worktree")).toBe(false);
+});
+
+test("commitMerge stamps landing's committer identity as config, leaving the author alone", async () => {
+  const runner = new ScriptRunner((command, options) => result(command, options));
+
+  await new GitService(runner, { repositoryPath: "/repo", workspaceRoot: "/wt" }).commitMerge(
+    "Merge pull request #9 from owner/branch",
+  );
+
+  expect(runner.commands[0]?.slice(1)).toEqual([
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    `committer.name=${LANDING_COMMITTER.name}`,
+    "-c",
+    `committer.email=${LANDING_COMMITTER.email}`,
+    "commit",
+    "-m",
+    "Merge pull request #9 from owner/branch",
+  ]);
+});
+
+test("observeCommit parses parents, committer, and a multi-line message", async () => {
+  const runner = new ScriptRunner((command, options) =>
+    result(
+      command,
+      options,
+      0,
+      "abc123\ndef456 789abc\nscore-landing\nlanding@score.invalid\nMerge pull request #9 from owner/branch\n\nTitle line\n",
+    ),
+  );
+
+  const commit = await new GitService(runner, {
+    repositoryPath: "/repo",
+    workspaceRoot: "/wt",
+  }).observeCommit("main");
+
+  expect(runner.commands[0]?.slice(1)).toEqual([
+    "log",
+    "-1",
+    "--format=%H%n%P%n%cn%n%ce%n%B",
+    "main",
+  ]);
+  expect(commit).toEqual({
+    sha: "abc123",
+    parents: ["def456", "789abc"],
+    committerName: "score-landing",
+    committerEmail: "landing@score.invalid",
+    message: "Merge pull request #9 from owner/branch\n\nTitle line",
+  });
+});
+
+test("observeCommit reports a root commit as parentless, not as one empty parent", async () => {
+  const runner = new ScriptRunner((command, options) =>
+    result(command, options, 0, "abc123\n\nscore\nscore@test.invalid\ninitial\n"),
+  );
+
+  const commit = await new GitService(runner, {
+    repositoryPath: "/repo",
+    workspaceRoot: "/wt",
+  }).observeCommit("main");
+
+  expect(commit.parents).toEqual([]);
+});
+
+test("observeCommitterIdentity parses the effective ident, including names with spaces", async () => {
+  const runner = new ScriptRunner((command, options) =>
+    result(command, options, 0, "Ada Lovelace <ada@example.invalid> 1700000000 +0100\n"),
+  );
+
+  const identity = await new GitService(runner, {
+    repositoryPath: "/repo",
+    workspaceRoot: "/wt",
+  }).observeCommitterIdentity();
+
+  expect(identity).toEqual({ name: "Ada Lovelace", email: "ada@example.invalid" });
 });
 
 test("seedClaudeDirectory: false leaves the worktree without a copied .claude", async () => {
