@@ -4,3 +4,4 @@
  * tick loop; decides nothing a phase owns.
  */
 export * from "./daemon.run";
+export * from "./recovery.policy";

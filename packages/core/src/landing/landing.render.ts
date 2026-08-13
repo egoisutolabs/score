@@ -11,6 +11,7 @@ const LANDING_ICONS: Record<LandingTag, string> = {
   "checks-pending": "⏳",
   unresolved: "⏳",
   "changes-requested": "⚠",
+  "push-failed": "⚠",
   "would-merge": "·",
   skipped: "·",
 };
@@ -20,6 +21,7 @@ const ATTENTION_TAGS: readonly LandingTag[] = [
   "build-red",
   "checks-red",
   "changes-requested",
+  "push-failed",
 ];
 
 const STATE_CHANGE_TAGS = new Set<LandingTag>(["merged", "would-merge"]);

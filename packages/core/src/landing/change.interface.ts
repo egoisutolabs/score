@@ -67,6 +67,7 @@ export type LandingTag =
   | "build-red"
   | "soaking"
   | "ready"
+  | "push-failed"
   | "merged";
 
 export interface LandingResult {

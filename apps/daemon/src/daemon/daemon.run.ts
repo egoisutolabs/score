@@ -19,6 +19,7 @@ import {
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
+import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
@@ -48,6 +49,7 @@ import type { Logger } from "@score/shared/log";
 import { createLogger } from "@score/shared/log";
 import { GitHubService } from "@score/tracker/github.service";
 import { renderRepairRun } from "../repair/repair.run";
+import { proveLandingAuthorship } from "./recovery.policy";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
@@ -325,8 +327,8 @@ async function preflightManagedRuntime(
  * if the abort does not clear MERGE_HEAD, throw so the supervisor restarts
  * with the repository untouched beyond git's own state. (A kill between
  * commitMerge and push leaves a different wedge — committed-but-unpushed
- * merge, no MERGE_HEAD; recovering that is a policy decision outside locked
- * decision 9, tracked on issue #4.)
+ * merge, no MERGE_HEAD; reconcileUnpushedLandingMerge below recovers that
+ * one, per locked decision D1: reset and re-land.)
  */
 export async function selfHealStagedMerge(
   git: Pick<GitService, "mergeInProgress" | "abortMerge" | "observePrimaryCheckout">,
@@ -354,6 +356,125 @@ export async function selfHealStagedMerge(
     throw new Error("failed to abort the staged merge left by a previous run");
   }
   log.warn("recovered staged merge left by a previous run");
+}
+
+export interface ReconcileUnpushedMergeOptions {
+  readonly dryRun: boolean;
+  readonly defaultBranch: string;
+  readonly repositoryOwner: string;
+}
+
+/**
+ * "clean": no wedge (heads equal, behind origin, or a merge in progress that
+ * the staged-merge path owns) — landing may run. "recovered": the wedge was
+ * reset away and verified — landing may run. "blocked": an unreconciled
+ * commit is still ahead of origin (refused, dirty, parked checkout, or
+ * dry-run) — landing MUST NOT run this pass, or it would commit a new merge
+ * on top and build the local-only chain D1 forbids, then push both.
+ */
+export type ReconcileOutcome = "clean" | "recovered" | "blocked";
+
+/**
+ * A reset that reported success but left the wrong head: evidence of checkout
+ * corruption. Must crash the daemon (supervisor restarts it with the repo
+ * untouched further) — never degrade to a warning like transient git errors.
+ */
+export class RecoveryVerificationError extends Error {}
+
+/**
+ * D1 recovery for a merge committed but never pushed: a daemon that died — or
+ * caught a pushDefaultBranch failure and lived — between commitMerge and push
+ * leaves the local default branch ahead of origin with no MERGE_HEAD, and the
+ * still-open PR in silent limbo. When the stray head passes the
+ * landing-authorship proof and the working tree is clean, reset hard to
+ * origin and let the normal landing tick re-gate, re-soak, and re-merge the
+ * PR. Recovery never pushes (landing stays the only push site); anything
+ * unproven is warned with the observed evidence and left untouched — the
+ * operator property. Runs once per pass, not only at startup, because the
+ * caught-push-failure strand happens while the daemon lives.
+ */
+export async function reconcileUnpushedLandingMerge(
+  git: Pick<
+    GitService,
+    | "mergeInProgress"
+    | "observeCommit"
+    | "fetchOrigin"
+    | "isAncestor"
+    | "observePrimaryCheckout"
+    | "resetBranchToCommit"
+    | "treeMatchesCommit"
+  >,
+  log: Logger,
+  options: ReconcileUnpushedMergeOptions,
+): Promise<ReconcileOutcome> {
+  const { dryRun, defaultBranch, repositoryOwner } = options;
+  // A merge in progress is selfHealStagedMerge's territory, not a stray commit.
+  if (await git.mergeInProgress()) return "clean";
+  // D1: fetch before evaluating anything — startup reaches here before any
+  // phase fetch, so the origin/<default> tracking ref may predate the outage;
+  // comparing or resetting against a stale ref would re-land from a stale
+  // base, or misread a push that actually landed as a wedge.
+  await git.fetchOrigin();
+  const remoteRef = `origin/${defaultBranch}`;
+  const local = await git.observeCommit(defaultBranch);
+  const origin = await git.observeCommit(remoteRef);
+  if (local.sha === origin.sha) return "clean";
+  // Behind origin is cleanup's normal auto-pull, not a wedge.
+  if (await git.isAncestor(local.sha, origin.sha)) return "clean";
+
+  const { branch, status } = await git.observePrimaryCheckout();
+  if (branch !== defaultBranch) {
+    log.warn(
+      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the checkout is on ${branch}; leaving it untouched`,
+    );
+    return "blocked";
+  }
+  // One kind of "dirt" is recovery's own: a daemon killed between the tree
+  // sync and the ref move leaves the index/worktree already at origin's
+  // exact tree with the branch still on the wedge. Completing that recovery
+  // touches nothing an operator could have added (the sync no-ops), so it
+  // falls through to the proof; any other dirt refuses.
+  if (meaningfulStatusLines(status).length > 0 && !(await git.treeMatchesCommit(origin.sha))) {
+    log.warn(
+      `local ${defaultBranch} is ahead of ${remoteRef} at ${local.sha}, but the working tree is dirty; refusing recovery — a reset must never eat operator edits`,
+    );
+    return "blocked";
+  }
+  const firstParent = local.parents[0];
+  const proof = proveLandingAuthorship({
+    commit: local,
+    firstParentReachableFromOrigin:
+      firstParent !== undefined && (await git.isAncestor(firstParent, origin.sha)),
+    repositoryOwner,
+  });
+  if (!proof.proven) {
+    log.warn(
+      `unpushed commit ${local.sha} on ${defaultBranch} fails the landing-authorship proof (${proof.evidence}); leaving the checkout untouched`,
+    );
+    return "blocked";
+  }
+  if (dryRun) {
+    log.warn(
+      `would reset ${defaultBranch} to ${origin.sha}, dropping unpushed landing merge ${local.sha}; PR #${proof.pullRequestNumber} would re-land through the normal landing tick`,
+    );
+    return "blocked";
+  }
+  // Compare-and-swap from the observed wedge head to the observed origin
+  // SHA: an operator commit or edit arriving after the checks above makes
+  // the observations stale, and the CAS + non-clobbering tree sync abort
+  // instead of silently discarding that work the way reset --hard would.
+  await git.resetBranchToCommit(defaultBranch, origin.sha, local.sha);
+  // Fail closed like the staged-merge heal: prove the reset actually landed.
+  const after = await git.observeCommit(defaultBranch);
+  if (after.sha !== origin.sha) {
+    throw new RecoveryVerificationError(
+      `recovery reset left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
+    );
+  }
+  log.warn(
+    `reset unpushed landing merge ${local.sha} away; PR #${proof.pullRequestNumber} re-lands through the normal landing tick`,
+  );
+  return "recovered";
 }
 
 /** The subset of OpencodeServer's own shape earlyStop needs: stop() must be
@@ -622,6 +743,11 @@ export async function runDaemonLoop(
     const gateVerdicts = new Map<number, string>();
     let passError: string | null = null;
     let stopping = false;
+    // Set per pass by the D1 reconciliation below. While an unreconciled
+    // commit sits ahead of origin (recovery refused, or reconciliation itself
+    // failed), landing must not run: it would see a clean tree, commit a new
+    // merge on top, and build — or even push — the chain D1 forbids.
+    let landingBlocked = false;
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -640,6 +766,12 @@ export async function runDaemonLoop(
         name: "landing",
         everyTicks: 2,
         run: async () => {
+          if (landingBlocked) {
+            log.warn(
+              "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
+            );
+            return;
+          }
           const results = await landing.runTick();
           // undefined = no gate verdict this tick; the last known failure stands.
           const gateVerdict = gateFailureFrom(results);
@@ -700,6 +832,31 @@ export async function runDaemonLoop(
         });
         observations.startPass();
         for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
+
+        // D1 reconciliation runs before the phases of every pass, not only at
+        // startup (the first pass runs immediately, so this is the startup
+        // check too): a caught pushDefaultBranch failure strands a committed
+        // merge while the daemon lives, and landing must see the recovered
+        // checkout, never stage on top of the wedge. Unconditional, not
+        // managed-only: every mode that runs this loop lands merges on this
+        // checkout, so every mode owns the recovery of its own wedge.
+        // Transient git failures (a fetch blip, say) degrade to a warning
+        // like any phase error — but they also block landing this pass, and
+        // only failed post-reset verification may crash the daemon.
+        try {
+          landingBlocked =
+            (await reconcileUnpushedLandingMerge(git, log, {
+              dryRun,
+              defaultBranch: runtime.defaultBranch,
+              repositoryOwner: runtime.repository.split("/")[0] as string,
+            })) === "blocked";
+        } catch (error) {
+          if (error instanceof RecoveryVerificationError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn(`✗ reconciliation failed: ${message}`);
+          passError = `reconcile: ${message}`;
+          landingBlocked = true;
+        }
 
         await daemon.runPass();
 

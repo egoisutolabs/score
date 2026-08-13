@@ -3,6 +3,7 @@ import {
   evaluatePreconditions,
   gatesFor,
   listLandingCandidates,
+  meaningfulStatusLines,
 } from "@score/core/landing/landing.policy";
 import { expect, test } from "vitest";
 
@@ -44,4 +45,20 @@ test("every PR gets the make-verify root gate, regardless of files", () => {
   expect(gates[0]?.cwd).toBe("/repo");
   expect(gates[0]?.steps[0]?.command).toEqual(["make", "verify"]);
   expect(gates[0]?.steps[0]?.retry).toBe(true);
+});
+
+test("meaningful status ignores exactly the scheduler lock path, nothing that resembles it", () => {
+  expect(meaningfulStatusLines("?? .claude/scheduled_tasks.lock\n")).toEqual([]);
+  expect(meaningfulStatusLines(" M .claude/scheduled_tasks.lock\n")).toEqual([]);
+  // Substring lookalikes are operator files; a hard reset must not eat them.
+  expect(meaningfulStatusLines("?? docs/.claude/scheduled_tasks.lock\n")).toEqual([
+    "?? docs/.claude/scheduled_tasks.lock",
+  ]);
+  expect(meaningfulStatusLines("?? .claude/scheduled_tasks.lock.backup\n")).toEqual([
+    "?? .claude/scheduled_tasks.lock.backup",
+  ]);
+  expect(meaningfulStatusLines(" M README.md\n?? .claude/scheduled_tasks.lock\n")).toEqual([
+    " M README.md",
+  ]);
+  expect(meaningfulStatusLines("")).toEqual([]);
 });

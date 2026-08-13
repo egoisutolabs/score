@@ -24,6 +24,25 @@ interface GitServiceOptions {
   readonly seedClaudeDirectory?: boolean;
 }
 
+/**
+ * Committer identity stamped on landing's merge commits — metadata only, the
+ * author stays the checkout's configured user. Unpushed-merge recovery reads
+ * it back as proof the daemon, not an operator, made a stray default-branch
+ * merge (D1, issue #41).
+ */
+export const LANDING_COMMITTER = {
+  name: "score-landing",
+  email: "landing@score.invalid",
+} as const;
+
+export interface CommitObservation {
+  readonly sha: string;
+  readonly parents: readonly string[];
+  readonly committerName: string;
+  readonly committerEmail: string;
+  readonly message: string;
+}
+
 /** Local Git adapter; callers remain responsible for policy and role authorization. */
 export class GitService implements WorkspaceDriver {
   readonly #executable: string;
@@ -108,7 +127,13 @@ export class GitService implements WorkspaceDriver {
     const branch = requireSuccess(
       await this.#run(["rev-parse", "--abbrev-ref", "HEAD"]),
     ).stdout.trim();
-    const status = requireSuccess(await this.#run(["status", "--porcelain"])).stdout;
+    // Per-file untracked listing: the default mode collapses a wholly
+    // untracked directory to one "?? dir/" line, which hides harness-owned
+    // files (e.g. .claude/scheduled_tasks.lock) from exact-path filters and
+    // would wedge landing and D1 recovery behind phantom dirt.
+    const status = requireSuccess(
+      await this.#run(["status", "--porcelain", "--untracked-files=all"]),
+    ).stdout;
     return { branch, status };
   }
 
@@ -133,11 +158,83 @@ export class GitService implements WorkspaceDriver {
   }
 
   async commitMerge(message: string): Promise<void> {
-    requireSuccess(await this.#run(["-c", "commit.gpgsign=false", "commit", "-m", message], true));
+    // The stamp rides the environment, not -c config: inherited
+    // GIT_COMMITTER_* variables outrank config, and an unstamped landing
+    // merge would fail its own recovery proof after a push failure (D1
+    // check 4), blocking landing indefinitely.
+    requireSuccess(
+      await this.#run(["-c", "commit.gpgsign=false", "commit", "-m", message], true, {
+        GIT_COMMITTER_NAME: LANDING_COMMITTER.name,
+        GIT_COMMITTER_EMAIL: LANDING_COMMITTER.email,
+      }),
+    );
   }
 
   async pushDefaultBranch(defaultBranch: string): Promise<void> {
     requireSuccess(await this.#run(["push", "origin", defaultBranch], true));
+  }
+
+  /** Parents, committer, and full message of one commit — the recovery proof's raw evidence. */
+  async observeCommit(ref: string): Promise<CommitObservation> {
+    const stdout = requireSuccess(
+      await this.#run(["log", "-1", "--format=%H%n%P%n%cn%n%ce%n%B", ref]),
+    ).stdout;
+    const [sha = "", parents = "", committerName = "", committerEmail = "", ...body] =
+      stdout.split("\n");
+    return {
+      sha,
+      parents: parents === "" ? [] : parents.split(" "),
+      committerName,
+      committerEmail,
+      // %B carries git's own trailing newline(s); strip only those.
+      message: body.join("\n").replace(/\n+$/, ""),
+    };
+  }
+
+  /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    // Exit 1 means "not an ancestor"; any other failure (e.g. a bad ref) also
+    // reads as unproven, which fails the recovery proof closed.
+    return (await this.#run(["merge-base", "--is-ancestor", ancestor, descendant])).exitCode === 0;
+  }
+
+  /**
+   * Recovery reset with both race guards a bare `reset --hard` lacks, ordered
+   * tree-then-ref for failure consistency. The two-tree merge validates and
+   * syncs the index/worktree while the branch still points at `expectedHead`
+   * — it refuses (mutating nothing) if a file changed since the caller's
+   * checks. Only then does the ref move, by compare-and-swap, so a commit
+   * that arrived after observation aborts the recovery instead of being
+   * discarded; the ref is never left pointing where the tree doesn't match.
+   * A kill between the two steps leaves the branch on `expectedHead` with
+   * the tree already at `to` — the caller detects that state and re-runs
+   * this (the tree sync no-ops, the ref move completes). Pinned to exact
+   * SHAs, never refs: a linked worktree's fetch can move origin/<default>
+   * mid-recovery.
+   */
+  async resetBranchToCommit(branch: string, to: string, expectedHead: string): Promise<void> {
+    requireSuccess(await this.#run(["read-tree", "-m", "-u", expectedHead, to], true));
+    requireSuccess(
+      await this.#run(
+        [
+          "update-ref",
+          "-m",
+          "score: D1 unpushed-merge recovery",
+          `refs/heads/${branch}`,
+          to,
+          expectedHead,
+        ],
+        true,
+      ),
+    );
+  }
+
+  /** True when both the index and the working tree hold exactly `sha`'s tree. */
+  async treeMatchesCommit(sha: string): Promise<boolean> {
+    // diff --quiet: exit 1 on differences; any other failure also reads as
+    // "no match", which fails the caller's recovery checks closed.
+    if ((await this.#run(["diff", "--quiet", "--cached", sha])).exitCode !== 0) return false;
+    return (await this.#run(["diff", "--quiet", sha])).exitCode === 0;
   }
 
   async fastForwardDefaultBranch(defaultBranch: string): Promise<boolean> {
@@ -170,12 +267,13 @@ export class GitService implements WorkspaceDriver {
     throw new Error("Could not resolve base branch (no origin/HEAD, no main, no master).");
   }
 
-  #run(args: readonly string[], mutates = false) {
+  #run(args: readonly string[], mutates = false, env?: Readonly<Record<string, string>>) {
     return this.runner.run([this.#executable, ...args], {
       cwd: this.options.repositoryPath,
       timeoutMs: this.#timeoutMs,
       mutates,
       dryRun: this.options.dryRun,
+      ...(env && { env }),
     });
   }
 }
