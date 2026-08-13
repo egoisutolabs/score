@@ -1,3 +1,4 @@
+import { isIssueBranch } from "@score/core/dispatch/dispatch.identity";
 import type { DependencyObservation, IssueObservation } from "@score/core/dispatch/issue.interface";
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type {
@@ -150,7 +151,7 @@ export class GitHubService implements WorkSource, ChangeHost {
 
   async observeMergedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {
     const changes = await this.#observeChangeIdentities("merged", "number,headRefName,mergedAt");
-    return changes.filter((change) => /^issue-\d+-/.test(change.headRefName));
+    return changes.filter((change) => isIssueBranch(change.headRefName));
   }
 
   async #observeChangeIdentities(
