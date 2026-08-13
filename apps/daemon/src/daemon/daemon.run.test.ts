@@ -1463,7 +1463,8 @@ test("a push failure inside one pass is reconciled by a later pass of the same d
       if (command[0] === "gh" && command[1] === "issue") return { stdout: "[]\n" };
       if (command[0] === "gh" && command[1] === "api") {
         return {
-          stdout: '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n',
+          stdout:
+            '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}\n',
         };
       }
       // The merged-tree gate (make verify) is green every tick.

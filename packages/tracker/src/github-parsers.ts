@@ -112,16 +112,38 @@ export function parseRepositoryName(value: unknown): string {
   );
 }
 
-export function parseUnresolvedThreadCount(value: unknown): number {
+export interface ReviewThreadPage {
+  readonly unresolved: number;
+  /** Non-null means the connection was truncated; the caller must continue from here. */
+  readonly endCursor: string | null;
+}
+
+export function parseUnresolvedThreadPage(value: unknown): ReviewThreadPage {
   const root = optionalObject(value);
   const data = optionalObject(root?.data);
   const repository = optionalObject(data?.repository);
   const pullRequest = optionalObject(repository?.pullRequest);
   const reviewThreads = optionalObject(pullRequest?.reviewThreads);
-  if (reviewThreads?.nodes === undefined || reviewThreads.nodes === null) return 0;
-  return arrayValue(reviewThreads.nodes, "github.graphql.reviewThreads.nodes").filter(
+  if (reviewThreads?.nodes === undefined || reviewThreads.nodes === null)
+    return { unresolved: 0, endCursor: null };
+  const unresolved = arrayValue(reviewThreads.nodes, "github.graphql.reviewThreads.nodes").filter(
     (node, index) => !objectValue(node, `github.graphql.reviewThreads.nodes[${index}]`).isResolved,
   ).length;
+  // pageInfo is required evidence once threads exist: a response without it
+  // cannot prove the observation is complete, so it must not read as one page.
+  const pageInfo = objectValue(reviewThreads.pageInfo, "github.graphql.reviewThreads.pageInfo");
+  const hasNextPage = booleanValue(
+    pageInfo.hasNextPage,
+    "github.graphql.reviewThreads.pageInfo.hasNextPage",
+  );
+  return {
+    unresolved,
+    // A truncated page without a cursor is malformed evidence, not an end of
+    // pagination — throwing here is what keeps the count fail-closed.
+    endCursor: hasNextPage
+      ? stringValue(pageInfo.endCursor, "github.graphql.reviewThreads.pageInfo.endCursor")
+      : null,
+  };
 }
 
 function optionalObject(value: unknown): UnknownRecord | null {

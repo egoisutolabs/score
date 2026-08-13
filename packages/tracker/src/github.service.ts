@@ -21,8 +21,17 @@ import {
   parseGithubIssues,
   parseGithubPullRequests,
   parseRepositoryName,
-  parseUnresolvedThreadCount,
+  parseUnresolvedThreadPage,
+  type ReviewThreadPage,
 } from "@score/tracker/github-parsers";
+
+/**
+ * A refetch that reaches this many results without fitting under the limit
+ * gives up rather than looping; callers treat the throw as a failed
+ * observation (fail closed), never a partial view.
+ */
+// ponytail: doubling --limit refetch; switch to `gh api` cursor pagination if a repo ever exceeds the cap
+const LIST_LIMIT_CAP = 6400;
 
 interface GitHubServiceOptions {
   readonly repositoryPath: string;
@@ -58,16 +67,12 @@ export class GitHubService implements WorkSource, ChangeHost {
 
   async observeIssues(): Promise<readonly IssueObservation[]> {
     return parseGithubIssues(
-      await this.#json([
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--limit",
-        "200",
-        "--json",
+      await this.#listComplete(
+        ["issue", "list", "--state", "open"],
         "number,title,body,labels,state,stateReason,url",
-      ]),
+        200,
+        "github.issues",
+      ),
     );
   }
 
@@ -112,17 +117,10 @@ export class GitHubService implements WorkSource, ChangeHost {
   }
 
   async observeRepairChanges(): Promise<readonly RepairPullRequestObservation[]> {
-    const raw = arrayValue(
-      await this.#json([
-        "pr",
-        "list",
-        "--state",
-        "open",
-        "--limit",
-        "100",
-        "--json",
-        "number,headRefName,headRefOid,mergeable,statusCheckRollup",
-      ]),
+    const raw = await this.#listComplete(
+      ["pr", "list", "--state", "open"],
+      "number,headRefName,headRefOid,mergeable,statusCheckRollup",
+      100,
       "github.repairPullRequests",
     );
     return raw.map((item, index) => {
@@ -158,8 +156,10 @@ export class GitHubService implements WorkSource, ChangeHost {
     state: "open" | "merged",
     fields: string,
   ): Promise<readonly PullRequestIdentity[]> {
-    const raw = arrayValue(
-      await this.#json(["pr", "list", "--state", state, "--limit", "100", "--json", fields]),
+    const raw = await this.#listComplete(
+      ["pr", "list", "--state", state],
+      fields,
+      100,
       "github.pullRequestIdentities",
     );
     return raw.map((item, index) => {
@@ -178,36 +178,84 @@ export class GitHubService implements WorkSource, ChangeHost {
     if (!owner || !name) throw new Error("repository must use owner/name form");
 
     const query =
-      "query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100){nodes{isResolved}}}}}";
-    return parseUnresolvedThreadCount(
-      await this.#json([
-        "api",
-        "graphql",
-        "-f",
-        `query=${query}`,
-        "-F",
-        `owner=${owner}`,
-        "-F",
-        `repo=${name}`,
-        "-F",
-        `num=${pullRequestNumber}`,
-      ]),
-    );
+      "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{isResolved}}}}}";
+    let unresolved = 0;
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    do {
+      let page: ReviewThreadPage;
+      try {
+        page = parseUnresolvedThreadPage(
+          await this.#json([
+            "api",
+            "graphql",
+            "-f",
+            `query=${query}`,
+            "-F",
+            `owner=${owner}`,
+            "-F",
+            `repo=${name}`,
+            "-F",
+            `num=${pullRequestNumber}`,
+            ...(cursor === null ? [] : ["-f", `cursor=${cursor}`]),
+          ]),
+        );
+      } catch (error) {
+        // A proven unresolved thread outlives a later page failure: the
+        // partial count is a lower bound, enough for landing to block and
+        // repair to act. With nothing proven yet, the failure propagates.
+        if (unresolved > 0) return unresolved;
+        throw error;
+      }
+      // A repeated cursor would re-issue the same successful query forever
+      // (the runner timeout bounds one command, not this loop), and a page
+      // that repeats a cursor may repeat its nodes too — so the whole page
+      // is malformed evidence, handled like a failed page before any of it
+      // is counted: keep the previously proven lower bound, else propagate.
+      if (page.endCursor !== null && seenCursors.has(page.endCursor)) {
+        if (unresolved > 0) return unresolved;
+        throw new Error(`github.graphql.reviewThreads cursor did not advance (${page.endCursor})`);
+      }
+      unresolved += page.unresolved;
+      cursor = page.endCursor;
+      if (cursor !== null) seenCursors.add(cursor);
+    } while (cursor !== null);
+    return unresolved;
   }
 
   async #observeChanges(state: "open" | "merged"): Promise<readonly PullRequestObservation[]> {
     return parseGithubPullRequests(
-      await this.#json([
-        "pr",
-        "list",
-        "--state",
-        state,
-        "--limit",
-        "100",
-        "--json",
+      await this.#listComplete(
+        ["pr", "list", "--state", state],
         "number,title,headRefName,headRefOid,baseRefOid,isDraft,mergeable,labels,files,reviewDecision,statusCheckRollup,mergedAt",
-      ]),
+        100,
+        "github.pullRequests",
+      ),
     );
+  }
+
+  /**
+   * gh list endpoints truncate silently at --limit; a page that fills the
+   * limit is treated as possibly-truncated and refetched larger until the
+   * result fits, so no caller ever acts on a partial view.
+   */
+  async #listComplete(
+    args: readonly string[],
+    fields: string,
+    initialLimit: number,
+    path: string,
+  ): Promise<readonly unknown[]> {
+    let limit = initialLimit;
+    for (;;) {
+      const raw = arrayValue(
+        await this.#json([...args, "--limit", String(limit), "--json", fields]),
+        path,
+      );
+      if (raw.length < limit) return raw;
+      if (limit >= LIST_LIMIT_CAP)
+        throw new Error(`${path} observation still truncated at ${limit} results`);
+      limit *= 2;
+    }
   }
 
   async #json(args: readonly string[]): Promise<unknown> {

@@ -101,10 +101,19 @@ export class LandingService {
     // Legacy performs cheap checks before the GraphQL review-thread query.
     let blocker = evaluatePreconditions(change, 0);
     if (blocker) return blocker;
-    blocker = evaluatePreconditions(
-      change,
-      await this.changes.unresolvedThreadCount(change.number),
-    );
+    let unresolvedThreads: number;
+    try {
+      unresolvedThreads = await this.changes.unresolvedThreadCount(change.number);
+    } catch (error) {
+      // Deliberate departure from legacy's catch(() => 0): a failed or
+      // truncated observation must never read as "no unexamined feedback".
+      return {
+        pullRequestNumber: change.number,
+        tag: "skipped",
+        note: `review-thread observation failed (${errorMessage(error)}); refusing to merge this tick`,
+      };
+    }
+    blocker = evaluatePreconditions(change, unresolvedThreads);
     if (blocker) return blocker;
 
     if (this.options.dryRun) {

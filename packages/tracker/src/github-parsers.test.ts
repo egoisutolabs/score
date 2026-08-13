@@ -1,7 +1,7 @@
 import {
   parseGithubIssue,
   parseGithubPullRequest,
-  parseUnresolvedThreadCount,
+  parseUnresolvedThreadPage,
 } from "@score/tracker/github-parsers";
 import { expect, test } from "vitest";
 
@@ -48,12 +48,39 @@ test("gh's empty-string stateReason on open issues reads as no reason, not an en
 });
 
 test("missing review-thread connection is empty but malformed non-null evidence throws", () => {
-  expect(parseUnresolvedThreadCount({ data: { repository: { pullRequest: null } } })).toBe(0);
+  expect(parseUnresolvedThreadPage({ data: { repository: { pullRequest: null } } })).toEqual({
+    unresolved: 0,
+    endCursor: null,
+  });
   expect(() =>
-    parseUnresolvedThreadCount({
+    parseUnresolvedThreadPage({
       data: { repository: { pullRequest: { reviewThreads: { nodes: "bad" } } } },
     }),
   ).toThrow("nodes must be an array");
+});
+
+test("a truncated review-thread page surfaces its cursor; a cursorless truncation throws", () => {
+  const page = (pageInfo: unknown) => ({
+    data: {
+      repository: {
+        pullRequest: { reviewThreads: { pageInfo, nodes: [{ isResolved: false }] } },
+      },
+    },
+  });
+  expect(parseUnresolvedThreadPage(page({ hasNextPage: true, endCursor: "C1" }))).toEqual({
+    unresolved: 1,
+    endCursor: "C1",
+  });
+  expect(parseUnresolvedThreadPage(page({ hasNextPage: false, endCursor: "C1" }))).toEqual({
+    unresolved: 1,
+    endCursor: null,
+  });
+  expect(() => parseUnresolvedThreadPage(page({ hasNextPage: true, endCursor: null }))).toThrow(
+    "endCursor",
+  );
+  // Threads without pageInfo cannot prove completeness — never "one page".
+  expect(() => parseUnresolvedThreadPage(page(undefined))).toThrow("pageInfo");
+  expect(() => parseUnresolvedThreadPage(page(null))).toThrow("pageInfo");
 });
 
 test("GitHub pull-request parser preserves typed check variants", () => {

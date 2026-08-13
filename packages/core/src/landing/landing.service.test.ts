@@ -302,6 +302,36 @@ test("a cheap conflict blocker wins before the review-thread query", async () =>
   expect((await service.runTick())[0]?.tag).toBe("conflict");
 });
 
+test("a failed review-thread observation skips the PR instead of assuming zero threads", async () => {
+  const changes: ChangeHost = {
+    ...host(),
+    async unresolvedThreadCount(): Promise<number> {
+      throw new Error("pagination failed");
+    },
+  };
+  const workspace = new FakeWorkspace();
+  const service = new LandingService(
+    {
+      repositoryRoot: "/repo",
+      repository: "owner/repo",
+      defaultBranch: "main",
+      dryRun: false,
+      noMerge: false,
+      maxMerges: 5,
+      soakTicks: 2,
+      skipLabels: [],
+      onlyIssueBranches: false,
+    },
+    changes,
+    workspace,
+    runner,
+  );
+  const [result] = await service.runTick();
+  expect(result?.tag).toBe("skipped");
+  expect(result?.note).toContain("review-thread observation failed");
+  expect(workspace.effects.some((e) => e.startsWith("stage:"))).toBe(false);
+});
+
 test("a failed push halts the remaining landing candidates for that tick (D1)", async () => {
   // Landing otherwise continues to the next candidate, and a second merge
   // committed on top of the unpushed first builds a local-only chain that
