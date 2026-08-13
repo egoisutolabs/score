@@ -1,10 +1,9 @@
-import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestObservation } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import { LandingService } from "@score/core/landing/landing.service";
 import type {
+  LandingWorkspace,
   PrimaryCheckoutObservation,
-  WorkspaceDriver,
 } from "@score/core/workspace-driver.interface";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
@@ -26,21 +25,10 @@ function pullRequest(overrides: Partial<PullRequestObservation> = {}): PullReque
   };
 }
 
-class FakeWorkspace implements WorkspaceDriver {
+class FakeWorkspace implements LandingWorkspace {
   readonly effects: string[] = [];
   checkout: PrimaryCheckoutObservation = { branch: "main", status: "" };
 
-  async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
-    return [];
-  }
-  async createWorktree(_identity: WorkIdentity): Promise<void> {}
-  async status(): Promise<string> {
-    return "";
-  }
-  async removeWorktree(): Promise<void> {}
-  async deleteBranch(): Promise<boolean> {
-    return true;
-  }
   async observePrimaryCheckout(): Promise<PrimaryCheckoutObservation> {
     return this.checkout;
   }

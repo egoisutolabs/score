@@ -3,10 +3,7 @@ import { CleanupService } from "@score/core/cleanup/cleanup.service";
 import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestObservation } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type {
-  PrimaryCheckoutObservation,
-  WorkspaceDriver,
-} from "@score/core/workspace-driver.interface";
+import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import { expect, test } from "vitest";
 
 const worktree = { path: "/wt/issue-1-done", branch: "issue-1-done", locked: false };
@@ -22,7 +19,9 @@ const merged: PullRequestObservation = {
   statusCheckRollup: [],
 };
 
-class CleanupWorkspace implements WorkspaceDriver {
+class CleanupWorkspace
+  implements WorktreeProvisioner, Pick<LandingWorkspace, "fastForwardDefaultBranch">
+{
   fastForwards = 0;
   deleted = 0;
   async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
@@ -37,16 +36,6 @@ class CleanupWorkspace implements WorkspaceDriver {
     this.deleted += 1;
     return false;
   }
-  async observePrimaryCheckout(): Promise<PrimaryCheckoutObservation> {
-    return { branch: "main", status: "" };
-  }
-  async fetchOrigin() {}
-  async stageMerge() {
-    return true;
-  }
-  async abortMerge() {}
-  async commitMerge() {}
-  async pushDefaultBranch() {}
   async fastForwardDefaultBranch() {
     this.fastForwards += 1;
     return true;

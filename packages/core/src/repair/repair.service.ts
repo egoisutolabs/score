@@ -4,7 +4,7 @@ import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { RepairDefects } from "@score/core/repair/repair.policy";
 import { needsRepair, renderRepairPrompt } from "@score/core/repair/repair.policy";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
-import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 
 const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
@@ -34,7 +34,10 @@ export class RepairService {
   constructor(
     private readonly options: RepairServiceOptions,
     private readonly changes: ChangeHost,
-    private readonly workspace: WorkspaceDriver,
+    // Observation slice only: repair never owns merge authority, and the
+    // compiler now enforces it (#19).
+    private readonly workspace: Pick<WorktreeProvisioner, "observeWorktrees"> &
+      Pick<LandingWorkspace, "fetchOrigin">,
     private readonly agents: AgentRuntime,
   ) {}
 

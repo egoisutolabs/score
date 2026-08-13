@@ -4,7 +4,7 @@ import type { CleanupResult } from "@score/core/cleanup/cleanup-result.interface
 import { issueNumberFromBranch, sessionNameForIssue } from "@score/core/dispatch/dispatch.identity";
 import { isOwnedIssueWorktree } from "@score/core/dispatch/dispatch.policy";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type { WorkspaceDriver } from "@score/core/workspace-driver.interface";
+import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 
 export interface CleanupServiceOptions {
   readonly defaultBranch: string;
@@ -20,7 +20,10 @@ export class CleanupService {
   constructor(
     private readonly options: CleanupServiceOptions,
     private readonly changes: ChangeHost,
-    private readonly workspace: WorkspaceDriver,
+    // Worktree authority plus the one landing-side verb cleanup legitimately
+    // performs (autoPullMain); no merge or push method is visible here (#19).
+    private readonly workspace: WorktreeProvisioner &
+      Pick<LandingWorkspace, "fastForwardDefaultBranch">,
     private readonly agents: AgentRuntime,
   ) {}
 
