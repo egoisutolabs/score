@@ -147,7 +147,14 @@ export class TmuxService implements AgentRuntime {
    */
   async #spawnHeldSession(sessionName: string, args: readonly string[]): Promise<void> {
     const spawn = await this.#run(args, true);
-    if (!spawn.dryRun && (spawn.exitCode !== 0 || spawn.timedOut)) {
+    // "duplicate session" means new-session created nothing — the name was
+    // taken by a session some other actor owns, and reclaiming would kill
+    // THEIR live work; preserve the plain launch-conflict throw for that.
+    if (
+      !spawn.dryRun &&
+      (spawn.exitCode !== 0 || spawn.timedOut) &&
+      !spawn.stderr.includes("duplicate session")
+    ) {
       await this.#run(["kill-session", "-t", sessionName], true);
     }
     requireSuccess(spawn);
@@ -208,8 +215,13 @@ export class TmuxService implements AgentRuntime {
       // The alive verdict was sampled before the restore landed; a death in
       // that gap still ran under remain-on-exit and would linger as a dead
       // pane forever. From the restore onward deaths close the session
-      // normally, so one re-probe here completes the verdict for the whole
-      // observation window. Timed out → unknown, fail open as above.
+      // normally, so one re-probe completes the PANE-death verdict for the
+      // whole window. The repair EXIT marker keeps its sampled-once
+      // semantics deliberately: the wrapper parks at `read` either way, so
+      // there is always a final observation with an irreducible tail after
+      // it, and a death in that tail changes no session state — catching it
+      // is repair-staleness territory, not the birth check's.
+      // Timed out → unknown, fail open as above.
       const recheck = await this.#run(["list-panes", "-t", sessionName, "-F", "#{pane_dead}"]);
       dead = !recheck.timedOut && (recheck.exitCode !== 0 || recheck.stdout.includes("1"));
       if (!dead) return;

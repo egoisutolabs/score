@@ -15,7 +15,9 @@ afterEach(async () => {
 
 class RecordingRunner implements CommandRunner {
   readonly commands: string[][] = [];
-  responses: Array<number | { exitCode?: number; stdout?: string; timedOut?: boolean }> = [];
+  responses: Array<
+    number | { exitCode?: number; stdout?: string; stderr?: string; timedOut?: boolean }
+  > = [];
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.commands.push([...command]);
@@ -23,6 +25,7 @@ class RecordingRunner implements CommandRunner {
     const {
       exitCode = 0,
       stdout = "",
+      stderr = "",
       timedOut = false,
     } = typeof response === "number" ? { exitCode: response } : response;
     return {
@@ -30,7 +33,7 @@ class RecordingRunner implements CommandRunner {
       cwd: options.cwd,
       exitCode,
       stdout,
-      stderr: "",
+      stderr,
       timedOut,
       dryRun: false,
     };
@@ -357,6 +360,29 @@ test("a live agent whose option restore fails is reclaimed before the throw", as
     service.startImplementation(work, "do the task", { harness: "claude" }),
   ).rejects.toThrow("exited 1");
   expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
+});
+
+test("a spawn losing a name race does not kill the session it collided with", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none at check time
+    // Another actor claimed the name between the check and new-session:
+    // nothing was created, so there is nothing of ours to reclaim.
+    { exitCode: 1, stderr: "duplicate session: issue-7" },
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("duplicate session");
+  expect(runner.commands.some((command) => command[1] === "kill-session")).toBe(false);
 });
 
 test("dry-run spawns no session and runs no birth check", async () => {

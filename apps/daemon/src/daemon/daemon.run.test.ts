@@ -245,14 +245,15 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
         "gh",
         "tmux",
         "tmux",
+        "git",
+        "git",
         "claude",
-        "git",
-        "git",
       ]);
       // The configured model is proven with the CLI's own print mode (#45):
       // an invalid model zombifies interactive sessions instead of dying, so
-      // only a real model call can catch it before dispatch.
-      const probe = runner.calls.find((call) => call.command[0] === "claude");
+      // only a real model call can catch it before dispatch. Billable, so it
+      // must come LAST — after every free local check.
+      const probe = runner.calls.at(-1);
       expect(probe?.command.slice(0, 3)).toEqual(["claude", "--model", "claude-sonnet-5"]);
       expect(probe?.command).toContain("-p");
     },
