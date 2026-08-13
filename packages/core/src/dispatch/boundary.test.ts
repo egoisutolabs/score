@@ -19,15 +19,20 @@ it("the shape regex catches a reintroduced literal", () => {
 });
 
 it("no issue-shape literal outside dispatch.identity.ts", async () => {
-  const packagesRoot = join(import.meta.dirname, "..", "..", "..");
+  const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
   const offenders: string[] = [];
-  for (const entry of await readdir(packagesRoot, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-    if (entry.name.endsWith(".test.ts") || entry.name === "dispatch.identity.ts") continue;
-    const path = join(entry.parentPath, entry.name);
-    if (path.includes(`${sep}node_modules${sep}`)) continue;
-    if (!path.includes(`${sep}src${sep}`)) continue;
-    if (SHAPE_LITERAL.test(await readFile(path, "utf8"))) offenders.push(path);
+  for (const top of ["apps", "packages"]) {
+    for (const entry of await readdir(join(repoRoot, top), {
+      recursive: true,
+      withFileTypes: true,
+    })) {
+      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+      if (entry.name.endsWith(".test.ts") || entry.name === "dispatch.identity.ts") continue;
+      const path = join(entry.parentPath, entry.name);
+      if (path.includes(`${sep}node_modules${sep}`)) continue;
+      if (!path.includes(`${sep}src${sep}`)) continue;
+      if (SHAPE_LITERAL.test(await readFile(path, "utf8"))) offenders.push(path);
+    }
   }
   expect(offenders).toEqual([]);
 });

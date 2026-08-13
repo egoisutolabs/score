@@ -42,7 +42,12 @@ export function issueBranchPrefix(issueNumber: number): string {
   return `issue-${issueNumber}-`;
 }
 
-/** Ownership test for the branch shape createWorkIdentity mints. */
+/**
+ * Ownership predicate shared by dispatch, landing, and the tracker: all
+ * consumers must agree on which branches are Score's own, or a shape change
+ * here silently orphans in-flight work at whichever site kept a private
+ * re-derivation — the archetype-B drift #40 removes.
+ */
 export function isIssueBranch(name: string): boolean {
   return /^issue-\d+-/.test(name);
 }
