@@ -82,6 +82,29 @@ test("review-thread observation follows pagination cursors and sums every page",
   expect(runner.commands[1]).toContain("cursor=C1");
 });
 
+test("a later page failure preserves already-proven unresolved threads as a lower bound", async () => {
+  const page = (nodes: { isResolved: boolean }[], pageInfo: unknown) =>
+    JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { pageInfo, nodes } } } },
+    });
+  const positive = new RecordingRunner();
+  positive.responses = [
+    page([{ isResolved: false }], { hasNextPage: true, endCursor: "C1" }),
+    "not json",
+  ];
+  const github = new GitHubService(positive, { repositoryPath: "/repo", repository: "o/r" });
+  expect(await github.unresolvedThreadCount(7)).toBe(1);
+
+  // With nothing proven yet, the failure propagates (landing fails closed).
+  const empty = new RecordingRunner();
+  empty.responses = [
+    page([{ isResolved: true }], { hasNextPage: true, endCursor: "C1" }),
+    "not json",
+  ];
+  const github2 = new GitHubService(empty, { repositoryPath: "/repo", repository: "o/r" });
+  await expect(github2.unresolvedThreadCount(7)).rejects.toThrow("invalid JSON");
+});
+
 test("a list page that fills the limit is refetched larger until the result fits", async () => {
   const heads = (count: number) =>
     Array.from({ length: count }, (_, i) => ({ number: i + 1, headRefName: `issue-${i + 1}-x` }));

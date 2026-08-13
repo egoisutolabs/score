@@ -129,10 +129,13 @@ export function parseUnresolvedThreadPage(value: unknown): ReviewThreadPage {
   const unresolved = arrayValue(reviewThreads.nodes, "github.graphql.reviewThreads.nodes").filter(
     (node, index) => !objectValue(node, `github.graphql.reviewThreads.nodes[${index}]`).isResolved,
   ).length;
-  const pageInfo = optionalObject(reviewThreads.pageInfo);
-  const hasNextPage =
-    pageInfo !== null &&
-    booleanValue(pageInfo.hasNextPage, "github.graphql.reviewThreads.pageInfo.hasNextPage");
+  // pageInfo is required evidence once threads exist: a response without it
+  // cannot prove the observation is complete, so it must not read as one page.
+  const pageInfo = objectValue(reviewThreads.pageInfo, "github.graphql.reviewThreads.pageInfo");
+  const hasNextPage = booleanValue(
+    pageInfo.hasNextPage,
+    "github.graphql.reviewThreads.pageInfo.hasNextPage",
+  );
   return {
     unresolved,
     // A truncated page without a cursor is malformed evidence, not an end of

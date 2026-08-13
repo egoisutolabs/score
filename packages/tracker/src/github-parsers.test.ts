@@ -78,6 +78,9 @@ test("a truncated review-thread page surfaces its cursor; a cursorless truncatio
   expect(() => parseUnresolvedThreadPage(page({ hasNextPage: true, endCursor: null }))).toThrow(
     "endCursor",
   );
+  // Threads without pageInfo cannot prove completeness — never "one page".
+  expect(() => parseUnresolvedThreadPage(page(undefined))).toThrow("pageInfo");
+  expect(() => parseUnresolvedThreadPage(page(null))).toThrow("pageInfo");
 });
 
 test("GitHub pull-request parser preserves typed check variants", () => {

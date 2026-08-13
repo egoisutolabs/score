@@ -22,6 +22,7 @@ import {
   parseGithubPullRequests,
   parseRepositoryName,
   parseUnresolvedThreadPage,
+  type ReviewThreadPage,
 } from "@score/tracker/github-parsers";
 
 /**
@@ -181,21 +182,30 @@ export class GitHubService implements WorkSource, ChangeHost {
     let unresolved = 0;
     let cursor: string | null = null;
     do {
-      const page = parseUnresolvedThreadPage(
-        await this.#json([
-          "api",
-          "graphql",
-          "-f",
-          `query=${query}`,
-          "-F",
-          `owner=${owner}`,
-          "-F",
-          `repo=${name}`,
-          "-F",
-          `num=${pullRequestNumber}`,
-          ...(cursor === null ? [] : ["-f", `cursor=${cursor}`]),
-        ]),
-      );
+      let page: ReviewThreadPage;
+      try {
+        page = parseUnresolvedThreadPage(
+          await this.#json([
+            "api",
+            "graphql",
+            "-f",
+            `query=${query}`,
+            "-F",
+            `owner=${owner}`,
+            "-F",
+            `repo=${name}`,
+            "-F",
+            `num=${pullRequestNumber}`,
+            ...(cursor === null ? [] : ["-f", `cursor=${cursor}`]),
+          ]),
+        );
+      } catch (error) {
+        // A proven unresolved thread outlives a later page failure: the
+        // partial count is a lower bound, enough for landing to block and
+        // repair to act. With nothing proven yet, the failure propagates.
+        if (unresolved > 0) return unresolved;
+        throw error;
+      }
       unresolved += page.unresolved;
       cursor = page.endCursor;
     } while (cursor !== null);
