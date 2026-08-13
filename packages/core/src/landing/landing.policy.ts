@@ -1,3 +1,4 @@
+import { isIssueBranch } from "@score/core/dispatch/dispatch.identity";
 import type {
   BuildGate,
   LandingResult,
@@ -18,7 +19,7 @@ export function listLandingCandidates(
 ): readonly PullRequestObservation[] {
   return changes
     .filter((change) => !change.isDraft)
-    .filter((change) => !policy.onlyIssueBranches || /^issue-\d+-/.test(change.headRefName))
+    .filter((change) => !policy.onlyIssueBranches || isIssueBranch(change.headRefName))
     .filter((change) => {
       const labels = change.labels.map((label) => label.name.toLowerCase());
       return !labels.some((label) => policy.skipLabels.includes(label));

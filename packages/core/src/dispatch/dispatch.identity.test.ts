@@ -1,5 +1,8 @@
 import {
   createWorkIdentity,
+  isIssueBranch,
+  issueBranchPrefix,
+  issueSessionSuffixPattern,
   repairSessionName,
   sessionNameForIssue,
 } from "@score/core/dispatch/dispatch.identity";
@@ -53,6 +56,31 @@ test("every valid project key yields tmux-valid session names", () => {
       }
     }
   }
+});
+
+test("issueBranchPrefix reproduces the in-flight probe's literal byte-for-byte", () => {
+  expect(issueBranchPrefix(12)).toBe("issue-12-");
+  expect(createWorkIdentity("/wt", issue).branch.startsWith(issueBranchPrefix(12))).toBe(true);
+});
+
+test("isIssueBranch accepts and rejects exactly what /^issue-\\d+-/ did", () => {
+  expect(isIssueBranch("issue-12-fleet-supervisor")).toBe(true);
+  expect(isIssueBranch("issue-1-x")).toBe(true);
+  // Prefix-only, non-numeric, unanchored, and missing-dash shapes all miss.
+  expect(isIssueBranch("issue-12")).toBe(false);
+  expect(isIssueBranch("issue-")).toBe(false);
+  expect(isIssueBranch("issue-abc-thing")).toBe(false);
+  expect(isIssueBranch("my-issue-1-x")).toBe(false);
+  expect(isIssueBranch("score-demo-issue-12-x")).toBe(false);
+  expect(isIssueBranch("")).toBe(false);
+});
+
+test("session suffix templates keep today's values byte-for-byte", () => {
+  // The legacy unmanaged quirk pinned exactly (see issueSessionSuffixPattern).
+  expect(issueSessionSuffixPattern(undefined)).toBe("^issue-%N");
+  expect(issueSessionSuffixPattern("demo")).toBe("^score-demo-issue-%N");
+  expect(sessionSuffixForNamespace(undefined)).toBe("^issue-%N");
+  expect(sessionSuffixForNamespace("demo")).toBe("^score-demo-issue-%N");
 });
 
 test("repair's namespaced suffix matches exactly its own dispatch sessions", () => {
