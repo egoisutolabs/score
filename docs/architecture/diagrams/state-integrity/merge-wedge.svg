@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 640" font-family="ui-sans-serif, -apple-system, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arrred2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#ef4444"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="640" fill="#f8f9fa"/>
+
+  <text x="620" y="44" text-anchor="middle" font-size="25" font-weight="700" fill="#111827">The committed-but-unpushed merge wedge (issue 2)</text>
+  <text x="620" y="70" text-anchor="middle" font-size="13.5" fill="#6b7280">the one known archetype-A instance with no recovery today — its tracking issue (#4) closed with the fleet epic</text>
+
+  <!-- Landing tick lane -->
+  <text x="60" y="122" font-size="13" font-weight="700" fill="#52525b">LANDING TICK</text>
+  <line x1="60" y1="134" x2="1180" y2="134" stroke="#e4e4e7" stroke-width="1.5"/>
+
+  <rect x="60" y="152" width="180" height="56" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="150" y="176" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14532d">stageMerge ✓</text>
+  <text x="150" y="195" text-anchor="middle" font-size="11.5" fill="#374151">MERGE_HEAD exists</text>
+
+  <rect x="290" y="152" width="180" height="56" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="380" y="176" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14532d">gates + soak ✓</text>
+  <text x="380" y="195" text-anchor="middle" font-size="11.5" fill="#374151">make verify, threads, ticks</text>
+
+  <rect x="520" y="152" width="180" height="56" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="610" y="176" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14532d">commitMerge ✓</text>
+  <text x="610" y="195" text-anchor="middle" font-size="11.5" fill="#374151">MERGE_HEAD gone</text>
+
+  <rect x="750" y="152" width="180" height="56" rx="8" fill="#ffffff" stroke="#d4d4d8" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="840" y="176" text-anchor="middle" font-size="12.5" font-weight="600" fill="#9ca3af">pushDefaultBranch</text>
+  <text x="840" y="195" text-anchor="middle" font-size="11.5" fill="#9ca3af">never runs</text>
+
+  <line x1="240" y1="180" x2="290" y2="180" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arr2)"/>
+  <line x1="470" y1="180" x2="520" y2="180" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arr2)"/>
+  <line x1="700" y1="180" x2="750" y2="180" stroke="#ef4444" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrred2)"/>
+
+  <!-- death marker -->
+  <circle cx="725" cy="180" r="17" fill="#fef2f2" stroke="#ef4444" stroke-width="2.2"/>
+  <text x="725" y="186" text-anchor="middle" font-size="15" font-weight="700" fill="#b91c1c">✗</text>
+  <text x="725" y="236" text-anchor="middle" font-size="12" font-weight="600" fill="#b91c1c">daemon dies here</text>
+  <text x="725" y="254" text-anchor="middle" font-size="11.5" fill="#7f1d1d">(SIGKILL, crash, power)</text>
+
+  <!-- resulting state -->
+  <rect x="960" y="140" width="220" height="80" rx="9" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.8"/>
+  <text x="1070" y="166" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b91c1c">local main: vetted merge</text>
+  <text x="1070" y="186" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b91c1c">origin/main: never got it</text>
+  <text x="1070" y="207" text-anchor="middle" font-size="11.5" fill="#7f1d1d">ahead, not diverged · no MERGE_HEAD</text>
+
+  <!-- Next boot lane -->
+  <text x="60" y="316" font-size="13" font-weight="700" fill="#52525b">EVERY LATER BOOT AND TICK</text>
+  <line x1="60" y1="328" x2="1180" y2="328" stroke="#e4e4e7" stroke-width="1.5"/>
+
+  <rect x="60" y="348" width="330" height="72" rx="8" fill="#ffffff" stroke="#d4d4d8" stroke-width="2"/>
+  <text x="225" y="374" text-anchor="middle" font-size="12.5" font-weight="600" fill="#374151">selfHealStagedMerge</text>
+  <text x="225" y="394" text-anchor="middle" font-size="11.5" fill="#6b7280">looks for MERGE_HEAD — finds none</text>
+  <text x="225" y="411" text-anchor="middle" font-size="11.5" fill="#6b7280">"nothing to abort", walks past the wedge</text>
+
+  <rect x="440" y="348" width="330" height="72" rx="8" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.8"/>
+  <text x="605" y="374" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b91c1c">silent limbo (descendant, not diverged)</text>
+  <text x="605" y="394" text-anchor="middle" font-size="11.5" fill="#7f1d1d">--ff-only no-ops; the PR never closes;</text>
+  <text x="605" y="411" text-anchor="middle" font-size="11.5" fill="#7f1d1d">true divergence once origin advances</text>
+
+  <rect x="820" y="348" width="360" height="72" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="2"/>
+  <text x="1000" y="374" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b91c1c">stranded until reconciled — also reachable</text>
+  <text x="1000" y="394" text-anchor="middle" font-size="11.5" fill="#7f1d1d">with NO crash: push throws, phase error is</text>
+  <text x="1000" y="411" text-anchor="middle" font-size="11.5" fill="#7f1d1d">caught, daemon lives → per-tick reconcile (D1)</text>
+
+  <line x1="390" y1="384" x2="440" y2="384" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arr2)"/>
+  <line x1="770" y1="384" x2="820" y2="384" stroke="#ef4444" stroke-width="2" marker-end="url(#arrred2)"/>
+
+  <!-- recovery decision -->
+  <rect x="60" y="472" width="1120" height="112" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.8"/>
+  <text x="620" y="502" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">Issue 2, per locked D1 — reset and re-land: no MERGE_HEAD but local main ahead of origin?</text>
+  <text x="620" y="527" text-anchor="middle" font-size="12.5" fill="#78350f">If the commit is provably landing-authored (merge commit · landing's message template · first parent an ancestor of origin's head · landing's committer stamp)</text>
+  <text x="620" y="547" text-anchor="middle" font-size="12.5" fill="#78350f">and the checkout is on the default branch with a clean tree → reset local main to origin; the still-open PR re-gates and re-merges on the normal tick.</text>
+  <text x="620" y="571" text-anchor="middle" font-size="12" fill="#a16207">anything else — unstamped, dirty tree, wrong branch — refuses loudly, left untouched · landing stays the only push site · dry-run mutates nothing</text>
+
+  <text x="1200" y="622" text-anchor="end" font-size="12" fill="#9ca3af">score · state-integrity epic · merge wedge · 2026-08-13</text>
+</svg>

@@ -1,21 +1,19 @@
+import { issueSessionSuffixPattern } from "@score/core/dispatch/dispatch.identity";
 import { VERIFY_COMMAND } from "@score/core/verify";
 
 /**
- * Must match the session names dispatch creates (`issue-N` in identity.ts).
- * Legacy defaulted to "-issue-%N", which never matched its own "issue-N"
- * sessions, so repair silently always spawned instead of pinging. Anchored so
- * an unrelated session like "my-issue-1" can't be pinged by mistake.
+ * The unmanaged template, legacy anchor quirk included — the shape and its
+ * history live with issueSessionSuffixPattern in dispatch.identity.ts.
  */
-export const DEFAULT_SESSION_SUFFIX = "^issue-%N";
+export const DEFAULT_SESSION_SUFFIX = issueSessionSuffixPattern(undefined);
 
 /**
  * A managed daemon matches exactly the sessions its own dispatch creates
- * (`score-<key>-issue-N`, see sessionNameForIssue) — a bare or foreign-project
- * session must never be pinged. Identity's naming and this template are tied
- * together by a test.
+ * (see sessionNameForIssue) — a bare or foreign-project session must never be
+ * pinged. Identity's naming and this template are tied together by a test.
  */
 export function sessionSuffixForNamespace(namespace: string | undefined): string {
-  return namespace === undefined ? DEFAULT_SESSION_SUFFIX : `^score-${namespace}-issue-%N`;
+  return issueSessionSuffixPattern(namespace);
 }
 
 export interface RepairDefects {

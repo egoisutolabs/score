@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 780" font-family="ui-sans-serif, -apple-system, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#6b7280"/>
+    </marker>
+    <marker id="arrred" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#ef4444"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="780" fill="#f8f9fa"/>
+
+  <text x="620" y="44" text-anchor="middle" font-size="25" font-weight="700" fill="#111827">The two bug archetypes — every defect from the opencode epic was one of these</text>
+  <text x="620" y="70" text-anchor="middle" font-size="13.5" fill="#6b7280">this epic hunts the remaining instances instead of waiting for review to find them one at a time</text>
+
+  <!-- ============ Archetype A ============ -->
+  <rect x="40" y="100" width="600" height="520" rx="12" fill="#ffffff" stroke="#d4d4d8" stroke-width="2"/>
+  <text x="340" y="134" text-anchor="middle" font-size="17.5" font-weight="700" fill="#111827">A — stranded partial state</text>
+  <text x="340" y="157" text-anchor="middle" font-size="12.5" fill="#6b7280">a multi-step writer dies mid-sequence; the leftover reads as "in flight" forever</text>
+
+  <!-- step flow -->
+  <rect x="70" y="182" width="130" height="46" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="135" y="203" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14532d">step 1 ✓</text>
+  <text x="135" y="220" text-anchor="middle" font-size="11.5" fill="#374151">create worktree</text>
+
+  <rect x="240" y="182" width="130" height="46" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+  <text x="305" y="203" text-anchor="middle" font-size="12.5" font-weight="600" fill="#14532d">step 2 ✓</text>
+  <text x="305" y="220" text-anchor="middle" font-size="11.5" fill="#374151">create session</text>
+
+  <rect x="410" y="182" width="130" height="46" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="2.2"/>
+  <text x="475" y="203" text-anchor="middle" font-size="12.5" font-weight="700" fill="#b91c1c">step 3 ✗ dies</text>
+  <text x="475" y="220" text-anchor="middle" font-size="11.5" fill="#7f1d1d">deliver the brief</text>
+
+  <line x1="200" y1="205" x2="240" y2="205" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arr)"/>
+  <line x1="370" y1="205" x2="410" y2="205" stroke="#6b7280" stroke-width="1.8" marker-end="url(#arr)"/>
+
+  <line x1="475" y1="228" x2="475" y2="266" stroke="#ef4444" stroke-width="1.8" marker-end="url(#arrred)"/>
+  <rect x="250" y="266" width="360" height="52" rx="8" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.6"/>
+  <text x="430" y="288" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b91c1c">leftover state with no owner</text>
+  <text x="430" y="307" text-anchor="middle" font-size="11.5" fill="#7f1d1d">next tick: #alreadyInFlight sees it → issue never retried</text>
+
+  <!-- instance table A -->
+  <text x="70" y="356" font-size="12.5" font-weight="700" fill="#52525b">INSTANCES</text>
+  <line x1="70" y1="366" x2="610" y2="366" stroke="#e4e4e7" stroke-width="1.5"/>
+
+  <text x="70" y="392" font-size="12.5" fill="#374151">dispatch: worktree + brief, launch fails</text>
+  <rect x="470" y="376" width="140" height="24" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="540" y="393" text-anchor="middle" font-size="11" font-weight="600" fill="#15803d">FIXED · PR #31</text>
+
+  <text x="70" y="426" font-size="12.5" fill="#374151">opencode: session created, never prompted</text>
+  <rect x="470" y="410" width="140" height="24" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="540" y="427" text-anchor="middle" font-size="11" font-weight="600" fill="#15803d">FIXED · PR #31</text>
+
+  <text x="70" y="460" font-size="12.5" fill="#374151">.claude seed blocking cleanup's allowlist</text>
+  <rect x="470" y="444" width="140" height="24" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="540" y="461" text-anchor="middle" font-size="11" font-weight="600" fill="#15803d">FIXED · PR #31</text>
+
+  <text x="70" y="494" font-size="12.5" font-weight="600" fill="#374151">landing: commit lands, push never runs</text>
+  <rect x="470" y="478" width="140" height="24" rx="12" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="540" y="495" text-anchor="middle" font-size="11" font-weight="700" fill="#b91c1c">WEDGE · issue 2</text>
+
+  <text x="70" y="528" font-size="12.5" fill="#374151">tmux/opencode repair chains, cleanup remove→delete</text>
+  <rect x="470" y="512" width="140" height="24" rx="12" fill="#fffbeb" stroke="#fcd34d"/>
+  <text x="540" y="529" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">UNPROVEN · issue 3</text>
+
+  <text x="70" y="570" font-size="12" fill="#6b7280">fix pattern: every writer rolls back or reconciles its own partial</text>
+  <text x="70" y="589" font-size="12" fill="#6b7280">state — a death at any step costs one retried tick, nothing more</text>
+
+  <!-- ============ Archetype B ============ -->
+  <rect x="670" y="100" width="530" height="520" rx="12" fill="#ffffff" stroke="#d4d4d8" stroke-width="2"/>
+  <text x="935" y="134" text-anchor="middle" font-size="17.5" font-weight="700" fill="#111827">B — identity drift</text>
+  <text x="935" y="157" text-anchor="middle" font-size="12.5" fill="#6b7280">the same name derived in two places, disagreeing</text>
+
+  <rect x="700" y="182" width="220" height="62" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+  <text x="810" y="206" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1e40af">writer creates</text>
+  <text x="810" y="228" text-anchor="middle" font-size="12" font-family="ui-monospace, Menlo, monospace" fill="#1e3a8a">score-ns-shepherd-pr-7</text>
+
+  <rect x="950" y="182" width="220" height="62" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1060" y="206" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1e40af">reader expects</text>
+  <text x="1060" y="228" text-anchor="middle" font-size="12" font-family="ui-monospace, Menlo, monospace" fill="#1e3a8a">shepherd-pr-7</text>
+
+  <text x="935" y="219" text-anchor="middle" font-size="20" font-weight="700" fill="#ef4444">≠</text>
+
+  <rect x="760" y="268" width="350" height="50" rx="8" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.6"/>
+  <text x="935" y="289" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b91c1c">liveness check never matches</text>
+  <text x="935" y="308" text-anchor="middle" font-size="11.5" fill="#7f1d1d">every tick tears down the live repair and recreates it</text>
+
+  <!-- instance table B -->
+  <text x="700" y="356" font-size="12.5" font-weight="700" fill="#52525b">INSTANCES</text>
+  <line x1="700" y1="366" x2="1170" y2="366" stroke="#e4e4e7" stroke-width="1.5"/>
+
+  <text x="700" y="392" font-size="12.5" fill="#374151">repair ledger vs adapters' session names</text>
+  <rect x="1030" y="376" width="140" height="24" rx="12" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="1100" y="393" text-anchor="middle" font-size="11" font-weight="600" fill="#15803d">FIXED · PR #31</text>
+
+  <text x="700" y="426" font-size="12.5" font-weight="600" fill="#374151">repair.policy: session shape as regex strings</text>
+  <rect x="1030" y="410" width="140" height="24" rx="12" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="1100" y="427" text-anchor="middle" font-size="11" font-weight="700" fill="#b91c1c">OPEN · issue 1</text>
+
+  <text x="700" y="460" font-size="12.5" font-weight="600" fill="#374151">dispatch + landing: issue-N- branch literals</text>
+  <rect x="1030" y="444" width="140" height="24" rx="12" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="1100" y="461" text-anchor="middle" font-size="11" font-weight="700" fill="#b91c1c">OPEN · issue 1</text>
+
+  <text x="700" y="502" font-size="12" fill="#6b7280">fix pattern: dispatch.identity.ts is the single source for every</text>
+  <text x="700" y="521" font-size="12" fill="#6b7280">name shape; consumers import functions, never re-derive literals.</text>
+  <text x="700" y="540" font-size="12" fill="#6b7280">A boundary test fails the build if a shape literal reappears</text>
+  <text x="700" y="559" font-size="12" fill="#6b7280">outside the identity module (issue 1).</text>
+
+  <!-- convergence strip -->
+  <rect x="40" y="648" width="1160" height="86" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.8"/>
+  <text x="620" y="678" text-anchor="middle" font-size="14" font-weight="700" fill="#92400e">Convergence (issue 4): both fix patterns become INVARIANTS.md rules, referenced by AGENTS.md's Code Review Rules —</text>
+  <text x="620" y="702" text-anchor="middle" font-size="13" fill="#78350f">multi-step external mutations roll back or reconcile; identities are derived in exactly one place.</text>
+  <text x="620" y="722" text-anchor="middle" font-size="12" fill="#a16207">from then on the review layer catches new instances on every PR, before they merge.</text>
+
+  <text x="1200" y="764" text-anchor="end" font-size="12" fill="#9ca3af">score · state-integrity epic · archetypes · 2026-08-13</text>
+</svg>
