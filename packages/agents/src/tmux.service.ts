@@ -92,7 +92,7 @@ export class TmuxService implements AgentRuntime {
         true,
       ),
     );
-    await this.#assertBornAlive(identity.sessionName);
+    await this.#assertBornAlive(identity.sessionName, false);
   }
 
   async ping(sessionName: string, message: string): Promise<void> {
@@ -141,7 +141,7 @@ export class TmuxService implements AgentRuntime {
         true,
       ),
     );
-    await this.#assertBornAlive(sessionName);
+    await this.#assertBornAlive(sessionName, true);
   }
 
   async stop(sessionName: string): Promise<void> {
@@ -156,23 +156,44 @@ export class TmuxService implements AgentRuntime {
    * be read here; dead → capture its dying output, reclaim the session, and
    * throw so the caller's rollback fires with the agent's actual error.
    * Alive → remain-on-exit goes back off, restoring today's
-   * exit-closes-session behavior. The repair wrapper's bash never exits (it
-   * parks at `read`), so its `EXIT:<n>` echo inside the grace window is the
-   * equivalent death signal there.
+   * exit-closes-session behavior. `wrapperExitMarker` (repair only): the
+   * repair wrapper's bash never exits (it parks at `read`), so its `EXIT:<n>`
+   * echo inside the grace window is the equivalent death signal there — never
+   * checked for implementation panes, where arbitrary live TUI content could
+   * collide with the pattern.
    */
-  async #assertBornAlive(sessionName: string): Promise<void> {
+  async #assertBornAlive(sessionName: string, wrapperExitMarker: boolean): Promise<void> {
     if (this.options.dryRun) return;
     await sleep(this.#birthGraceMs);
     const panes = await this.#run(["list-panes", "-t", sessionName, "-F", "#{pane_dead}"]);
     const capture = await this.#run(["capture-pane", "-p", "-t", sessionName]);
+    // A timed-out probe is an unresponsive server, not proof of death.
+    // Killing a possibly-live agent over an observation failure is strictly
+    // worse than missing a death (which merely degrades to the pre-birth-check
+    // behavior), so fail open, best-effort restoring normal exit behavior.
+    if (panes.timedOut || capture.timedOut) {
+      await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true);
+      return;
+    }
     // list-panes failing means the session is gone entirely (remain-on-exit
     // could not hold it) — dead by definition, with no output to capture.
     const dead =
-      panes.exitCode !== 0 || panes.stdout.includes("1") || /^EXIT:\d+/m.test(capture.stdout);
+      panes.exitCode !== 0 ||
+      panes.stdout.includes("1") ||
+      (wrapperExitMarker && /^EXIT:\d+/m.test(capture.stdout));
     if (!dead) {
-      requireSuccess(
-        await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true),
+      const restore = await this.#run(
+        ["set-option", "-t", sessionName, "remain-on-exit", "off"],
+        true,
       );
+      // A failed restore still throws (the session would linger forever once
+      // its agent exits), but the live agent must not survive it: the caller's
+      // rollback deletes the worktree under it, and the session would block
+      // every retry as ALREADY_IN_FLIGHT. Reclaim first, then propagate.
+      if (restore.exitCode !== 0 || restore.timedOut) {
+        await this.#run(["kill-session", "-t", sessionName], true);
+      }
+      requireSuccess(restore);
       return;
     }
     const killed = await this.#run(["kill-session", "-t", sessionName], true);

@@ -15,20 +15,23 @@ afterEach(async () => {
 
 class RecordingRunner implements CommandRunner {
   readonly commands: string[][] = [];
-  responses: Array<number | { exitCode?: number; stdout?: string }> = [];
+  responses: Array<number | { exitCode?: number; stdout?: string; timedOut?: boolean }> = [];
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.commands.push([...command]);
     const response = this.responses.shift() ?? 0;
-    const { exitCode = 0, stdout = "" } =
-      typeof response === "number" ? { exitCode: response } : response;
+    const {
+      exitCode = 0,
+      stdout = "",
+      timedOut = false,
+    } = typeof response === "number" ? { exitCode: response } : response;
     return {
       command,
       cwd: options.cwd,
       exitCode,
       stdout,
       stderr: "",
-      timedOut: false,
+      timedOut,
       dryRun: false,
     };
   }
@@ -195,6 +198,94 @@ test("a session that vanished entirely at birth still fails the launch", async (
   await expect(
     service.startImplementation(work, "do the task", { harness: "claude" }),
   ).rejects.toThrow("agent died at birth in tmux session 'issue-7' (no output captured)");
+});
+
+test("an EXIT-looking line in a live implementation pane is not a death signal", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "0\n" }, // list-panes: pane alive
+    { stdout: "EXIT:1\nsome TUI content\n" }, // coincidental pane content
+    0, // set-option off
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  // The EXIT marker belongs to the repair wrapper only; a live implementation
+  // pane containing such a line must not be killed.
+  await service.startImplementation(work, "do the task", { harness: "claude" });
+  expect(runner.commands.at(-1)).toEqual([
+    "tmux",
+    "set-option",
+    "-t",
+    "issue-7",
+    "remain-on-exit",
+    "off",
+  ]);
+});
+
+test("a timed-out liveness probe fails open instead of killing a possibly-live agent", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { exitCode: -1, timedOut: true }, // list-panes: server unresponsive
+    { stdout: "" },
+    0, // best-effort set-option off
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await service.startImplementation(work, "do the task", { harness: "claude" });
+  expect(runner.commands.some((command) => command[1] === "kill-session")).toBe(false);
+  expect(runner.commands.at(-1)).toEqual([
+    "tmux",
+    "set-option",
+    "-t",
+    "issue-7",
+    "remain-on-exit",
+    "off",
+  ]);
+});
+
+test("a live agent whose option restore fails is reclaimed before the throw", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "0\n" }, // list-panes: pane alive
+    { stdout: "" },
+    { exitCode: 1 }, // set-option off fails
+    0, // kill-session
+  ];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  // The rollback the throw triggers deletes the worktree; a live agent must
+  // not survive inside it, nor block the retry as ALREADY_IN_FLIGHT.
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("exited 1");
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
 });
 
 test("dry-run spawns no session and runs no birth check", async () => {
