@@ -464,6 +464,61 @@ test("repair spawn writes the prompt under promptsDir and namespaces the session
   expect(shell).toContain("echo EXIT:$?");
 });
 
+// startRepair boundary audit (#42): kill the writer at each step boundary
+// (write prompt → kill-session → new-session) and assert the next pass converges.
+
+test("startRepair: kill-session finds nothing after a death before spawn — tolerated, spawn proceeds (SELF-HEALED)", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [1, 0]; // kill-session: no such session; new-session: ok
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const promptsDir = join(work.worktreePath, "..", "prompts");
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    namespace: "demo",
+    promptsDir,
+  });
+
+  await service.startRepair(12, work.worktreePath, "fix PR #12", { harness: "claude" });
+
+  expect(runner.commands.map((command) => command[1])).toEqual(["kill-session", "new-session"]);
+});
+
+test("startRepair: child dies at new-session — next pass overwrites the prompt and recovers kill-first (RETRIED)", async () => {
+  const runner = new RecordingRunner();
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const promptsDir = join(work.worktreePath, "..", "prompts");
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    namespace: "demo",
+    promptsDir,
+  });
+  const promptPath = join(promptsDir, "shepherd-pr-12.prompt");
+
+  runner.responses = [0, 1]; // kill-session ok, new-session dies
+  await expect(
+    service.startRepair(12, work.worktreePath, "first brief", { harness: "claude" }),
+  ).rejects.toThrow(/exited 1/);
+  // Leftover: only the prompt file; no session was created.
+  expect(await readFile(promptPath, "utf8")).toBe("first brief\n");
+
+  runner.responses = [1, 0]; // nothing to kill (spawn never happened), then spawn ok
+  await service.startRepair(12, work.worktreePath, "second brief", { harness: "claude" });
+
+  // Overwritten, not duplicated: exactly the new brief, delivered via $(cat).
+  expect(await readFile(promptPath, "utf8")).toBe("second brief\n");
+  expect(runner.commands.slice(2).map((command) => command[1])).toEqual([
+    "kill-session",
+    "new-session",
+  ]);
+  expect(runner.commands.at(-1)?.at(-1)).toContain(`"$(cat '${promptPath}')"`);
+});
+
 test("unmanaged repair spawn keeps today's /tmp prompt path and bare session name", async () => {
   const runner = new RecordingRunner();
   const work = await workIdentity(true);
