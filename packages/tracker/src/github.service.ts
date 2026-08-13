@@ -181,6 +181,7 @@ export class GitHubService implements WorkSource, ChangeHost {
       "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{isResolved}}}}}";
     let unresolved = 0;
     let cursor: string | null = null;
+    const seenCursors = new Set<string>();
     do {
       let page: ReviewThreadPage;
       try {
@@ -208,6 +209,15 @@ export class GitHubService implements WorkSource, ChangeHost {
       }
       unresolved += page.unresolved;
       cursor = page.endCursor;
+      // A repeated cursor would re-issue the same successful query forever
+      // (the runner timeout bounds one command, not this loop). Treat it as
+      // malformed pagination evidence, like a failed page: keep a proven
+      // lower bound, otherwise propagate.
+      if (cursor !== null && seenCursors.has(cursor)) {
+        if (unresolved > 0) return unresolved;
+        throw new Error(`github.graphql.reviewThreads cursor did not advance (${cursor})`);
+      }
+      if (cursor !== null) seenCursors.add(cursor);
     } while (cursor !== null);
     return unresolved;
   }

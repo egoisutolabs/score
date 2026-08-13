@@ -105,6 +105,31 @@ test("a later page failure preserves already-proven unresolved threads as a lowe
   await expect(github2.unresolvedThreadCount(7)).rejects.toThrow("invalid JSON");
 });
 
+test("a non-advancing review-thread cursor stops the loop instead of spinning forever", async () => {
+  const page = (nodes: { isResolved: boolean }[], endCursor: string) =>
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: { pageInfo: { hasNextPage: true, endCursor }, nodes },
+          },
+        },
+      },
+    });
+  // Proven unresolved threads survive the cycle as a lower bound; the
+  // repeated page is never re-requested, so nothing double-counts.
+  const positive = new RecordingRunner();
+  positive.responses = [page([{ isResolved: false }], "C1"), page([{ isResolved: false }], "C1")];
+  const github = new GitHubService(positive, { repositoryPath: "/repo", repository: "o/r" });
+  expect(await github.unresolvedThreadCount(7)).toBe(2);
+  expect(positive.commands).toHaveLength(2);
+
+  const empty = new RecordingRunner();
+  empty.responses = [page([{ isResolved: true }], "C1"), page([{ isResolved: true }], "C1")];
+  const github2 = new GitHubService(empty, { repositoryPath: "/repo", repository: "o/r" });
+  await expect(github2.unresolvedThreadCount(7)).rejects.toThrow("cursor did not advance");
+});
+
 test("a list page that fills the limit is refetched larger until the result fits", async () => {
   const heads = (count: number) =>
     Array.from({ length: count }, (_, i) => ({ number: i + 1, headRefName: `issue-${i + 1}-x` }));
