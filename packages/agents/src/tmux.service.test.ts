@@ -15,21 +15,36 @@ afterEach(async () => {
 
 class RecordingRunner implements CommandRunner {
   readonly commands: string[][] = [];
-  responses: number[] = [];
+  responses: Array<number | { exitCode?: number; stdout?: string }> = [];
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.commands.push([...command]);
+    const response = this.responses.shift() ?? 0;
+    const { exitCode = 0, stdout = "" } =
+      typeof response === "number" ? { exitCode: response } : response;
     return {
       command,
       cwd: options.cwd,
-      exitCode: this.responses.shift() ?? 0,
-      stdout: "",
+      exitCode,
+      stdout,
       stderr: "",
       timedOut: false,
       dryRun: false,
     };
   }
 }
+
+/** The trailing tmux command-sequence args pinning remain-on-exit at spawn. */
+const REMAIN_ON_EXIT = (session: string) => [
+  ";",
+  "set-option",
+  "-t",
+  session,
+  "remain-on-exit",
+  "on",
+];
+/** list-panes says alive; capture-pane empty; set-option off succeeds. */
+const ALIVE_BIRTH = [{ stdout: "0\n" }, { stdout: "" }, 0];
 
 async function workIdentity(createDirectory: boolean): Promise<WorkIdentity> {
   const root = await mkdtemp(join(tmpdir(), "score-tmux-test-"));
@@ -73,11 +88,15 @@ test("implementation launch refuses to clobber an existing issue session", async
 
 test("implementation launch starts the restored interactive Claude command", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0];
+  runner.responses = [1, 0, ...ALIVE_BIRTH];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
-  const service = new TmuxService(runner, { repositoryPath: "/repo", trustConfigPath });
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
 
   await service.startImplementation(work, "Read TASK.md and don't merge.", { harness: "claude" });
 
@@ -96,7 +115,11 @@ test("implementation launch starts the restored interactive Claude command", asy
       "-c",
       work.worktreePath,
       `'claude' 'Read TASK.md and don'"'"'t merge.'`,
+      ...REMAIN_ON_EXIT("issue-7"),
     ],
+    ["tmux", "list-panes", "-t", "issue-7", "-F", "#{pane_dead}"],
+    ["tmux", "capture-pane", "-p", "-t", "issue-7"],
+    ["tmux", "set-option", "-t", "issue-7", "remain-on-exit", "off"],
   ]);
   const launch = runner.commands[1]?.join(" ") ?? "";
   expect(launch).not.toContain(" -p ");
@@ -104,20 +127,85 @@ test("implementation launch starts the restored interactive Claude command", asy
   expect(launch).not.toContain("--model");
 });
 
-test("implementation launch pins the configured model through agentArgv", async () => {
+test("an agent that dies at birth fails the launch with its dying output", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0];
+  runner.responses = [
+    1, // has-session: none
+    0, // new-session
+    { stdout: "1\n" }, // list-panes: pane dead
+    { stdout: "claude: There's an issue with the selected model (fable-5)\n\n" },
+    0, // kill-session
+  ];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
-  const service = new TmuxService(runner, { repositoryPath: "/repo", trustConfigPath });
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow(
+    "agent died at birth in tmux session 'issue-7': claude: There's an issue with the selected model (fable-5)",
+  );
+  // The dead session is reclaimed so nothing blocks the issue's retry.
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "issue-7"]);
+});
+
+test("a session that vanished entirely at birth still fails the launch", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [1, 0, { exitCode: 1 }, { exitCode: 1 }, 0];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+
+  await expect(
+    service.startImplementation(work, "do the task", { harness: "claude" }),
+  ).rejects.toThrow("agent died at birth in tmux session 'issue-7' (no output captured)");
+});
+
+test("dry-run spawns no session and runs no birth check", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [1];
+  const work = await workIdentity(true);
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    dryRun: true,
+    birthGraceMs: 0,
+  });
+
+  await service.startImplementation(work, "do the task", { harness: "claude" });
+
+  // has-session then the (runner-gated) new-session — no liveness probes after.
+  expect(runner.commands).toHaveLength(2);
+  expect(runner.commands[1]?.[1]).toBe("new-session");
+});
+
+test("implementation launch pins the configured model through agentArgv", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [1, 0, ...ALIVE_BIRTH];
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
 
   await service.startImplementation(work, "do the task", {
     harness: "claude",
     model: "opus-4.6",
   });
 
-  expect(runner.commands[1]?.at(-1)).toBe(`'claude' '--model' 'opus-4.6' 'do the task'`);
+  expect(runner.commands[1]?.[7]).toBe(`'claude' '--model' 'opus-4.6' 'do the task'`);
 });
 
 test("repair spawn writes the prompt under promptsDir and namespaces the session", async () => {
@@ -131,6 +219,7 @@ test("repair spawn writes the prompt under promptsDir and namespaces the session
     trustConfigPath,
     namespace: "demo",
     promptsDir,
+    birthGraceMs: 0,
   });
 
   await service.startRepair(12, work.worktreePath, "fix PR #12", {
@@ -150,7 +239,8 @@ test("repair spawn writes the prompt under promptsDir and namespaces the session
     "-c",
     work.worktreePath,
   ]);
-  const shell = runner.commands[1]?.at(-1) ?? "";
+  expect(runner.commands[1]?.slice(10)).toEqual(REMAIN_ON_EXIT("score-demo-shepherd-pr-12"));
+  const shell = runner.commands[1]?.[9] ?? "";
   // The legacy wrapper is preserved; only the agent command inside it changed.
   expect(shell).toContain("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN");
   expect(shell).toContain(`export GITHUB_TOKEN="$(gh auth token)"`);
@@ -165,14 +255,44 @@ test("unmanaged repair spawn keeps today's /tmp prompt path and bare session nam
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
-  const service = new TmuxService(runner, { repositoryPath: "/repo", trustConfigPath });
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
 
   await service.startRepair(12, work.worktreePath, "fix PR #12", { harness: "claude" });
 
   expect(runner.commands[0]).toEqual(["tmux", "kill-session", "-t", "shepherd-pr-12"]);
   expect(runner.commands[1]?.slice(3, 5)).toEqual(["-s", "shepherd-pr-12"]);
-  const shell = runner.commands[1]?.at(-1) ?? "";
+  const shell = runner.commands[1]?.[9] ?? "";
   expect(shell).toContain(
     `'claude' "$(cat '/tmp/shepherd-pr-12.prompt')" --permission-mode bypassPermissions`,
   );
+});
+
+test("a repair agent that exits inside the grace window fails the spawn with its output", async () => {
+  const runner = new RecordingRunner();
+  const work = await workIdentity(true);
+  const trustConfigPath = join(work.worktreePath, "..", "claude.json");
+  await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
+  const service = new TmuxService(runner, {
+    repositoryPath: "/repo",
+    trustConfigPath,
+    birthGraceMs: 0,
+  });
+  runner.responses = [
+    0, // kill-session (pre-spawn sweep)
+    0, // new-session
+    // The bash wrapper parks at `read`, so the pane is NOT dead — the EXIT
+    // echo inside the grace window is the death signal.
+    { stdout: "0\n" },
+    { stdout: "bash: claude: command not found\nEXIT:127\n--- done; press enter to close ---\n" },
+    0, // kill-session (reclaim)
+  ];
+
+  await expect(
+    service.startRepair(12, work.worktreePath, "fix PR #12", { harness: "claude" }),
+  ).rejects.toThrow("agent died at birth in tmux session 'shepherd-pr-12'");
+  expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "shepherd-pr-12"]);
 });

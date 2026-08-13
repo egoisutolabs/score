@@ -245,11 +245,31 @@ test("managed bootstrap reads resolved.json from SCORE_HOME and ignores env tuni
         "gh",
         "tmux",
         "tmux",
+        "claude",
         "git",
         "git",
       ]);
+      // The configured model is proven with the CLI's own print mode (#45):
+      // an invalid model zombifies interactive sessions instead of dying, so
+      // only a real model call can catch it before dispatch.
+      const probe = runner.calls.find((call) => call.command[0] === "claude");
+      expect(probe?.command.slice(0, 3)).toEqual(["claude", "--model", "claude-sonnet-5"]);
+      expect(probe?.command).toContain("-p");
     },
   );
+});
+
+test("managed bootstrap fails when the configured model flunks the claude probe", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withEnv({ SCORE_HOME: home }, async () => {
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "claude") return { exitCode: 1 };
+      return managedResponses(repo)(command);
+    });
+    const parsed = parseDaemonArguments(["--project", "demo"]);
+    await expect(bootstrapDaemon(parsed, runner)).rejects.toThrow(/claude --model claude-sonnet-5/);
+  });
 });
 
 test("managed bootstrap fails when github_repo does not match the checkout's origin", async () => {

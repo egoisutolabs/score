@@ -271,6 +271,19 @@ async function preflightManagedRuntime(
       mutates: true,
       dryRun,
     });
+    // An invalid configured model does NOT die at birth — interactive claude
+    // parks at the REPL as a zombie (observed live on #45), evading the
+    // tmux birth check and every other runtime signal. One bounded
+    // print-mode call proves the model with the CLI's own error before any
+    // dispatch; cost is one tiny model call per daemon start.
+    if (project.agent.model !== undefined) {
+      requireSuccess(
+        await runner.run(
+          ["claude", "--model", project.agent.model, "-p", "Reply with the single word: ok"],
+          { cwd: project.mainLocation },
+        ),
+      );
+    }
   }
   let defaultBranch = "main";
   const branch = await runner.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], {

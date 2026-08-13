@@ -1,5 +1,7 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+// node:timers/promises, not Bun.sleep: the vitest suite runs this under Node.
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { defaultClaudeConfigPath, preseedWorktreeTrust } from "@score/agents/claude-trust";
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
@@ -21,12 +23,19 @@ interface TmuxServiceOptions {
   readonly namespace?: string;
   /** Managed mode: durable home for repair prompt files; /tmp otherwise. */
   readonly promptsDir?: string;
+  /**
+   * Wait before the birth liveness check. No legitimate agent finishes inside
+   * it, so a pane that died within it is a launch failure. Overridden small
+   * in tests.
+   */
+  readonly birthGraceMs?: number;
 }
 
 /** Durable local process adapter using argv-safe tmux commands. */
 export class TmuxService implements AgentRuntime {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
+  readonly #birthGraceMs: number;
 
   constructor(
     private readonly runner: CommandRunner,
@@ -34,6 +43,7 @@ export class TmuxService implements AgentRuntime {
   ) {
     this.#executable = this.options.executable ?? "tmux";
     this.#timeoutMs = this.options.timeoutMs;
+    this.#birthGraceMs = this.options.birthGraceMs ?? 3_000;
   }
 
   async preflight(): Promise<void> {
@@ -77,10 +87,12 @@ export class TmuxService implements AgentRuntime {
           "-c",
           identity.worktreePath,
           encodeTmuxShellCommand(agentArgv(agent, prompt)),
+          ...remainOnExit(identity.sessionName),
         ],
         true,
       ),
     );
+    await this.#assertBornAlive(identity.sessionName);
   }
 
   async ping(sessionName: string, message: string): Promise<void> {
@@ -114,14 +126,60 @@ export class TmuxService implements AgentRuntime {
     const shell = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; export GITHUB_TOKEN="$(gh auth token)"; ${agentCommand} "$(cat '${promptPath}')" --permission-mode bypassPermissions; echo EXIT:$?; echo '--- done; press enter to close ---'; read`;
     requireSuccess(
       await this.#run(
-        ["new-session", "-d", "-s", sessionName, "-c", worktreePath, "bash", "-lc", shell],
+        [
+          "new-session",
+          "-d",
+          "-s",
+          sessionName,
+          "-c",
+          worktreePath,
+          "bash",
+          "-lc",
+          shell,
+          ...remainOnExit(sessionName),
+        ],
         true,
       ),
     );
+    await this.#assertBornAlive(sessionName);
   }
 
   async stop(sessionName: string): Promise<void> {
     await this.#run(["kill-session", "-t", sessionName], true);
+  }
+
+  /**
+   * Birth check (#45): an agent that dies within the grace window otherwise
+   * vanishes silently — the session closes, dispatch already reported
+   * success, and the leftover worktree blocks every retry. The session is
+   * spawned with remain-on-exit on so the dead pane survives long enough to
+   * be read here; dead → capture its dying output, reclaim the session, and
+   * throw so the caller's rollback fires with the agent's actual error.
+   * Alive → remain-on-exit goes back off, restoring today's
+   * exit-closes-session behavior. The repair wrapper's bash never exits (it
+   * parks at `read`), so its `EXIT:<n>` echo inside the grace window is the
+   * equivalent death signal there.
+   */
+  async #assertBornAlive(sessionName: string): Promise<void> {
+    if (this.options.dryRun) return;
+    await sleep(this.#birthGraceMs);
+    const panes = await this.#run(["list-panes", "-t", sessionName, "-F", "#{pane_dead}"]);
+    const capture = await this.#run(["capture-pane", "-p", "-t", sessionName]);
+    // list-panes failing means the session is gone entirely (remain-on-exit
+    // could not hold it) — dead by definition, with no output to capture.
+    const dead =
+      panes.exitCode !== 0 || panes.stdout.includes("1") || /^EXIT:\d+/m.test(capture.stdout);
+    if (!dead) {
+      requireSuccess(
+        await this.#run(["set-option", "-t", sessionName, "remain-on-exit", "off"], true),
+      );
+      return;
+    }
+    await this.#run(["kill-session", "-t", sessionName], true);
+    const output = capture.stdout.trim().split("\n").filter(Boolean).slice(-15).join("\n");
+    throw new Error(
+      `agent died at birth in tmux session '${sessionName}'${output ? `: ${output}` : " (no output captured)"}`,
+    );
   }
 
   async #preseedTrust(worktreePath: string): Promise<void> {
@@ -140,6 +198,15 @@ export class TmuxService implements AgentRuntime {
       dryRun: this.options.dryRun,
     });
   }
+}
+
+/**
+ * tmux command-sequence suffix setting remain-on-exit in the same invocation
+ * as new-session — set separately, an instant death could close the session
+ * before the option lands.
+ */
+function remainOnExit(sessionName: string): readonly string[] {
+  return [";", "set-option", "-t", sessionName, "remain-on-exit", "on"];
 }
 
 async function isDirectory(path: string): Promise<boolean> {
