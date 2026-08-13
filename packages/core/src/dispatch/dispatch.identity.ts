@@ -37,6 +37,27 @@ export function repairSessionName(
     : `score-${namespace}-shepherd-pr-${pullRequestNumber}`;
 }
 
+/** Every branch createWorkIdentity mints starts with this — the in-flight probe keys on it. */
+export function issueBranchPrefix(issueNumber: number): string {
+  return `issue-${issueNumber}-`;
+}
+
+/** Ownership test for the branch shape createWorkIdentity mints. */
+export function isIssueBranch(name: string): boolean {
+  return /^issue-\d+-/.test(name);
+}
+
+/**
+ * Repair's session-match template; %N is substituted with the issue number.
+ * Must match the names sessionNameForIssue creates. Legacy defaulted to
+ * "-issue-%N", which never matched its own "issue-N" sessions, so repair
+ * silently always spawned instead of pinging. Anchored so an unrelated
+ * session like "my-issue-1" can't be pinged by mistake.
+ */
+export function issueSessionSuffixPattern(namespace: string | undefined): string {
+  return namespace === undefined ? "^issue-%N" : `^score-${namespace}-issue-%N`;
+}
+
 /** One constructor owns branch, worktree, and session naming for every phase. */
 export function createWorkIdentity(
   workspaceRoot: string,
@@ -46,7 +67,7 @@ export function createWorkIdentity(
   if (!isAbsolute(workspaceRoot)) throw new Error("workspaceRoot must be absolute");
 
   // Branches stay un-namespaced deliberately: they live per-repo.
-  const branch = `issue-${issue.number}-${slugifyIssueTitle(issue.title)}`;
+  const branch = `${issueBranchPrefix(issue.number)}${slugifyIssueTitle(issue.title)}`;
   return {
     issueNumber: issue.number,
     branch,

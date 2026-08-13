@@ -1,5 +1,9 @@
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
-import { createWorkIdentity, sessionNameForIssue } from "@score/core/dispatch/dispatch.identity";
+import {
+  createWorkIdentity,
+  issueBranchPrefix,
+  sessionNameForIssue,
+} from "@score/core/dispatch/dispatch.identity";
 import {
   hasLabel,
   type IssuePolicy,
@@ -131,7 +135,7 @@ export class DispatchService {
   }
 
   async #alreadyInFlight(issueNumber: number): Promise<boolean> {
-    const prefix = `issue-${issueNumber}-`;
+    const prefix = issueBranchPrefix(issueNumber);
     if ((await this.#issueWorktrees()).some((worktree) => worktree.branch.startsWith(prefix))) {
       return true;
     }

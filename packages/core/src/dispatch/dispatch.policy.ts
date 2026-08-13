@@ -1,4 +1,5 @@
 import { basename, relative } from "node:path";
+import { isIssueBranch } from "@score/core/dispatch/dispatch.identity";
 import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { IssueObservation } from "./issue.interface";
 
@@ -55,6 +56,6 @@ export function isOwnedIssueWorktree(
     path !== "" &&
     !path.startsWith("..") &&
     !path.startsWith("/") &&
-    /^issue-\d+-/.test(worktree.branch || basename(worktree.path))
+    isIssueBranch(worktree.branch || basename(worktree.path))
   );
 }
