@@ -158,21 +158,15 @@ export class GitService implements WorkspaceDriver {
   }
 
   async commitMerge(message: string): Promise<void> {
+    // The stamp rides the environment, not -c config: inherited
+    // GIT_COMMITTER_* variables outrank config, and an unstamped landing
+    // merge would fail its own recovery proof after a push failure (D1
+    // check 4), blocking landing indefinitely.
     requireSuccess(
-      await this.#run(
-        [
-          "-c",
-          "commit.gpgsign=false",
-          "-c",
-          `committer.name=${LANDING_COMMITTER.name}`,
-          "-c",
-          `committer.email=${LANDING_COMMITTER.email}`,
-          "commit",
-          "-m",
-          message,
-        ],
-        true,
-      ),
+      await this.#run(["-c", "commit.gpgsign=false", "commit", "-m", message], true, {
+        GIT_COMMITTER_NAME: LANDING_COMMITTER.name,
+        GIT_COMMITTER_EMAIL: LANDING_COMMITTER.email,
+      }),
     );
   }
 
@@ -205,12 +199,29 @@ export class GitService implements WorkspaceDriver {
   }
 
   /**
-   * Pinned to an exact SHA, never a ref: a linked worktree can fetch and move
-   * the shared origin/<default> ref between observation and reset, and the
-   * recovery must land on the head it vetted, not wherever the ref points now.
+   * Recovery reset with both race guards a bare `reset --hard` lacks: the
+   * branch moves via compare-and-swap (fails if a commit landed on it after
+   * `expectedHead` was observed), then the index and worktree follow through
+   * a two-tree merge that refuses to overwrite files modified in the window
+   * — `reset --hard` would silently discard both kinds of concurrent
+   * operator work. Pinned to exact SHAs, never refs: a linked worktree's
+   * fetch can move origin/<default> mid-recovery.
    */
-  async resetToCommit(sha: string): Promise<void> {
-    requireSuccess(await this.#run(["reset", "--hard", sha], true));
+  async resetBranchToCommit(branch: string, to: string, expectedHead: string): Promise<void> {
+    requireSuccess(
+      await this.#run(
+        [
+          "update-ref",
+          "-m",
+          "score: D1 unpushed-merge recovery",
+          `refs/heads/${branch}`,
+          to,
+          expectedHead,
+        ],
+        true,
+      ),
+    );
+    requireSuccess(await this.#run(["read-tree", "-m", "-u", expectedHead, to], true));
   }
 
   async fastForwardDefaultBranch(defaultBranch: string): Promise<boolean> {
@@ -243,12 +254,13 @@ export class GitService implements WorkspaceDriver {
     throw new Error("Could not resolve base branch (no origin/HEAD, no main, no master).");
   }
 
-  #run(args: readonly string[], mutates = false) {
+  #run(args: readonly string[], mutates = false, env?: Readonly<Record<string, string>>) {
     return this.runner.run([this.#executable, ...args], {
       cwd: this.options.repositoryPath,
       timeoutMs: this.#timeoutMs,
       mutates,
       dryRun: this.options.dryRun,
+      ...(env && { env }),
     });
   }
 }

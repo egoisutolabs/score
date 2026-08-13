@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
-import type { StrayCommitEvidence } from "../daemon.run";
+import type { StrayCommitEvidence } from "../recovery.policy";
 
 /** Real subprocess runner for fixture-repo tests. */
 export class ExecRunner implements CommandRunner {
@@ -19,6 +19,9 @@ export class ExecRunner implements CommandRunner {
         cwd: options.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        // Same layering as BunCommandRunner: options.env overlays the
+        // inherited environment (commitMerge's committer stamp rides here).
+        ...(options.env && { env: { ...process.env, ...options.env } }),
       });
       return {
         command,

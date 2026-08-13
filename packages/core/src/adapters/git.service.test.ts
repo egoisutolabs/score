@@ -191,8 +191,12 @@ test("worktree creation fails closed when no legacy base branch can be resolved"
   expect(runner.commands.some((command) => command[1] === "worktree")).toBe(false);
 });
 
-test("commitMerge stamps landing's committer identity as config, leaving the author alone", async () => {
-  const runner = new ScriptRunner((command, options) => result(command, options));
+test("commitMerge stamps landing's committer through the environment, beating inherited overrides", async () => {
+  const captured: RunCommandOptions[] = [];
+  const runner = new ScriptRunner((command, options) => {
+    captured.push(options);
+    return result(command, options);
+  });
 
   await new GitService(runner, { repositoryPath: "/repo", workspaceRoot: "/wt" }).commitMerge(
     "Merge pull request #9 from owner/branch",
@@ -201,13 +205,36 @@ test("commitMerge stamps landing's committer identity as config, leaving the aut
   expect(runner.commands[0]?.slice(1)).toEqual([
     "-c",
     "commit.gpgsign=false",
-    "-c",
-    `committer.name=${LANDING_COMMITTER.name}`,
-    "-c",
-    `committer.email=${LANDING_COMMITTER.email}`,
     "commit",
     "-m",
     "Merge pull request #9 from owner/branch",
+  ]);
+  // Env, not -c config: inherited GIT_COMMITTER_* variables outrank config
+  // and would silently strip the stamp the recovery proof requires.
+  expect(captured[0]?.env).toEqual({
+    GIT_COMMITTER_NAME: LANDING_COMMITTER.name,
+    GIT_COMMITTER_EMAIL: LANDING_COMMITTER.email,
+  });
+});
+
+test("resetBranchToCommit swaps the ref against the expected head, then syncs the tree non-destructively", async () => {
+  const runner = new ScriptRunner((command, options) => result(command, options));
+
+  await new GitService(runner, {
+    repositoryPath: "/repo",
+    workspaceRoot: "/wt",
+  }).resetBranchToCommit("main", "originsha", "wedgesha");
+
+  expect(runner.commands.map((command) => command.slice(1))).toEqual([
+    [
+      "update-ref",
+      "-m",
+      "score: D1 unpushed-merge recovery",
+      "refs/heads/main",
+      "originsha",
+      "wedgesha",
+    ],
+    ["read-tree", "-m", "-u", "wedgesha", "originsha"],
   ]);
 });
 

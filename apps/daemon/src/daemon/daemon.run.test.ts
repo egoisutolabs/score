@@ -17,13 +17,12 @@ import { expect, test, vi } from "vitest";
 import {
   bootstrapDaemon,
   parseDaemonArguments,
-  proveLandingAuthorship,
   reconcileUnpushedLandingMerge,
   runDaemon,
   runDaemonLoop,
   selfHealStagedMerge,
 } from "./daemon.run";
-import type { WedgeFixture } from "./fixtures/wedge.fixture";
+import type { WedgeFixture } from "./fixtures";
 import {
   commitWedge,
   ExecRunner,
@@ -32,7 +31,8 @@ import {
   WEDGE_MESSAGE,
   WEDGE_PR_NUMBER,
   wedgeFixture,
-} from "./fixtures/wedge.fixture";
+} from "./fixtures";
+import { proveLandingAuthorship } from "./recovery.policy";
 
 test("daemon flags parse and default to the long-running loop", () => {
   expect(parseDaemonArguments([])).toEqual({
@@ -1203,6 +1203,44 @@ test("reconcile still recovers when origin advanced during the outage", async ()
   ]);
 });
 
+test("the recovery reset is compare-and-swap: an operator commit after observation aborts it", async () => {
+  const fixture = await wedgeFixture();
+  await commitWedge(fixture);
+  const wedgeSha = fixture.gitCli("rev-parse", "main");
+  const originSha = fixture.gitCli("rev-parse", "origin/main");
+  // The operator commits between the daemon's observation and its reset —
+  // a plain reset --hard would silently discard this commit.
+  await writeFile(join(fixture.repo, "operator.txt"), "operator\n");
+  fixture.gitCli("add", "operator.txt");
+  fixture.gitCli("commit", "-m", "operator work");
+  const operatorSha = fixture.gitCli("rev-parse", "main");
+
+  await expect(fixture.git.resetBranchToCommit("main", originSha, wedgeSha)).rejects.toThrow();
+
+  expect(fixture.gitCli("rev-parse", "main")).toBe(operatorSha);
+});
+
+test("the committer stamp survives inherited GIT_COMMITTER_* overrides", async () => {
+  // A daemon started from a shell exporting GIT_COMMITTER_* must still stamp
+  // landing's identity, or its own wedge would fail check 4 forever.
+  const fixture = await wedgeFixture();
+  await withEnv(
+    { GIT_COMMITTER_NAME: "Operator", GIT_COMMITTER_EMAIL: "operator@test.invalid" },
+    async () => {
+      await commitWedge(fixture);
+    },
+  );
+  expect(fixture.gitCli("log", "-1", "--format=%cn <%ce>")).toBe(
+    `${LANDING_COMMITTER.name} <${LANDING_COMMITTER.email}>`,
+  );
+  const log = new CaptureLogger();
+
+  const outcome = await reconcileUnpushedLandingMerge(fixture.git, log, RECONCILE_OPTIONS);
+
+  expect(outcome).toBe("recovered");
+  expect(fixture.gitCli("rev-parse", "main")).toBe(fixture.gitCli("rev-parse", "origin/main"));
+});
+
 test("check 1 fixture: a non-merge stray commit is warned and left untouched", async () => {
   const fixture = await wedgeFixture();
   // Template message and landing's stamp, but a plain commit — check 1 alone fails.
@@ -1392,7 +1430,7 @@ test("a push failure inside one pass is reconciled by a later pass of the same d
         return {};
       }
       if (command[1] === "push") return { exitCode: 1 };
-      if (command[1] === "reset") {
+      if (command[1] === "update-ref") {
         wedged = false;
         resetDone = true;
         return {};
@@ -1432,15 +1470,24 @@ test("a push failure inside one pass is reconciled by a later pass of the same d
     // later pass: exactly one commit, one push attempt, one reset — in order.
     const commitIndex = runner.calls.findIndex((call) => call.command.includes("commit"));
     const pushIndex = runner.calls.findIndex((call) => call.command[1] === "push");
-    const resetIndex = runner.calls.findIndex((call) => call.command[1] === "reset");
+    const resetIndex = runner.calls.findIndex((call) => call.command[1] === "update-ref");
     expect(commitIndex).toBeGreaterThan(-1);
     expect(pushIndex).toBeGreaterThan(commitIndex);
     expect(resetIndex).toBeGreaterThan(pushIndex);
     expect(runner.calls.filter((call) => call.command[1] === "push")).toHaveLength(1);
-    expect(runner.calls.filter((call) => call.command[1] === "reset")).toEqual([
+    expect(runner.calls.filter((call) => call.command[1] === "update-ref")).toEqual([
       {
-        // Pinned to the observed origin SHA, never the movable ref.
-        command: ["git", "reset", "--hard", "ooo"],
+        // CAS from the observed wedge head to the observed origin SHA —
+        // pinned SHAs on both sides, never the movable refs.
+        command: [
+          "git",
+          "update-ref",
+          "-m",
+          "score: D1 unpushed-merge recovery",
+          "refs/heads/develop",
+          "ooo",
+          "aaa",
+        ],
         cwd: repo,
         mutates: true,
         dryRun: false,
@@ -1481,7 +1528,7 @@ test("a transient reconcile failure warns and the pass continues — only reset 
     await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
 
     expect(log.logged.some((line) => line.text.startsWith("✗ reconciliation failed:"))).toBe(true);
-    expect(runner.calls.some((call) => call.command[1] === "reset")).toBe(false);
+    expect(runner.calls.some((call) => call.command[1] === "update-ref")).toBe(false);
     // An unverified checkout must also suppress landing for the pass — the
     // wedge (if one exists) would otherwise grow a second merge on top.
     expect(log.logged.some((line) => line.text.startsWith("landing suppressed this pass"))).toBe(

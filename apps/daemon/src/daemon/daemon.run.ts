@@ -5,8 +5,7 @@ import { OpencodeService } from "@score/agents/opencode.service";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { OpencodeServer } from "@score/agents/opencode-server.service";
 import { TmuxService } from "@score/agents/tmux.service";
-import type { CommitObservation } from "@score/core/adapters/git.service";
-import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
+import { GitService } from "@score/core/adapters/git.service";
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { CleanupService } from "@score/core/cleanup/cleanup.service";
 import type { DaemonPhase } from "@score/core/daemon/daemon.service";
@@ -50,6 +49,7 @@ import type { Logger } from "@score/shared/log";
 import { createLogger } from "@score/shared/log";
 import { GitHubService } from "@score/tracker/github.service";
 import { renderRepairRun } from "../repair/repair.run";
+import { proveLandingAuthorship } from "./recovery.policy";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
@@ -343,69 +343,6 @@ export async function selfHealStagedMerge(
   log.warn("recovered staged merge left by a previous run");
 }
 
-/** Evidence for the landing-authorship proof, gathered by the caller. */
-export interface StrayCommitEvidence {
-  readonly commit: CommitObservation;
-  /** commit.parents[0] is an ancestor of (or equal to) origin's default-branch head. */
-  readonly firstParentReachableFromOrigin: boolean;
-  /** Owner half of the GitHub repo; landing's merge template embeds it. */
-  readonly repositoryOwner: string;
-}
-
-export type LandingAuthorshipProof =
-  | { readonly proven: true; readonly pullRequestNumber: number }
-  | { readonly proven: false; readonly evidence: string };
-
-/**
- * The four-check landing-authorship proof (D1, issue #41): a stray unpushed
- * default-branch head may only be reset away when it is provably landing's
- * own merge — a merge commit, grown directly from origin's history, carrying
- * landing's exact message template, stamped with landing's committer
- * identity. Pure, so each check is unit-testable without a repository.
- */
-export function proveLandingAuthorship(stray: StrayCommitEvidence): LandingAuthorshipProof {
-  const { commit } = stray;
-  if (commit.parents.length !== 2) {
-    return {
-      proven: false,
-      evidence: `not a merge commit (${commit.parents.length} parent(s))`,
-    };
-  }
-  if (!stray.firstParentReachableFromOrigin) {
-    // Ancestor-of, not equal-to: origin advancing during the outage must not
-    // strand recovery. This check is also the "more than one stray commit"
-    // guard — any commit stacked between origin's head and this merge makes
-    // the first parent unreachable from origin.
-    return {
-      proven: false,
-      evidence: `first parent ${commit.parents[0]} is not an ancestor of origin's head`,
-    };
-  }
-  const firstLine = commit.message.split("\n", 1)[0] ?? "";
-  const template = firstLine.match(/^Merge pull request #(\d+) from (\S+)$/);
-  if (template === null || !(template[2] as string).startsWith(`${stray.repositoryOwner}/`)) {
-    return {
-      proven: false,
-      evidence: `message ${JSON.stringify(firstLine)} does not match landing's merge template`,
-    };
-  }
-  // The stamp is required, not corroborating (D1): checks 1-3 are satisfiable
-  // by an ordinary operator merge made with the same ambient identity, so an
-  // unstamped candidate — including strays predating the stamp — is never
-  // auto-reset; it surfaces as a warning and is resolved by hand once. Both
-  // halves of the identity must match: commitMerge stamps name and email.
-  if (
-    commit.committerName !== LANDING_COMMITTER.name ||
-    commit.committerEmail !== LANDING_COMMITTER.email
-  ) {
-    return {
-      proven: false,
-      evidence: `committer ${commit.committerName} <${commit.committerEmail}> is not landing's stamp ${LANDING_COMMITTER.name} <${LANDING_COMMITTER.email}>`,
-    };
-  }
-  return { proven: true, pullRequestNumber: Number(template[1]) };
-}
-
 export interface ReconcileUnpushedMergeOptions {
   readonly dryRun: boolean;
   readonly defaultBranch: string;
@@ -449,7 +386,7 @@ export async function reconcileUnpushedLandingMerge(
     | "fetchOrigin"
     | "isAncestor"
     | "observePrimaryCheckout"
-    | "resetToCommit"
+    | "resetBranchToCommit"
   >,
   log: Logger,
   options: ReconcileUnpushedMergeOptions,
@@ -501,15 +438,16 @@ export async function reconcileUnpushedLandingMerge(
     );
     return "blocked";
   }
-  // The observed SHA, not the ref: a linked worktree's fetch can move the
-  // shared origin/<default> between observation and reset, and verification
-  // must compare against the head this recovery actually vetted.
-  await git.resetToCommit(origin.sha);
+  // Compare-and-swap from the observed wedge head to the observed origin
+  // SHA: an operator commit or edit arriving after the checks above makes
+  // the observations stale, and the CAS + non-clobbering tree sync abort
+  // instead of silently discarding that work the way reset --hard would.
+  await git.resetBranchToCommit(defaultBranch, origin.sha, local.sha);
   // Fail closed like the staged-merge heal: prove the reset actually landed.
   const after = await git.observeCommit(defaultBranch);
   if (after.sha !== origin.sha) {
     throw new RecoveryVerificationError(
-      `reset --hard left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
+      `recovery reset left ${defaultBranch} at ${after.sha}, expected ${origin.sha}`,
     );
   }
   log.warn(
