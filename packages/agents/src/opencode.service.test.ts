@@ -32,7 +32,7 @@ interface FakeOpencode {
   readonly url: string;
   readonly requests: FakeRequest[];
   readonly sessions: SessionV2Info[];
-  failNext(status: number, pathIncludes?: string): void;
+  failNext(status: number, pathIncludes?: string, method?: string): void;
   close(): Promise<void>;
 }
 
@@ -59,6 +59,7 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
   let idCounter = 0;
   let nextStatus: number | undefined;
   let failPathIncludes: string | undefined;
+  let failMethod: string | undefined;
 
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -72,11 +73,13 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
 
     if (
       nextStatus !== undefined &&
-      (failPathIncludes === undefined || url.pathname.includes(failPathIncludes))
+      (failPathIncludes === undefined || url.pathname.includes(failPathIncludes)) &&
+      (failMethod === undefined || method === failMethod)
     ) {
       const status = nextStatus;
       nextStatus = undefined;
       failPathIncludes = undefined;
+      failMethod = undefined;
       sendJson(res, status, { error: "forced failure" });
       return;
     }
@@ -155,9 +158,10 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
     url: `http://127.0.0.1:${port}`,
     requests,
     sessions,
-    failNext(status: number, pathIncludes?: string) {
+    failNext(status: number, pathIncludes?: string, method?: string) {
       nextStatus = status;
       failPathIncludes = pathIncludes;
+      failMethod = method;
     },
     close: () =>
       new Promise<void>((resolve, reject) => {
@@ -457,4 +461,83 @@ test("startImplementation reclaims the created session when the initial prompt f
   // The next tick's retry starts clean instead of reading the leftover as in-flight.
   await service.startImplementation(identity, "read TASK.md", AGENT);
   expect(fake.sessions.some((candidate) => candidate.title === "score-ns-issue-56")).toBe(true);
+});
+
+// startRepair boundary audit (#42): kill the writer at each step boundary and
+// assert what the next repair pass converges to. Convergence labels feed the
+// epic's audited-writer table: RETRIED / SELF-HEALED / BENIGN-LEFTOVER.
+
+/** The next pass converged iff exactly one session holds the title and exactly one brief reached it. */
+function expectConverged(title: string, notId?: string): void {
+  const repairs = fake.sessions.filter((candidate) => candidate.title === title);
+  expect(repairs).toHaveLength(1);
+  if (notId !== undefined) expect(repairs[0]?.id).not.toBe(notId);
+  const delivered = fake.requests.filter(
+    (r) => r.method === "POST" && r.path === `/session/${repairs[0]?.id}/prompt_async`,
+  );
+  expect(delivered).toHaveLength(1);
+}
+
+test("startRepair: child dies at abort of the old session — next pass re-resolves it and converges (RETRIED)", async () => {
+  fake.sessions.push(session("ses_old", "score-ns-shepherd-pr-21", "/work/old"));
+  fake.failNext(500, "/abort");
+
+  await expect(service.startRepair(21, "/work/21", "fix PR #21", AGENT)).rejects.toThrow(
+    /abort.*500/,
+  );
+  // Death before delete: the old session is the only leftover, still exactly resolvable.
+  expect(fake.sessions.map((candidate) => candidate.id)).toEqual(["ses_old"]);
+
+  await service.startRepair(21, "/work/21", "fix PR #21", AGENT);
+  expectConverged("score-ns-shepherd-pr-21", "ses_old");
+});
+
+test("startRepair: child dies at delete of the old session — next pass re-resolves it and converges (RETRIED)", async () => {
+  fake.sessions.push(session("ses_old", "score-ns-shepherd-pr-22", "/work/old"));
+  fake.failNext(500, undefined, "DELETE");
+
+  await expect(service.startRepair(22, "/work/22", "fix PR #22", AGENT)).rejects.toThrow(
+    /DELETE.*500/,
+  );
+  // Aborted but undeleted: still one exact match, so re-entry resolves it, never duplicates.
+  expect(fake.sessions.map((candidate) => candidate.id)).toEqual(["ses_old"]);
+
+  await service.startRepair(22, "/work/22", "fix PR #22", AGENT);
+  expectConverged("score-ns-shepherd-pr-22", "ses_old");
+});
+
+test("startRepair: child dies at create — nothing leaks, next pass creates and briefs (RETRIED)", async () => {
+  fake.failNext(500, "/session", "POST");
+
+  await expect(service.startRepair(23, "/work/23", "fix PR #23", AGENT)).rejects.toThrow(
+    /POST \/session.*500/,
+  );
+  expect(fake.sessions).toHaveLength(0);
+
+  await service.startRepair(23, "/work/23", "fix PR #23", AGENT);
+  expectConverged("score-ns-shepherd-pr-23");
+});
+
+test("startRepair: child dies between create and prompt — kill-first re-entry reclaims the unprompted session (RETRIED)", async () => {
+  fake.failNext(500, "/prompt_async");
+
+  await expect(service.startRepair(24, "/work/24", "fix PR #24", AGENT)).rejects.toThrow(
+    /prompt_async.*500/,
+  );
+  // Leftover: one created-but-never-briefed session. startRepair carries no
+  // reclaim of its own (unlike startImplementation, #32) because the kill-first
+  // re-entry below owns it — that ownership is what this test pins.
+  const leftover = fake.sessions.filter((s) => s.title === "score-ns-shepherd-pr-24");
+  expect(leftover).toHaveLength(1);
+  const leftoverId = leftover[0]?.id as string;
+
+  await service.startRepair(24, "/work/24", "fix PR #24", AGENT);
+
+  // The re-entry aborts and deletes the unprompted leftover before creating anew.
+  const paths = fake.requests.map((r) => `${r.method} ${r.path}`);
+  const abortIndex = paths.indexOf(`POST /session/${leftoverId}/abort`);
+  const deleteIndex = paths.indexOf(`DELETE /session/${leftoverId}`);
+  expect(abortIndex).toBeGreaterThan(-1);
+  expect(deleteIndex).toBeGreaterThan(abortIndex);
+  expectConverged("score-ns-shepherd-pr-24", leftoverId);
 });
