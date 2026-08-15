@@ -161,6 +161,38 @@ describe("assessReadiness", () => {
     },
   );
 
+  // readFile blocks forever on a FIFO: the probe must reject these entries
+  // by type before loadConfig/readResolvedProject are ever called.
+  test.skipIf(!hasMkfifo)(
+    "a FIFO at config.jsonc flips the config check without hanging",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "score-readyz-"));
+      execFileSync("mkfifo", [join(home, "config.jsonc")]);
+      vi.stubEnv("SCORE_HOME", home);
+      const report = await assessReadiness();
+      expect(report).toEqual({
+        ready: false,
+        checks: [{ name: "config", ready: false, reason_code: "config-unreadable" }],
+      });
+    },
+  );
+
+  test.skipIf(!hasMkfifo)("a FIFO at resolved.json flips only that project's check", async () => {
+      const home = await scoreHome();
+      await withSegment(home, "demo");
+      await rm(join(home, "projects", "demo", "resolved.json")); // mkfifo needs the slot
+      execFileSync("mkfifo", [join(home, "projects", "demo", "resolved.json")]);
+    vi.stubEnv("SCORE_HOME", home);
+    const report = await assessReadiness();
+    expect(report.ready).toBe(false);
+    expect(report.checks).toContainEqual({
+      name: "resolved:demo",
+      ready: false,
+      reason_code: "resolved-unreadable",
+    });
+    expect(report.checks).toContainEqual({ name: "telemetry:demo", ready: true });
+  });
+
   // Root ignores mode bits, so the open-probe proof only bites unprivileged.
   test.skipIf(!unprivileged)(
     "a traversable dir over an unopenable segment is not ready",

@@ -1,6 +1,6 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { telemetryDir } from "@score/shared/config/layout";
+import { configPath, resolvedPath, telemetryDir } from "@score/shared/config/layout";
 import { loadConfig } from "@score/shared/config/load";
 import { readResolvedProject } from "@score/shared/config/resolved";
 
@@ -28,6 +28,7 @@ export async function assessReadiness(): Promise<ReadinessReport> {
   const checks: ReadinessCheck[] = [];
   let selected: string[] = [];
   try {
+    await requireReadableFile(configPath(), "config");
     const config = await loadConfig();
     checks.push({ name: "config", ready: true });
     // Disabled projects have no daemon and no store — probing them would
@@ -42,6 +43,7 @@ export async function assessReadiness(): Promise<ReadinessReport> {
   }
   for (const key of selected) {
     try {
+      await requireReadableFile(resolvedPath(key), `resolved:${key}`);
       await readResolvedProject(key);
       checks.push({ name: `resolved:${key}`, ready: true });
     } catch {
@@ -58,6 +60,23 @@ async function telemetryCheck(key: string): Promise<ReadinessCheck> {
   return readable
     ? { name, ready: true }
     : { name, ready: false, reason_code: "telemetry-unreadable" };
+}
+
+/**
+ * readFile-based owners (loadConfig, readResolvedProject) block forever on
+ * a FIFO — the probe must reject a non-regular entry by type before the
+ * reader is ever called, or /readyz hangs instead of answering 503. A
+ * missing entry passes through so the owner reports it in its own words.
+ */
+async function requireReadableFile(path: string, what: string): Promise<void> {
+  let info;
+  try {
+    info = await stat(path);
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return;
+    throw new Error(`${what} unreadable at ${path}`);
+  }
+  if (!info.isFile()) throw new Error(`${what} is not a regular file at ${path}`);
 }
 
 async function telemetryReadable(key: string): Promise<boolean> {

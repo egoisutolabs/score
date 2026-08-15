@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 // The app serves an operator console successor on a loopback-only contract
 // (locked decision #58): every command that can bind must bind 127.0.0.1,
 // and nothing may widen it behind a flag.
-const appManifest = new URL("../package.json", import.meta.url);
+const appManifest = new URL("../../package.json", import.meta.url);
 
 test("dev and start bind the loopback hostname explicitly", async () => {
   const pkg = JSON.parse(await readFile(fileURLToPath(appManifest), "utf8"));

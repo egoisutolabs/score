@@ -24,7 +24,7 @@ function serverPatterns(): RegExp[] {
 }
 
 function trackedFiles(): string[] {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const out = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" });
   return out
     .split("\n")
