@@ -110,6 +110,33 @@ test("data split across wire lines joins into one payload", () => {
   });
 });
 
+test.each([
+  [
+    "a future segment stamp",
+    { project: "score", source: "telemetry", segment: "9999-12-31", byte_offset: 0 },
+  ],
+  [
+    "an impossible calendar stamp",
+    { project: "score", source: "telemetry", segment: "2026-02-30", byte_offset: 0 },
+  ],
+  [
+    "a fractional byte_offset",
+    { project: "score", source: "telemetry", segment: "2026-08-15", byte_offset: 1.5 },
+  ],
+  [
+    "an unsafe-integer byte_offset",
+    { project: "score", source: "telemetry", segment: "2026-08-15", byte_offset: 2 ** 53 },
+  ],
+] as const)("rendering a caught-up cursor with %s throws instead of emitting", (_name, cursor) => {
+  // Type-correct but unrenderable: parseEnvelope would reject the frame, so
+  // no consumer could validate or resume from it — refuse at the source.
+  const envelope: StreamEnvelope = {
+    event: "score.stream.caught_up",
+    data: { through: { "score|telemetry": cursor }, follow: true },
+  };
+  expect(() => renderEnvelope(envelope)).toThrow(/not renderable/);
+});
+
 test("an error envelope renders only its reason code — no internals escape", () => {
   const block = renderEnvelope(streamErrorEnvelope("cursor-expired"));
   expect(block).toBe('event: score.stream.error\ndata: {"reason_code":"cursor-expired"}\n\n');

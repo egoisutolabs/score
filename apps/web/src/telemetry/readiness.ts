@@ -98,14 +98,19 @@ async function telemetryReadable(key: string): Promise<boolean> {
   } catch (error) {
     // No store yet is a valid empty state: a reader starts at today's
     // segment, so readiness must not demand telemetry that was never
-    // written. A dangling symlink at the store path is not that state —
-    // the name is occupied, so the writer's recursive mkdir fails EEXIST
-    // and the reader's scan finds nothing where segments should live.
+    // written. But only lstat's own ENOENT proves the name is free: any
+    // entry it still finds (a dangling symlink, or anything swapped in
+    // after stat's ENOENT) occupies the path — the writer's recursive
+    // mkdir fails EEXIST and the reader scans nothing where segments
+    // should live — and any other lstat failure leaves absence unproven.
+    // A store directory racing in reports one not-ready probe; the next
+    // probe re-evaluates it.
     if ((error as { code?: string }).code === "ENOENT") {
       try {
-        return !(await lstat(dir)).isSymbolicLink();
-      } catch {
-        return true; // genuinely absent
+        await lstat(dir);
+        return false;
+      } catch (lstatError) {
+        return (lstatError as { code?: string }).code === "ENOENT";
       }
     }
     return false;

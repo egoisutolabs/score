@@ -23,6 +23,14 @@ const EVENT_NAMES: readonly StreamEventName[] = [
  * spec joins them back with newlines, so multi-line JSON survives the trip.
  */
 export function renderEnvelope(envelope: StreamEnvelope): string {
+  // A type-correct cursor can still be unrenderable at runtime (future or
+  // impossible segment stamp, unsafe/fractional offset from malformed
+  // stored state): the emitted frame would fail parseEnvelope on every
+  // consumer, so no client could validate or resume from it. Refuse at the
+  // source, as renderStreamId already does for sequence counters.
+  if (envelope.event === "score.stream.caught_up" && !isCursorMap(envelope.data.through)) {
+    throw new Error("caught-up cursor is not renderable: invalid segment stamp or byte offset");
+  }
   // Excess keys ride along for open payload types, but the error contract
   // is closed: structural typing lets a caller spread extra fields into
   // error data (a stack trace, a path), so the wire projection for error
