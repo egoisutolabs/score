@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -477,14 +478,14 @@ test("restart death after install: job registered, a retried restart converges",
   expect(logs).toContain("restarted 'alpha'");
 });
 
-test("restart racing a config-changing up: the next up sees the stale definition and repairs it", async () => {
+test("restart racing a config-changing up: the lock refuses the interleaving, the next up repairs", async () => {
   await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
   await runUp([], deps);
   runner.listOutput = "1\t0\tdev.score.alpha";
 
   // Interleave a config edit + full `up` between restart's definition read
-  // and its stop, so restart re-installs the stale bytes on top of the new
-  // job — the worst-case ordering.
+  // and its stop — the ordering that used to tear the record. The lock
+  // restart holds must make the inner up refuse alpha without mutating it.
   const real = deps.adapter;
   let raced = false;
   const racing: typeof real = {
@@ -502,10 +503,14 @@ test("restart racing a config-changing up: the next up sees the stale definition
     },
   };
   await runRestart(["alpha"], racing);
+  expect(errors.some((line) => line.includes("failed to restart 'alpha'"))).toBe(true);
+  expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
   expect(await readFile(join(agentsDir, "dev.score.alpha.plist"), "utf8")).not.toContain(
     "/repos/alpha2",
   );
 
+  // The interleaved up never applied, so the next up still sees the config
+  // change and repairs — no torn state survives.
   runner.calls.length = 0;
   logs = [];
   await runUp([], deps);
@@ -518,6 +523,45 @@ test("restart racing a config-changing up: the next up sees the stale definition
   expect(await readFile(join(agentsDir, "dev.score.alpha.plist"), "utf8")).toContain(
     "/repos/alpha2",
   );
+});
+
+test("a live holder's lock blocks restart and up without touching the supervisor", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  // This test process holds the lock — a provably live pid.
+  await writeFile(join(home, "projects", "alpha", "mutate.lock"), String(process.pid));
+
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow("is being modified by pid");
+  expect(runner.mutations()).toEqual([]);
+
+  errors = [];
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 9000)]);
+  await runUp([], deps);
+  expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+});
+
+test("a stale lock (dead holder or garbage) is broken and the command proceeds", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  logs = [];
+  const lockPath = join(home, "projects", "alpha", "mutate.lock");
+
+  await writeFile(lockPath, "not-a-pid");
+  await runRestart(["alpha"], deps.adapter);
+  expect(logs).toContain("restarted 'alpha'");
+
+  const dead = spawnSync("true").pid;
+  await writeFile(lockPath, String(dead));
+  logs = [];
+  await runRestart(["alpha"], deps.adapter);
+  expect(logs).toContain("restarted 'alpha'");
+  // The lock is released afterwards, not left behind.
+  await expect(readFile(lockPath, "utf8")).rejects.toThrow();
 });
 
 test("a deregistered job with its definition kept: `up` re-installs and starts (TUI start parity)", async () => {
@@ -551,7 +595,7 @@ test("no lifecycle HTTP route: web/server sources touching routes or fetch carry
       withFileTypes: true,
     }).catch(() => []);
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) {
+      if (!entry.isFile() || !/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) {
         continue;
       }
       const path = join(entry.parentPath, entry.name);
