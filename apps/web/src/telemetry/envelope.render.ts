@@ -206,7 +206,9 @@ function isCalendarStamp(segment: string): boolean {
   const month = Number(match[2]);
   const day = Number(match[3]);
   const utc = new Date(Date.UTC(year, month - 1, day));
-  return utc.getUTCFullYear() === year && utc.getUTCMonth() === month - 1 && utc.getUTCDate() === day;
+  return (
+    utc.getUTCFullYear() === year && utc.getUTCMonth() === month - 1 && utc.getUTCDate() === day
+  );
 }
 
 /** The fleet cursor is the resume token — every entry must be a real cursor. */
