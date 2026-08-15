@@ -178,10 +178,10 @@ describe("assessReadiness", () => {
   );
 
   test.skipIf(!hasMkfifo)("a FIFO at resolved.json flips only that project's check", async () => {
-      const home = await scoreHome();
-      await withSegment(home, "demo");
-      await rm(join(home, "projects", "demo", "resolved.json")); // mkfifo needs the slot
-      execFileSync("mkfifo", [join(home, "projects", "demo", "resolved.json")]);
+    const home = await scoreHome();
+    await withSegment(home, "demo");
+    await rm(join(home, "projects", "demo", "resolved.json")); // mkfifo needs the slot
+    execFileSync("mkfifo", [join(home, "projects", "demo", "resolved.json")]);
     vi.stubEnv("SCORE_HOME", home);
     const report = await assessReadiness();
     expect(report.ready).toBe(false);

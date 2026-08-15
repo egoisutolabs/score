@@ -69,14 +69,14 @@ async function telemetryCheck(key: string): Promise<ReadinessCheck> {
  * missing entry passes through so the owner reports it in its own words.
  */
 async function requireReadableFile(path: string, what: string): Promise<void> {
-  let info;
+  let isFile: boolean;
   try {
-    info = await stat(path);
+    isFile = (await stat(path)).isFile();
   } catch (error) {
     if ((error as { code?: string }).code === "ENOENT") return;
-    throw new Error(`${what} unreadable at ${path}`);
+    throw new Error(`${what} unreadable at ${path}: ${String(error)}`);
   }
-  if (!info.isFile()) throw new Error(`${what} is not a regular file at ${path}`);
+  if (!isFile) throw new Error(`${what} is not a regular file at ${path}`);
 }
 
 async function telemetryReadable(key: string): Promise<boolean> {
