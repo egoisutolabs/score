@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import type { StatusWriter } from "@score/core/daemon/status.service";
 import { StatusWriter as RealStatusWriter } from "@score/core/daemon/status.service";
 import type { TelemetryRecord, TelemetrySpan } from "@score/core/telemetry/telemetry.interface";
@@ -10,7 +11,14 @@ import { createFileLogger } from "@score/shared/file-log";
 import type { LogLine } from "@score/shared/log";
 import { expect, test } from "vitest";
 import { parseDaemonArguments, runDaemonLoop } from "../daemon.run";
-import { CaptureLogger, FakeRunner, managedFixture, managedResponsesSeeded } from "../fixtures";
+import {
+  CaptureLogger,
+  FakeRunner,
+  managedFixture,
+  managedResponses,
+  managedResponsesSeeded,
+  startFakeOpencodeServer,
+} from "../fixtures";
 import { TickTelemetryService } from "./telemetry.service";
 
 const SEEDED_ISSUE = 7;
@@ -554,6 +562,241 @@ test("cleanup decisions survive a dispatch failure inside the maintenance phase"
   );
   expect(failedPhase?.attributes?.["score.outcome"]).toBe("error");
   expect(failedPhase?.attributes?.trace_id).toBe(cleanupDecision?.attributes?.trace_id);
+}, 20_000);
+
+test("partial dispatch results survive a mid-run observation failure", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const issues = [7, 8].map((number) =>
+      JSON.stringify({
+        number,
+        title: `Demo issue ${number}`,
+        body: "",
+        labels: [{ name: "epic:demo" }],
+        state: "OPEN",
+        stateReason: null,
+        url: `https://github.com/egoisutolabs/demo/issues/${number}`,
+      }),
+    );
+    let sessionProbes = 0;
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && command[1] === "pr") return { stdout: "[]\n" };
+      if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
+        return { stdout: `[${issues.join(",")}]\n` };
+      }
+      if (command[0] === "gh" && command[1] === "issue") {
+        return { stdout: `${issues[0]}\n` };
+      }
+      if (command[1] === "has-session") {
+        sessionProbes += 1;
+        // Issue 7's session is confirmed absent (dispatch plans it); issue
+        // 8's probe fails unrecognized — the run aborts mid-candidates.
+        return sessionProbes === 1
+          ? { exitCode: 1, stderr: "can't find session\n" }
+          : { exitCode: 1, stderr: "garbled failure\n" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+    expect(
+      log.logged.some((line) => line.text.startsWith("✗ phase cleanup+dispatch failed:")),
+    ).toBe(true);
+  });
+
+  const records = await readTelemetry(home);
+  // The planned start for issue 7 — an agent and worktree that would exist
+  // outside dry-run — survived issue 8's failed probe.
+  const planned = records.filter(
+    (record) =>
+      record.name === "score.dispatch.decision" &&
+      record.attributes?.["score.action"] === "planned",
+  );
+  expect(planned.map((event) => event.subject?.issue_number)).toEqual([7]);
+  const failedPhase = (records.filter((r) => r.kind === "span") as TelemetrySpan[]).find(
+    (span) => span.attributes?.["score.phase.name"] === "cleanup+dispatch",
+  );
+  expect(failedPhase?.attributes?.["score.outcome"]).toBe("error");
+  expect(failedPhase?.attributes?.trace_id).toBe(planned[0]?.attributes?.trace_id);
+}, 20_000);
+
+test("partial cleanup results survive a mid-run observation failure", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home, worktree } = await managedFixture(repo);
+  const ownedWorktree = join(worktree, "issue-10-demo");
+  await withHomeEnv(home, async () => {
+    // Branches carry the issue shape isIssueBranch requires, or the merged
+    // observation filters them out as not owned.
+    const merged = [
+      { number: 9, headRefName: "issue-9-demo", mergedAt: "2026-08-15T10:00:00Z" },
+      { number: 10, headRefName: "issue-10-demo", mergedAt: "2026-08-15T10:00:00Z" },
+    ];
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && command[1] === "pr" && command[2] === "list") {
+        return command.includes("merged")
+          ? { stdout: `${JSON.stringify(merged)}\n` }
+          : { stdout: "[]\n" };
+      }
+      if (command[0] === "gh" && command[1] === "issue") return { stdout: "[]\n" };
+      if (command[1] === "worktree" && command[2] === "list") {
+        return {
+          stdout: `worktree ${ownedWorktree}\nbranch refs/heads/issue-10-demo\n`,
+        };
+      }
+      // PR 9 has no worktree (NOT_FOUND recorded); PR 10's status probe fails.
+      if (command[1] === "-C" && command[3] === "status") return { exitCode: 1 };
+      return managedResponses(repo)(command);
+    });
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+    expect(
+      log.logged.some((line) => line.text.startsWith("✗ phase cleanup+dispatch failed:")),
+    ).toBe(true);
+  });
+
+  const records = await readTelemetry(home);
+  const cleanup = records.filter((record) => record.name === "score.cleanup.decision");
+  expect(cleanup.map((event) => event.subject?.pull_request_number)).toEqual([9]);
+  expect(cleanup[0]?.attributes?.["score.action"]).toBe("NOT_FOUND");
+  const failedPhase = (records.filter((r) => r.kind === "span") as TelemetrySpan[]).find(
+    (span) => span.attributes?.["score.phase.name"] === "cleanup+dispatch",
+  );
+  expect(failedPhase?.attributes?.["score.outcome"]).toBe("error");
+}, 20_000);
+
+test("repair decisions from earlier candidates survive a later candidate's failure", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const rollup = [{ status: "COMPLETED", conclusion: "FAILURE" }];
+    const openPrs = [11, 12].map((number) =>
+      JSON.stringify({
+        number,
+        title: `Fix ${number}`,
+        headRefName: `issue-${number}-demo`,
+        headRefOid: `fff${number}`,
+        baseRefOid: "ooo",
+        isDraft: false,
+        mergeable: "MERGEABLE",
+        reviewDecision: null,
+        labels: [],
+        files: [],
+        statusCheckRollup: rollup,
+        mergedAt: null,
+      }),
+    );
+    let repairScanSeen = false;
+    let repairWorktrees = 0;
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && command[1] === "pr" && command[2] === "list") {
+        // The field list is one --json argument; match inside it. Repair's
+        // scan carries statusCheckRollup but no title, landing's full
+        // observation carries both — only those two see the PRs, so cleanup
+        // and dispatch stay clean on the identity-only lists.
+        const fields = command.find((part) => typeof part === "string" && part.includes(",")) ?? "";
+        if (command.includes("merged")) return { stdout: "[]\n" };
+        const isRepairScan = fields.includes("statusCheckRollup") && !fields.includes("title");
+        if (isRepairScan) repairScanSeen = true;
+        return isRepairScan || fields.includes("title")
+          ? { stdout: `[${openPrs.join(",")}]\n` }
+          : { stdout: "[]\n" };
+      }
+      if (command[0] === "gh" && command[1] === "issue") return { stdout: "[]\n" };
+      if (command[0] === "gh" && command[1] === "api") {
+        return {
+          stdout:
+            '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}\n',
+        };
+      }
+      if (command[1] === "list-sessions") {
+        // PR 11's session exists (dry-run: ping skipped, PINGED recorded).
+        return { stdout: "score-demo-issue-11\n" };
+      }
+      if (command[1] === "worktree" && command[2] === "list") {
+        // Repair observes worktrees for EVERY candidate, session or not:
+        // PR 11's observation succeeds, PR 12's fails mid-run.
+        if (repairScanSeen) {
+          repairWorktrees += 1;
+          if (repairWorktrees >= 2) return { exitCode: 1 };
+        }
+        return { stdout: "" };
+      }
+      return managedResponses(repo)(command);
+    });
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+    expect(log.logged.some((line) => line.text.startsWith("✗ phase repair failed:"))).toBe(true);
+  });
+
+  const records = await readTelemetry(home);
+  const repairEvents = records.filter((record) => record.name === "score.repair.decision");
+  expect(repairEvents.map((event) => event.subject?.pull_request_number)).toEqual([11]);
+  expect(repairEvents[0]?.attributes?.["score.action"]).toBe("PINGED");
+  const failedPhase = (records.filter((r) => r.kind === "span") as TelemetrySpan[]).find(
+    (span) => span.attributes?.["score.phase.name"] === "repair",
+  );
+  expect(failedPhase?.attributes?.["score.outcome"]).toBe("error");
+  expect(failedPhase?.attributes?.trace_id).toBe(repairEvents[0]?.attributes?.trace_id);
+}, 20_000);
+
+test("a tick cut short by the opencode child's fatal exit records as an error pass", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await withHomeEnv(home, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        // Already resolved: the child "exited" before the loop starts, so
+        // stopping settles deterministically inside the first pass.
+        unexpectedExit: Promise.resolve(),
+        stop: async () => {},
+      };
+      const createOpencodeServer = () => ({
+        start: async () => handle,
+        stop: () => handle.stop(),
+      });
+      const runner = new FakeRunner(managedResponses(repo));
+      const log = new CaptureLogger();
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const status = new RealStatusWriter(join(runsDir, "status.json"));
+      const parsed = parseDaemonArguments(["--project", "demo"]);
+
+      await expect(
+        runDaemonLoop(parsed, log, { fileLog, status }, { createOpencodeServer, runner }),
+      ).rejects.toThrow("opencode child exited unexpectedly");
+    } finally {
+      stub.close();
+    }
+  });
+
+  // The interrupted pass did not report itself as a clean tick: the root span
+  // records the fatal exit even though no phase reported an error.
+  const spans = (await readTelemetry(home)).filter(
+    (record) => record.kind === "span",
+  ) as TelemetrySpan[];
+  const tick = spans.find((span) => span.name === "score.tick");
+  expect(tick?.attributes?.["score.outcome"]).toBe("error");
 }, 20_000);
 
 test("unmanaged discovery mode records nothing — no project key to segment under", async () => {

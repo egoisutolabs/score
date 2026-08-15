@@ -41,6 +41,25 @@ interface DispatchRunOptions {
   readonly dryRun?: boolean;
 }
 
+/**
+ * The run aborted on an observation failure (candidate observation, in-flight
+ * probe, dependency read) with results already accumulated. Earlier starts
+ * genuinely happened — their agents and worktrees exist — so the partial
+ * result rides the error instead of vanishing with the throw. Per-candidate
+ * start failures are NOT this: those are caught and recorded as `failed`.
+ */
+export class DispatchTickFailedError extends Error {
+  readonly partial: DispatchResult;
+
+  constructor(partial: DispatchResult, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = cause instanceof Error ? cause.name : "Error";
+    this.cause = cause;
+    this.partial = partial;
+    if (cause instanceof Error && cause.stack) this.stack = cause.stack;
+  }
+}
+
 /** Exact control-flow port of legacy dispatchUnblockedIssues/startIssue. */
 export class DispatchService {
   constructor(
@@ -57,50 +76,65 @@ export class DispatchService {
     const planned: number[] = [];
     const blocked: DispatchResult["blocked"][number][] = [];
     const failed: DispatchResult["failed"][number][] = [];
-    // Capacity reflects the tick's entry observation — the decision it made,
-    // not the post-run state. worktreeBranchIdentity keeps a detached-HEAD
-    // worktree (empty branch) nameable instead of silently holding a slot (#65).
-    const heldBy = (await this.#issueWorktrees()).map(worktreeBranchIdentity).sort();
-    const capacity: DispatchCapacity = {
-      active: heldBy.length,
+    // The capacity snapshot a partial carry falls back to when even the entry
+    // observation failed: unknown counts, never starved — the mapper emits
+    // nothing from it, only the accumulated per-issue events survive.
+    let capacity: DispatchCapacity = {
+      active: 0,
       max: this.options.maxParallelIssues,
-      heldBy,
+      heldBy: [],
       starved: false,
     };
-    let slots = Math.max(0, capacity.max - capacity.active);
-    if (slots === 0) {
-      // Read-only: nothing can start here; this only decides whether the full
-      // slots are genuinely holding up work (#65).
-      const starved = await this.#hasWaitingCandidate(await this.#observeCandidates(), heldBy);
-      return { started, planned, blocked, failed, capacity: { ...capacity, starved } };
+    try {
+      // Capacity reflects the tick's entry observation — the decision it made,
+      // not the post-run state. worktreeBranchIdentity keeps a detached-HEAD
+      // worktree (empty branch) nameable instead of silently holding a slot (#65).
+      const heldBy = (await this.#issueWorktrees()).map(worktreeBranchIdentity).sort();
+      capacity = {
+        active: heldBy.length,
+        max: this.options.maxParallelIssues,
+        heldBy,
+        starved: false,
+      };
+      let slots = Math.max(0, capacity.max - capacity.active);
+      if (slots === 0) {
+        // Read-only: nothing can start here; this only decides whether the full
+        // slots are genuinely holding up work (#65).
+        const starved = await this.#hasWaitingCandidate(await this.#observeCandidates(), heldBy);
+        return { started, planned, blocked, failed, capacity: { ...capacity, starved } };
+      }
+
+      const candidates = await this.#observeCandidates();
+
+      for (const candidate of candidates) {
+        if (slots === 0) break;
+        if (await this.#alreadyInFlight(candidate.number)) {
+          blocked.push({ issueNumber: candidate.number, reasons: ["ALREADY_IN_FLIGHT"] });
+          continue;
+        }
+        if (!(await this.#dependenciesSatisfied(candidate))) {
+          blocked.push({ issueNumber: candidate.number, reasons: ["DEPENDENCY_INCOMPLETE"] });
+          continue;
+        }
+
+        // Legacy catches only startIssue failures. Observation failures above abort the tick.
+        try {
+          const didStart = await this.#startIssue(candidate.number, options.dryRun === true);
+          if (!didStart) continue;
+          if (options.dryRun) planned.push(candidate.number);
+          else started.push(candidate.number);
+          slots -= 1;
+        } catch (error) {
+          failed.push({ issueNumber: candidate.number, message: errorMessage(error) });
+        }
+      }
+
+      return { started, planned, blocked, failed, capacity };
+    } catch (cause) {
+      // Starts that already happened left real agents and worktrees behind;
+      // the accumulated results ride the failure instead of vanishing.
+      throw new DispatchTickFailedError({ started, planned, blocked, failed, capacity }, cause);
     }
-
-    const candidates = await this.#observeCandidates();
-
-    for (const candidate of candidates) {
-      if (slots === 0) break;
-      if (await this.#alreadyInFlight(candidate.number)) {
-        blocked.push({ issueNumber: candidate.number, reasons: ["ALREADY_IN_FLIGHT"] });
-        continue;
-      }
-      if (!(await this.#dependenciesSatisfied(candidate))) {
-        blocked.push({ issueNumber: candidate.number, reasons: ["DEPENDENCY_INCOMPLETE"] });
-        continue;
-      }
-
-      // Legacy catches only startIssue failures. Observation failures above abort the tick.
-      try {
-        const didStart = await this.#startIssue(candidate.number, options.dryRun === true);
-        if (!didStart) continue;
-        if (options.dryRun) planned.push(candidate.number);
-        else started.push(candidate.number);
-        slots -= 1;
-      } catch (error) {
-        failed.push({ issueNumber: candidate.number, message: errorMessage(error) });
-      }
-    }
-
-    return { started, planned, blocked, failed, capacity };
   }
 
   async #observeCandidates(): Promise<readonly IssueObservation[]> {

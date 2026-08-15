@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
@@ -29,6 +28,7 @@ import {
   PROVEN_STRAY,
   RECONCILE_OPTIONS,
   seededIssueBranch,
+  startFakeOpencodeServer,
   WEDGE_MESSAGE,
   WEDGE_PR_NUMBER,
   wedgeFixture,
@@ -357,58 +357,6 @@ test("OPENCODE_SERVER_PASSWORD fails bootstrap before any opencode call, naming 
     expect(runner.calls.some((call) => call.command[0] === "opencode")).toBe(false);
   });
 });
-
-/** Records every request a fake `opencode serve` receives. */
-async function startFakeOpencodeServer(): Promise<{
-  baseUrl: string;
-  requests: { method: string; path: string }[];
-  close: () => void;
-}> {
-  const requests: { method: string; path: string }[] = [];
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const method = request.method ?? "GET";
-    requests.push({ method, path: url.pathname });
-    const json = (body: unknown) => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(body));
-    };
-    if (method === "GET" && url.pathname === "/api/session") {
-      json({ data: [], cursor: {} });
-      return;
-    }
-    // POST /session creates one; every session-scoped mutation below (prompt,
-    // abort, delete) just needs to succeed — nothing reads its body.
-    if (method === "POST" && url.pathname === "/session") {
-      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
-      return;
-    }
-    if (
-      (method === "POST" && /^\/session\/[^/]+\/(prompt_async|abort)$/.test(url.pathname)) ||
-      (method === "DELETE" && /^\/session\/[^/]+$/.test(url.pathname))
-    ) {
-      response.writeHead(200);
-      response.end();
-      return;
-    }
-    if (method === "GET" && /^\/session\/[^/]+$/.test(url.pathname)) {
-      json({ id: "ses_test", title: "fake", location: { directory: "/fake" } });
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("expected a bound TCP address");
-  }
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    requests,
-    close: () => server.close(),
-  };
-}
 
 async function runOpencodeLoop(dryRun: boolean): Promise<{
   startCalls: number;

@@ -29,6 +29,22 @@ export interface RepairServiceOptions {
   buildRed?(pullRequestNumber: number): string | undefined;
 }
 
+/**
+ * The run aborted on a later candidate after earlier pings/spawns already
+ * fired. Their results ride the error — the agents they addressed are live.
+ */
+export class RepairRunFailedError extends Error {
+  readonly partial: readonly RepairResult[];
+
+  constructor(partial: readonly RepairResult[], cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = cause instanceof Error ? cause.name : "Error";
+    this.cause = cause;
+    this.partial = partial;
+    if (cause instanceof Error && cause.stack) this.stack = cause.stack;
+  }
+}
+
 /** One-shot port of shepherd-prs.sh. Repair never owns merge authority. */
 export class RepairService {
   constructor(
@@ -43,6 +59,17 @@ export class RepairService {
 
   async run(dryRun = false): Promise<readonly RepairResult[]> {
     const results: RepairResult[] = [];
+    try {
+      await this.#run(dryRun, results);
+      return results;
+    } catch (cause) {
+      // A ping or spawn that already fired left a live agent behind; its
+      // result rides the failure instead of vanishing with the throw.
+      throw new RepairRunFailedError(results, cause);
+    }
+  }
+
+  async #run(dryRun: boolean, results: RepairResult[]): Promise<void> {
     // Legacy deliberately ignores an initial fetch failure.
     await this.workspace.fetchOrigin().catch(() => undefined);
 
@@ -121,7 +148,5 @@ export class RepairService {
         results.push({ pullRequestNumber: change.number, action: "SKIPPED", dryRun });
       }
     }
-
-    return results;
   }
 }

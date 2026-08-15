@@ -18,7 +18,6 @@ import {
   StatusWriter,
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
-import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interface";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
 import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
@@ -29,7 +28,7 @@ import {
   MaintenanceTickFailedError,
 } from "@score/core/maintenance/maintenance.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
-import { RepairService } from "@score/core/repair/repair.service";
+import { RepairRunFailedError, RepairService } from "@score/core/repair/repair.service";
 import {
   BunCommandRunner,
   LoggingCommandRunner,
@@ -59,19 +58,6 @@ import { projectTelemetry } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
-
-/**
- * The dispatch half of a maintenance tick that rejected before producing
- * results: only its (empty) shape is needed, so the decision mapper sees the
- * preserved cleanup evidence and no fabricated dispatch events.
- */
-const NO_DISPATCH_RESULT = {
-  started: [],
-  planned: [],
-  blocked: [],
-  failed: [],
-  capacity: { active: 0, max: 0, heldBy: [], starved: false },
-} as const satisfies DispatchResult;
 
 export interface DaemonArguments {
   readonly once: boolean;
@@ -863,14 +849,17 @@ export async function runDaemonLoop(
           await phase.run();
         } catch (error) {
           telemetry?.phaseFailed(error);
-          // A dispatch failure after cleanup ran must not erase cleanup's
-          // evidence: the completed half of the tick rides the error, and the
-          // empty dispatch shape yields no dispatch events from the mapper.
+          // Failures after real work carry that work's results: maintenance
+          // rides both halves' accumulated evidence (the empty dispatch shape
+          // yields no dispatch events), repair rides its earlier pings/spawns.
           if (error instanceof MaintenanceTickFailedError) {
             telemetry?.maintenanceDecisions({
               cleanup: error.cleanup,
-              dispatch: NO_DISPATCH_RESULT,
+              dispatch: error.dispatch,
             });
+          }
+          if (error instanceof RepairRunFailedError) {
+            telemetry?.repairDecisions(error.partial);
           }
           throw error;
         } finally {
@@ -961,8 +950,12 @@ export async function runDaemonLoop(
             last_gate_failure: lastGateFailure,
           });
           // Closed last, so the tick span's duration covers every phase span;
-          // passError mirrors status.json's last_error, nothing more.
-          telemetry?.endTick(passError);
+          // passError mirrors status.json's last_error, nothing more. A pass
+          // cut short by the opencode child's fatal exit is an error pass even
+          // though no phase reported one — runDaemonLoop throws right after.
+          telemetry?.endTick(
+            passError ?? (childError !== undefined ? `fatal: ${childError.message}` : null),
+          );
         } catch (error) {
           // The pass exited through a fatal path — a failed post-reset
           // verification, or a status write that could not land. The root

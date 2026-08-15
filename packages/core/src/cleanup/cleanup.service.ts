@@ -31,6 +31,23 @@ export interface CleanupServiceOptions {
   readonly staleTicks?: number;
 }
 
+/**
+ * The run aborted on a later observation after earlier worktrees were already
+ * handled. CLEANED/PLANNED results that pushed before the failure describe
+ * mutations that genuinely happened, so they ride the error.
+ */
+export class CleanupTickFailedError extends Error {
+  readonly partial: readonly CleanupResult[];
+
+  constructor(partial: readonly CleanupResult[], cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = cause instanceof Error ? cause.name : "Error";
+    this.cause = cause;
+    this.partial = partial;
+    if (cause instanceof Error && cause.stack) this.stack = cause.stack;
+  }
+}
+
 /** Cleanup acts only on merged PR observations and refuses unknown worktree dirt. */
 export class CleanupService {
   /**
@@ -51,51 +68,58 @@ export class CleanupService {
   ) {}
 
   async run(dryRun = false): Promise<readonly CleanupResult[]> {
+    // Results accumulated before a later observation failed ride the error:
+    // a CLEANED worktree is genuinely gone, and losing its decision would
+    // leave the mutation without its evidence.
     const results: CleanupResult[] = [];
-    let cleaned = 0;
-    const merged = await this.changes.observeMergedOwnedChanges();
-    for (const change of merged) {
-      const worktrees = (await this.workspace.observeWorktrees()).filter((worktree) =>
-        isOwnedIssueWorktree(worktree, this.options.workspaceRoot),
-      );
-      const worktree = worktrees.find((candidate) => candidate.branch === change.headRefName);
-      if (!worktree) {
-        results.push({ pullRequestNumber: change.number, action: "NOT_FOUND" });
-        continue;
+    try {
+      let cleaned = 0;
+      const merged = await this.changes.observeMergedOwnedChanges();
+      for (const change of merged) {
+        const worktrees = (await this.workspace.observeWorktrees()).filter((worktree) =>
+          isOwnedIssueWorktree(worktree, this.options.workspaceRoot),
+        );
+        const worktree = worktrees.find((candidate) => candidate.branch === change.headRefName);
+        if (!worktree) {
+          results.push({ pullRequestNumber: change.number, action: "NOT_FOUND" });
+          continue;
+        }
+
+        const status = await this.workspace.status(worktree.path);
+        if (!cleanupStatusIsSafe(status, this.options.harnessOwnedPaths)) {
+          results.push({
+            pullRequestNumber: change.number,
+            action: "BLOCKED_DIRTY",
+            message: "worktree contains changes outside the harness allowlist",
+          });
+          continue;
+        }
+        cleaned += 1;
+        if (dryRun) {
+          results.push({ pullRequestNumber: change.number, action: "PLANNED" });
+          continue;
+        }
+
+        const issueNumber = issueNumberFromBranch(worktree.branch);
+        if (issueNumber !== null) {
+          await this.agents.stop(sessionNameForIssue(this.options.namespace, issueNumber));
+        }
+        await this.workspace.removeWorktree(worktree);
+        // Legacy treats safe local-branch deletion failure as a warning, not failed cleanup.
+        await this.workspace.deleteBranch(worktree.branch);
+        results.push({ pullRequestNumber: change.number, action: "CLEANED" });
       }
 
-      const status = await this.workspace.status(worktree.path);
-      if (!cleanupStatusIsSafe(status, this.options.harnessOwnedPaths)) {
-        results.push({
-          pullRequestNumber: change.number,
-          action: "BLOCKED_DIRTY",
-          message: "worktree contains changes outside the harness allowlist",
-        });
-        continue;
-      }
-      cleaned += 1;
-      if (dryRun) {
-        results.push({ pullRequestNumber: change.number, action: "PLANNED" });
-        continue;
-      }
+      results.push(...(await this.#reclaimStranded(merged, dryRun)));
 
-      const issueNumber = issueNumberFromBranch(worktree.branch);
-      if (issueNumber !== null) {
-        await this.agents.stop(sessionNameForIssue(this.options.namespace, issueNumber));
+      // A clean, correctly checked-out primary branch is the only path to an automatic pull.
+      if (cleaned > 0 && this.options.autoPullMain) {
+        await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch);
       }
-      await this.workspace.removeWorktree(worktree);
-      // Legacy treats safe local-branch deletion failure as a warning, not failed cleanup.
-      await this.workspace.deleteBranch(worktree.branch);
-      results.push({ pullRequestNumber: change.number, action: "CLEANED" });
+      return results;
+    } catch (cause) {
+      throw new CleanupTickFailedError(results, cause);
     }
-
-    results.push(...(await this.#reclaimStranded(merged, dryRun)));
-
-    // A clean, correctly checked-out primary branch is the only path to an automatic pull.
-    if (cleaned > 0 && this.options.autoPullMain) {
-      await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch);
-    }
-    return results;
   }
 
   /**
