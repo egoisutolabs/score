@@ -22,7 +22,15 @@ const KEY = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 const LABEL_VALUE_CHARSET = /^[a-z0-9_.-]+$/;
 const HEX_RUN = /[0-9a-f]{7}/;
 const NUMBERED_IDENTITY = /-\d/;
+const DIGITS_ONLY = /^\d+$/;
 const MAX_LABEL_VALUE_LENGTH = 32;
+
+/**
+ * Subject identity can never become a label key either — `issue_number: "53"`
+ * is an unbounded per-subject series just as surely as a session name is.
+ */
+const SUBJECT_IDENTITY_KEY =
+  /(^|[._])(session|branch|issue_number|pull_request_number|sha|commit)([._]|$)/;
 
 /**
  * Redaction: attribute values that look like credentials, env assignments,
@@ -46,12 +54,15 @@ const SECRET_KEY_SEGMENT =
 /** Bounds "arbitrary payload" smuggling through an innocent key. */
 const MAX_ATTRIBUTE_VALUE_LENGTH = 256;
 
+/** The record contract requires ISO 8601 UTC; anything else defeats timestamp ordering. */
+const ISO_UTC_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
 export function isValidTelemetryName(name: string): boolean {
   return RECORD_NAME.test(name);
 }
 
 export function isValidMetricLabelKey(key: string): boolean {
-  return KEY.test(key);
+  return KEY.test(key) && !SUBJECT_IDENTITY_KEY.test(key);
 }
 
 export function isValidMetricLabelValue(value: string): boolean {
@@ -59,7 +70,8 @@ export function isValidMetricLabelValue(value: string): boolean {
     value.length <= MAX_LABEL_VALUE_LENGTH &&
     LABEL_VALUE_CHARSET.test(value) &&
     !HEX_RUN.test(value) &&
-    !NUMBERED_IDENTITY.test(value)
+    !NUMBERED_IDENTITY.test(value) &&
+    !DIGITS_ONLY.test(value)
   );
 }
 
@@ -78,6 +90,9 @@ export function attributeViolations(attributes: TelemetryAttributes): string[] {
   for (const [key, value] of Object.entries(attributes)) {
     if (!KEY.test(key)) violations.push(`invalid attribute key "${key}"`);
     if (SECRET_KEY_SEGMENT.test(key)) violations.push(`redacted attribute key "${key}"`);
+    if (typeof value === "number" && !Number.isFinite(value))
+      // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
+      violations.push(`non-finite value for attribute "${key}"`);
     if (typeof value !== "string") continue;
     if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH)
       violations.push(`attribute "${key}" exceeds ${MAX_ATTRIBUTE_VALUE_LENGTH} chars`);
@@ -95,7 +110,8 @@ export function recordViolations(record: TelemetryRecord): string[] {
   if (!isValidTelemetryName(record.name)) violations.push(`invalid name "${record.name}"`);
   if (record.kind !== "event" && record.kind !== "span")
     violations.push(`unknown kind "${String((record as TelemetryRecord).kind)}"`);
-  if (!record.time) violations.push("missing time");
+  if (!ISO_UTC_TIME.test(record.time ?? ""))
+    violations.push(`time is not an ISO 8601 UTC timestamp: "${String(record.time)}"`);
   if (!record.resource?.project) violations.push("missing resource.project");
   if (record.attributes !== undefined) violations.push(...attributeViolations(record.attributes));
   return violations;

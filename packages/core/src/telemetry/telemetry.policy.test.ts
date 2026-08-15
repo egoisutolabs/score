@@ -48,6 +48,7 @@ test("metric labels reject subject IDs, paths, SHAs, and free text", () => {
     "deadbeefcafe", // short hex run, still SHA-shaped
     "Fix the flaky landing test", // free text
     "a-very-long-free-text-value-that-goes-on-and-on",
+    "53", // a bare subject number is an unbounded per-subject series
     "",
   ];
   for (const value of rejected) {
@@ -55,6 +56,10 @@ test("metric labels reject subject IDs, paths, SHAs, and free text", () => {
   }
   expect(metricLabelViolations({ outcome: identity.sessionName })).toHaveLength(1);
   expect(metricLabelViolations({ outcome: "blocked" })).toHaveLength(0);
+  // Subject identity as a label *key* is identity in metrics all the same.
+  for (const key of ["issue_number", "pull_request_number", "session", "branch", "sha"]) {
+    expect(metricLabelViolations({ [key]: "x" }), key).not.toEqual([]);
+  }
 });
 
 test("attributes allow high-cardinality identity — that is where it belongs", () => {
@@ -87,6 +92,9 @@ test("redaction rejects prompts, tokens, environment values, and payloads", () =
   }
   // Arbitrary payloads: an oversized value is rejected even under a clean key.
   expect(attributeViolations({ note: "x".repeat(300) })).not.toEqual([]);
+  // Non-finite numbers would be stored as JSON null, outside the declared contract.
+  expect(attributeViolations({ count: Number.NaN })).not.toEqual([]);
+  expect(attributeViolations({ count: Number.POSITIVE_INFINITY })).not.toEqual([]);
 });
 
 test("recordViolations gates version, name, kind, and attributes together", () => {
@@ -103,4 +111,8 @@ test("recordViolations gates version, name, kind, and attributes together", () =
   expect(recordViolations({ ...good, version: 2 })).not.toEqual([]);
   expect(recordViolations({ ...good, name: "not a name" })).not.toEqual([]);
   expect(recordViolations({ ...good, attributes: { prompt: "do the thing" } })).not.toEqual([]);
+  // Only ISO 8601 UTC timestamps keep records orderable across readers.
+  expect(recordViolations({ ...good, time: "not-a-time" })).not.toEqual([]);
+  expect(recordViolations({ ...good, time: new Date(0).toString() })).not.toEqual([]);
+  expect(recordViolations({ ...good, time: "2026-08-15T12:00:00Z" })).toEqual([]);
 });

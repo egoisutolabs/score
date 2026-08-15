@@ -50,6 +50,10 @@ export class TelemetryLogService {
   append(record: TelemetryRecord): void {
     try {
       const violations = recordViolations(record);
+      // A record for another project would land in this project's segments
+      // and misattribute telemetry to every reader — reject, never reroute.
+      if (record.resource?.project !== this.resource.project)
+        violations.push(`resource.project is not "${this.resource.project}"`);
       if (violations.length > 0) {
         this.fail(`telemetry record "${record.name}" rejected: ${violations.join("; ")}`);
         return;
@@ -88,10 +92,18 @@ export class TelemetryLogService {
     }
     const records: TelemetryRecord[] = [];
     const warnings: string[] = [];
+    const snapshot = new Set(segments);
     let segment = cursor.segment;
     let offset = cursor.byte_offset;
     for (;;) {
       const result = this.readSegment(segment, offset, filter, records, warnings);
+      // A segment that was in this call's snapshot (or that the cursor had
+      // already consumed bytes of) but whose file is gone was deleted by a
+      // concurrent retention sweep — expire, never silently skip its records.
+      // A date absent from the snapshot at offset 0 is just a day with no records.
+      if (result.missing && (snapshot.has(segment) || offset > 0)) {
+        return { outcome: "cursor-expired", records: [], warnings: [], cursor };
+      }
       offset = result.offset;
       // Never advance past a withheld partial line: the writer's torn-write
       // recovery will terminate it, and only then do those bytes resolve.
@@ -141,12 +153,12 @@ export class TelemetryLogService {
     filter: TelemetryFilter | undefined,
     records: TelemetryRecord[],
     warnings: string[],
-  ): { offset: number; complete: boolean } {
+  ): { offset: number; complete: boolean; missing?: boolean } {
     let buffer: Buffer;
     try {
       buffer = readFileSync(join(this.dir, `${date}.jsonl`));
     } catch {
-      return { offset, complete: true }; // a day with no records
+      return { offset, complete: true, missing: true }; // read() decides: gap day or deleted
     }
     if (offset >= buffer.length) return { offset, complete: true };
     const pending = buffer.subarray(offset);
@@ -174,6 +186,10 @@ export class TelemetryLogService {
       warnings.push(`unparseable line in ${date}.jsonl`);
       return;
     }
+    if (typeof parsed !== "object" || parsed === null) {
+      warnings.push(`non-record line in ${date}.jsonl`);
+      return;
+    }
     // Unknown fields ride along untouched; only the version gates the line.
     const record = parsed as TelemetryRecord;
     if (record.version !== TELEMETRY_VERSION) {
@@ -190,22 +206,29 @@ export class TelemetryLogService {
    * record begins on a clean line, and emit a gap record as the evidence.
    */
   private recoverTornWrite(): void {
-    this.recovered = true;
     mkdirSync(this.dir, { recursive: true });
     const newest = this.listSegments().at(-1);
-    if (newest === undefined) return;
-    const path = join(this.dir, `${newest}.jsonl`);
-    const size = statSync(path).size;
-    if (size === 0 || readByteAt(path, size - 1) === NEWLINE) return;
-    appendFileSync(path, "\n");
-    this.writeLine({
-      version: TELEMETRY_VERSION,
-      time: this.now().toISOString(),
-      name: GAP_RECORD_NAME,
-      kind: "event",
-      resource: this.resource,
-      attributes: { segment: newest },
-    });
+    if (newest !== undefined) {
+      const path = join(this.dir, `${newest}.jsonl`);
+      const size = statSync(path).size;
+      if (size > 0 && readByteAt(path, size - 1) !== NEWLINE) {
+        const gap: TelemetryRecord = {
+          version: TELEMETRY_VERSION,
+          time: this.now().toISOString(),
+          name: GAP_RECORD_NAME,
+          kind: "event",
+          resource: this.resource,
+          attributes: { segment: newest },
+        };
+        // One write into the torn segment itself: the terminator and the gap
+        // evidence land together or not at all, so a death mid-recovery can
+        // never leave a cleanly-terminated fragment with its gap record lost.
+        appendFileSync(path, `\n${JSON.stringify(gap)}\n`);
+      }
+    }
+    // Only after success — a throw above leaves recovery pending, and the
+    // next append retries it instead of concatenating onto the fragment.
+    this.recovered = true;
   }
 
   private writeLine(record: TelemetryRecord): void {
@@ -218,7 +241,11 @@ export class TelemetryLogService {
     const at = this.now().getTime();
     if (at - this.lastErrorReportAt < ERROR_REPORT_INTERVAL_MS) return;
     this.lastErrorReportAt = at;
-    this.onError(message);
+    try {
+      this.onError(message);
+    } catch {
+      // A throwing reporter must not escape into a phase — telemetry is never authoritative.
+    }
   }
 }
 

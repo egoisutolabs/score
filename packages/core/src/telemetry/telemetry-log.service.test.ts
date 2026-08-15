@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -139,6 +139,94 @@ test("UTC rotation neither loses nor duplicates the boundary record", async () =
   ]);
 });
 
+test("a segment deleted between read()'s snapshot and its open expires the cursor", async () => {
+  const dir = await sandbox();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "2026-07-16.jsonl"),
+    `${JSON.stringify(event("score.dispatch.started", "2026-07-16T12:00:00.000Z"))}\n`,
+  );
+  writeFileSync(
+    join(dir, "2026-07-20.jsonl"),
+    `${JSON.stringify(event("score.landing.merged", "2026-07-20T12:00:00.000Z"))}\n`,
+  );
+  const log = new TelemetryLogService(dir, resource, clock("2026-08-15T12:00:00Z").now);
+  const cursor = log.startCursor();
+  expect(cursor.segment).toBe("2026-07-16");
+
+  // Simulate a retention sweep landing inside read()'s race window: the
+  // snapshot still lists the segment while its file is already gone.
+  (log as unknown as { listSegments: () => string[] }).listSegments = () => [
+    "2026-07-16",
+    "2026-07-20",
+  ];
+  unlinkSync(join(dir, "2026-07-16.jsonl"));
+
+  const result = log.read(cursor);
+  expect(result.outcome).toBe("cursor-expired");
+  expect(result.records).toEqual([]);
+  expect(result.cursor).toEqual(cursor);
+});
+
+test("a never-written day is skipped; consumed bytes in a vanished segment expire", async () => {
+  const dir = await sandbox();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "2026-07-16.jsonl"),
+    `${JSON.stringify(event("score.dispatch.started", "2026-07-16T12:00:00.000Z"))}\n`,
+  );
+  writeFileSync(
+    join(dir, "2026-07-20.jsonl"),
+    `${JSON.stringify(event("score.landing.merged", "2026-07-20T12:00:00.000Z"))}\n`,
+  );
+  const log = new TelemetryLogService(dir, resource, clock("2026-08-15T12:00:00Z").now);
+
+  // A cursor on a gap day (no file ever existed) just advances — not expired.
+  const gapDay = {
+    project: "demo",
+    source: "telemetry" as const,
+    segment: "2026-07-18",
+    byte_offset: 0,
+  };
+  const advanced = log.read(gapDay);
+  expect(advanced.outcome).toBe("ok");
+  expect(advanced.records.map((record) => record.name)).toEqual(["score.landing.merged"]);
+
+  // The same missing date with consumed bytes proves the segment existed and was deleted.
+  const midSegment = { ...gapDay, byte_offset: 10 };
+  expect(log.read(midSegment).outcome).toBe("cursor-expired");
+});
+
+test("a transient failure during recovery leaves it pending — the next append retries", async () => {
+  const dir = await sandbox();
+  const time = clock("2026-08-15T12:00:00Z");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "2026-08-15.jsonl"), '{"version":1,"name":"score.torn');
+
+  const log = new TelemetryLogService(dir, resource, time.now);
+  const patched = log as unknown as { recoverTornWrite: () => void };
+  const original = patched.recoverTornWrite.bind(log);
+  let calls = 0;
+  patched.recoverTornWrite = () => {
+    calls += 1;
+    if (calls === 1) throw new Error("disk hiccup");
+    original();
+  };
+
+  log.append(event("score.dispatch.started", "2026-08-15T12:00:00.000Z"));
+  expect(log.appendFailures).toBe(1); // failed append counted, recovery still pending
+
+  log.append(event("score.repair.pinged", "2026-08-15T12:00:05.000Z"));
+  const result = log.read(log.startCursor());
+  // The retried recovery terminated the fragment before the record landed —
+  // nothing concatenated onto the torn tail.
+  expect(result.records.map((record) => record.name)).toEqual([
+    GAP_RECORD_NAME,
+    "score.repair.pinged",
+  ]);
+  expect(result.warnings).toHaveLength(1);
+});
+
 test("a v1 reader yields every v1 record over unknown fields and versions — one warning, no crash", async () => {
   const dir = await sandbox();
   mkdirSync(dir, { recursive: true });
@@ -150,7 +238,7 @@ test("a v1 reader yields every v1 record over unknown fields and versions — on
   const v1Plain = event("score.landing.merged", "2026-08-15T12:00:02.000Z");
   writeFileSync(
     join(dir, "2026-08-15.jsonl"),
-    [v1WithUnknownField, unknownVersion, v1Plain].map((r) => `${JSON.stringify(r)}\n`).join(""),
+    `${[v1WithUnknownField, unknownVersion, v1Plain].map((r) => `${JSON.stringify(r)}\n`).join("")}null\n`,
   );
 
   const log = new TelemetryLogService(dir, resource, clock("2026-08-15T13:00:00Z").now);
@@ -162,8 +250,10 @@ test("a v1 reader yields every v1 record over unknown fields and versions — on
   expect((result.records[0] as TelemetryRecord & { future_field?: string }).future_field).toBe(
     "kept",
   );
-  expect(result.warnings).toHaveLength(1);
+  expect(result.warnings).toHaveLength(2);
   expect(result.warnings[0]).toContain("unknown record version 2");
+  // Valid JSON that is not an object (`null`) warns instead of crashing the reader.
+  expect(result.warnings[1]).toContain("non-record");
 });
 
 test("subject identity round-trips byte-identical from dispatch.identity values", async () => {
@@ -239,5 +329,23 @@ test("rejected appends never write, count failures, and rate-limit error reports
   expect(log.appendFailures).toBe(3);
   expect(errors).toHaveLength(2);
 
+  // A record for another project is rejected, never written into this project's segments.
+  log.append(
+    event("score.dispatch.started", "2026-08-15T12:01:01.000Z", {
+      resource: { project: "other" },
+    }),
+  );
+  expect(log.appendFailures).toBe(4);
+
   expect(existsSync(join(dir, "2026-08-15.jsonl"))).toBe(false);
+});
+
+test("a throwing onError reporter never escapes into the caller", async () => {
+  const dir = await sandbox();
+  const log = new TelemetryLogService(dir, resource, clock("2026-08-15T12:00:00Z").now, () => {
+    throw new Error("reporter writes to the same dead disk");
+  });
+  const bad = event("not a telemetry name", "2026-08-15T12:00:00.000Z");
+  expect(() => log.append(bad)).not.toThrow();
+  expect(log.appendFailures).toBe(1);
 });
