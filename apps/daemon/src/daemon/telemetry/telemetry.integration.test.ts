@@ -126,8 +126,19 @@ test("a JSONL append failure changes no phase result, render output, or phase or
   // lines — only the rate-limited telemetry failure warns differ.
   expect(failing.commands).toEqual(control.commands);
   const stripTelemetry = (lines: readonly LogLine[]) =>
-    lines.filter((line) => !line.text.startsWith("telemetry append failed"));
+    lines.filter(
+      (line) =>
+        !line.text.startsWith("telemetry append failed") &&
+        !line.text.startsWith("telemetry retention sweep failed"),
+    );
   expect(stripTelemetry(failing.log.logged)).toEqual(stripTelemetry(control.log.logged));
+
+  // The broken telemetry path (a file where the segment dir belongs) warns
+  // exactly once for the sweep and once for the appends inside the interval.
+  const sweepWarns = failing.log.logged.filter((line) =>
+    line.text.startsWith("telemetry retention sweep failed"),
+  );
+  expect(sweepWarns).toHaveLength(1);
 
   // Many appends failed (three phase spans, the tick span, every event), but
   // the failure report is rate-limited to one line inside the interval.

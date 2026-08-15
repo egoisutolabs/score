@@ -124,12 +124,23 @@ export class TelemetryLogService {
   /**
    * Deletes whole dated segments strictly older than the retention window —
    * same boundary rule as the prose log: a segment dated exactly `days` ago
-   * survives.
+   * survives. A directory that cannot be enumerated (EACCES, ENOTDIR, ...)
+   * throws rather than reporting a successful sweep of nothing — the caller
+   * must keep the day unswept and retry; only a missing directory has no
+   * stale segments to delete.
    */
   sweepRetention(days: number): void {
     const cutoff = dateStamp(new Date(this.now().getTime() - days * 86_400_000));
-    for (const date of this.listSegments()) {
-      if (date < cutoff) unlinkSync(join(this.dir, `${date}.jsonl`));
+    let names: string[];
+    try {
+      names = readdirSync(this.dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const name of names) {
+      const date = SEGMENT_FILE.exec(name)?.[1];
+      if (date !== undefined && date < cutoff) unlinkSync(join(this.dir, `${date}.jsonl`));
     }
   }
 

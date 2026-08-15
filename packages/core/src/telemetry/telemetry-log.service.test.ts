@@ -312,6 +312,24 @@ test("retention deletes whole strictly-older segments and expires their cursors"
   expect(result.cursor).toEqual(expiredCursor);
 });
 
+test("a sweep over an unreadable directory throws — never reports success over nothing", async () => {
+  // A directory-shaped path occupied by a file enumerates as ENOTDIR, the
+  // same non-absence failure class as EACCES but testable without chmod.
+  const parent = await sandbox();
+  const blocked = join(parent, "telemetry");
+  writeFileSync(blocked, "not a directory\n");
+  const log = new TelemetryLogService(blocked, resource, clock("2026-08-15T12:00:00Z").now);
+  expect(() => log.sweepRetention(30)).toThrow();
+
+  // A missing directory genuinely has no stale segments: absence is not a failure.
+  const missing = new TelemetryLogService(
+    join(parent, "absent"),
+    resource,
+    clock("2026-08-15T12:00:00Z").now,
+  );
+  expect(() => missing.sweepRetention(30)).not.toThrow();
+});
+
 test("rejected appends never write, count failures, and rate-limit error reports", async () => {
   const dir = await sandbox();
   const time = clock("2026-08-15T12:00:00Z");

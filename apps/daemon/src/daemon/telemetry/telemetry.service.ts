@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { LandingResult } from "@score/core/landing/change.interface";
 import type { MaintenanceTickResult } from "@score/core/maintenance/maintenance.service";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
@@ -15,12 +16,23 @@ import type {
 import {
   landingDecisionEvents,
   maintenanceDecisionEvents,
-  newSpanId,
-  newTraceId,
   phaseSpanRecord,
   repairDecisionEvents,
   tickSpanRecord,
 } from "./telemetry.render";
+
+/**
+ * OTel-shaped correlation identity. Lives with the stateful service, not the
+ * pure render module: minting ids is a side effect, and the recorder is the
+ * only thing that needs fresh ones.
+ */
+export function newTraceId(): string {
+  return randomBytes(16).toString("hex");
+}
+
+export function newSpanId(): string {
+  return randomBytes(8).toString("hex");
+}
 
 /**
  * Correlation ids of the span active right now. The telemetry writer's

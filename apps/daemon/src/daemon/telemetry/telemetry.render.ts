@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import type { LandingResult } from "@score/core/landing/change.interface";
 import type { MaintenanceTickResult } from "@score/core/maintenance/maintenance.service";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
@@ -43,14 +42,6 @@ export interface TelemetryEnv {
 export type TickOutcome = "ok" | "error";
 /** "suppressed" is reserved for the landing phase skipped by D1 reconciliation. */
 export type PhaseOutcome = "ok" | "error" | "suppressed";
-
-export function newTraceId(): string {
-  return randomBytes(16).toString("hex");
-}
-
-export function newSpanId(): string {
-  return randomBytes(8).toString("hex");
-}
 
 function correlation(trace: TickTrace, env: TelemetryEnv): TelemetryAttributes {
   return {

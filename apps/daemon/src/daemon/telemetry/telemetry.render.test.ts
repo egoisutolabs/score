@@ -10,12 +10,11 @@ import { expect, test } from "vitest";
 import {
   landingDecisionEvents,
   maintenanceDecisionEvents,
-  newSpanId,
-  newTraceId,
   phaseSpanRecord,
   repairDecisionEvents,
   tickSpanRecord,
 } from "./telemetry.render";
+import { newSpanId, newTraceId } from "./telemetry.service";
 
 const TIME = "2026-08-15T12:00:00.000Z";
 const ENV = { resource: { project: "demo", daemon_pid: 4242 }, dry_run: false };
