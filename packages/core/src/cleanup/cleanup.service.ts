@@ -114,12 +114,15 @@ export class CleanupService {
     const tick = this.#tick++;
     const staleTicks = this.options.staleTicks ?? 10;
     const results: StrandedCleanupResult[] = [];
-    // A branch with any PR — open (repair's domain) or merged (the loop
-    // above's domain) — is never stranded.
+    // A branch with any PR — open (repair's domain), merged (the loop
+    // above's domain), or closed (an operator's abandonment verdict) — is
+    // never stranded.
     const branchesWithChanges = new Set(
-      [...(await this.changes.observeOpenChangeHeads()), ...merged].map(
-        (change) => change.headRefName,
-      ),
+      [
+        ...(await this.changes.observeOpenChangeHeads()),
+        ...merged,
+        ...(await this.changes.observeClosedOwnedChanges()),
+      ].map((change) => change.headRefName),
     );
     const seen = new Set<number>();
     const worktrees = (await this.workspace.observeWorktrees()).filter((worktree) =>
@@ -258,6 +261,20 @@ export class CleanupService {
     const { worktree, branch, issueNumber, sessionName, sessionAlive, dirt } = stranded;
     if (sessionAlive) {
       return { issueNumber, action: "STRANDED_DIRTY", dryRun, message: dirt };
+    }
+    // A detached checkout cannot host a useful respawn: both runtimes just
+    // launch in worktree.path, so the new agent's commits would stay
+    // off-branch and its PR could never target the issue branch — each dead
+    // replacement would re-enter this arm instead of converging. Leave the
+    // state loud for explicit operator recovery (clean detached worktrees
+    // still reclaim normally above).
+    if (worktree.branch === "") {
+      return {
+        issueNumber,
+        action: "STRANDED_DIRTY",
+        dryRun,
+        message: `${dirt}; worktree is detached from its branch — operator recovery required`,
+      };
     }
     if (!dryRun) {
       await this.agents.startImplementation(

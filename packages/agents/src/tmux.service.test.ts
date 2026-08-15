@@ -674,3 +674,14 @@ test("sessionExists: an unrecognized tmux failure fails closed instead of readin
   const service = new TmuxService(runner, { repositoryPath: "/repo" });
   await expect(service.sessionExists("issue-7")).rejects.toThrow("did not confirm");
 });
+
+// "error connecting" only proves absence when the socket itself is gone or
+// dead; a live-but-unreachable server (wrong permissions) must fail closed.
+test("sessionExists: a connection failure that does not prove the server gone fails closed", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    { exitCode: 1, stderr: "error connecting to /tmp/tmux-501/default (Permission denied)" },
+  ];
+  const service = new TmuxService(runner, { repositoryPath: "/repo" });
+  await expect(service.sessionExists("issue-7")).rejects.toThrow("did not confirm");
+});

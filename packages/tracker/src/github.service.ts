@@ -152,8 +152,15 @@ export class GitHubService implements WorkSource, ChangeHost {
     return changes.filter((change) => isIssueBranch(change.headRefName));
   }
 
+  // gh's "closed" state is GraphQL CLOSED — closed without merging — so this
+  // set is disjoint from observeMergedOwnedChanges, not a superset of it.
+  async observeClosedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {
+    const changes = await this.#observeChangeIdentities("closed", "number,headRefName");
+    return changes.filter((change) => isIssueBranch(change.headRefName));
+  }
+
   async #observeChangeIdentities(
-    state: "open" | "merged",
+    state: "open" | "merged" | "closed",
     fields: string,
   ): Promise<readonly PullRequestIdentity[]> {
     const raw = await this.#listComplete(

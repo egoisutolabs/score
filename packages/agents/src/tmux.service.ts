@@ -34,11 +34,14 @@ interface TmuxServiceOptions {
 /**
  * tmux's confirmed-absence answers across versions: a missing session
  * ("can't find session" / "session not found") or no server at all ("no
- * server running", "error connecting" to a vanished socket) — a server that
- * isn't running has no sessions by definition.
+ * server running", or connecting failed because the socket is gone or
+ * nothing listens on it) — a server that isn't running has no sessions by
+ * definition. Connection failures that do NOT prove the server gone
+ * (e.g. "Permission denied") deliberately stay outside this set: the
+ * server and its agents may be alive and merely unreachable from here.
  */
 const CONFIRMED_SESSION_ABSENT =
-  /can't find session|session not found|no server running|error connecting/;
+  /can't find session|session not found|no server running|error connecting to .*\((No such file or directory|Connection refused)\)/;
 
 /** Durable local process adapter using argv-safe tmux commands. */
 export class TmuxService implements AgentRuntime {

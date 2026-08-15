@@ -41,6 +41,10 @@ export class PassCachedChangeHost implements ChangeHost {
     return this.inner.observeMergedOwnedChanges();
   }
 
+  observeClosedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {
+    return this.inner.observeClosedOwnedChanges();
+  }
+
   unresolvedThreadCount(pullRequestNumber: number): Promise<number> {
     return this.inner.unresolvedThreadCount(pullRequestNumber);
   }

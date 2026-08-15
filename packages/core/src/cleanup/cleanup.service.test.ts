@@ -297,6 +297,51 @@ test("stranded (#64): a branch with an open PR is repair's domain — never touc
   expect(workspace.removed).toEqual([]);
 });
 
+test("stranded (#64): a branch with a closed PR is abandoned by verdict — never touched", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.worktreeStatus = " M src/app.ts\n"; // would otherwise respawn
+  const agents = makeStrandedAgents([]);
+  const withClosedPr: ChangeHost = {
+    ...emptyHost,
+    async observeClosedOwnedChanges() {
+      return [{ number: 98, headRefName: strandedWorktree.branch }];
+    },
+  };
+  const service = makeStrandedService(workspace, agents, withClosedPr);
+
+  expect(await service.run(false)).toEqual([]);
+  expect(await service.run(false)).toEqual([]);
+  expect(agents.started).toEqual([]);
+  expect(agents.pinged).toEqual([]);
+  expect(workspace.removed).toEqual([]);
+});
+
+// Both runtimes launch a respawn in worktree.path as-is, so a detached
+// checkout would leave the new agent committing off-branch forever — that
+// state stays loud for operator recovery instead.
+test("stranded (#64): a detached worktree with real work is not respawned into — loud, untouched", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.live = [{ ...strandedWorktree, branch: "" }];
+  workspace.worktreeStatus = " M src/app.ts\n";
+  const agents = makeStrandedAgents([]);
+  const service = makeStrandedService(workspace, agents);
+
+  for (let tick = 0; tick < 2; tick++) {
+    const result = await service.run(false);
+    expect(result).toEqual([
+      {
+        issueNumber: 21,
+        action: "STRANDED_DIRTY",
+        dryRun: false,
+        message:
+          "worktree contains changes outside the harness allowlist; worktree is detached from its branch — operator recovery required",
+      },
+    ]);
+  }
+  expect(agents.started).toEqual([]);
+  expect(workspace.removed).toEqual([]);
+});
+
 test("stranded (#64): a new commit restarts the silence window", async () => {
   const workspace = new StrandedFixtureWorkspace();
   const agents = makeStrandedAgents(["issue-21"]);

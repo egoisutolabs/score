@@ -125,6 +125,9 @@ const changes: ChangeHost = {
   async observeMergedOwnedChanges(): Promise<readonly PullRequestObservation[]> {
     return [];
   },
+  async observeClosedOwnedChanges() {
+    return [];
+  },
   async observeOpenChangeHeads() {
     return [];
   },

@@ -61,6 +61,9 @@ export const mergedHost: ChangeHost = {
   async observeMergedOwnedChanges() {
     return [merged];
   },
+  async observeClosedOwnedChanges() {
+    return [];
+  },
   async observeOpenChangeHeads() {
     return [];
   },

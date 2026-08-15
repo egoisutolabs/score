@@ -70,6 +70,9 @@ function changes(): ChangeHost {
     async observeMergedOwnedChanges() {
       return [];
     },
+    async observeClosedOwnedChanges() {
+      return [];
+    },
     async observeOpenChangeHeads() {
       return [];
     },
@@ -140,6 +143,9 @@ test("review-thread query failure retains shepherd's fail-open zero", async () =
       return [clean];
     },
     async observeMergedOwnedChanges() {
+      return [];
+    },
+    async observeClosedOwnedChanges() {
       return [];
     },
     async observeOpenChangeHeads() {
