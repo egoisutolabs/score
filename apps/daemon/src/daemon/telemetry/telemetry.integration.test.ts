@@ -502,6 +502,60 @@ test("decisions are recorded before the fallible prose sink", async () => {
   expect(decisions.map((decision) => decision.attributes?.["score.action"])).toContain("planned");
 }, 20_000);
 
+test("cleanup decisions survive a dispatch failure inside the maintenance phase", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const mergedPr = JSON.stringify({
+      number: 9,
+      headRefName: "issue-9-fix-the-thing",
+      mergedAt: "2026-08-15T10:00:00Z",
+    });
+    const runner = new FakeRunner((command) => {
+      // One merged PR with no worktree → cleanup records NOT_FOUND, then
+      // dispatch's candidate observation dies on malformed JSON.
+      if (command[0] === "gh" && command[1] === "pr" && command[2] === "list") {
+        return command.includes("merged") ? { stdout: `[${mergedPr}]\n` } : { stdout: "[]\n" };
+      }
+      if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
+        return { stdout: "{not json\n" };
+      }
+      return managedResponsesSeeded(repo)(command);
+    });
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+    // The phase failed loudly, with the underlying cause's message.
+    expect(
+      log.logged.some(
+        (line) =>
+          line.level === "warn" &&
+          line.text.startsWith("✗ phase cleanup+dispatch failed: gh returned invalid JSON"),
+      ),
+    ).toBe(true);
+  });
+
+  const records = await readTelemetry(home);
+  // The cleanup decision for the observed merged PR survived the dispatch
+  // failure — the mutation evidence rode the error into the trace.
+  const cleanupDecision = records.find((record) => record.name === "score.cleanup.decision");
+  expect(cleanupDecision?.subject).toEqual({ pull_request_number: 9 });
+  expect(cleanupDecision?.attributes?.["score.action"]).toBe("NOT_FOUND");
+  // No dispatch events were fabricated from the failed half of the tick.
+  expect(records.some((record) => record.name === "score.dispatch.decision")).toBe(false);
+  // The phase span still records the failure, under the same trace.
+  const spans = records.filter((record) => record.kind === "span") as TelemetrySpan[];
+  const failedPhase = spans.find(
+    (span) => span.attributes?.["score.phase.name"] === "cleanup+dispatch",
+  );
+  expect(failedPhase?.attributes?.["score.outcome"]).toBe("error");
+  expect(failedPhase?.attributes?.trace_id).toBe(cleanupDecision?.attributes?.trace_id);
+}, 20_000);
+
 test("unmanaged discovery mode records nothing — no project key to segment under", async () => {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const saved = process.env.SCORE_HOME;

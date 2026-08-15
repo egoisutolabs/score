@@ -18,12 +18,16 @@ import {
   StatusWriter,
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
+import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interface";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
 import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
-import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
+import {
+  LegacyWorkflowService,
+  MaintenanceTickFailedError,
+} from "@score/core/maintenance/maintenance.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
 import {
@@ -55,6 +59,19 @@ import { projectTelemetry } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
+
+/**
+ * The dispatch half of a maintenance tick that rejected before producing
+ * results: only its (empty) shape is needed, so the decision mapper sees the
+ * preserved cleanup evidence and no fabricated dispatch events.
+ */
+const NO_DISPATCH_RESULT = {
+  started: [],
+  planned: [],
+  blocked: [],
+  failed: [],
+  capacity: { active: 0, max: 0, heldBy: [], starved: false },
+} as const satisfies DispatchResult;
 
 export interface DaemonArguments {
   readonly once: boolean;
@@ -846,6 +863,15 @@ export async function runDaemonLoop(
           await phase.run();
         } catch (error) {
           telemetry?.phaseFailed(error);
+          // A dispatch failure after cleanup ran must not erase cleanup's
+          // evidence: the completed half of the tick rides the error, and the
+          // empty dispatch shape yields no dispatch events from the mapper.
+          if (error instanceof MaintenanceTickFailedError) {
+            telemetry?.maintenanceDecisions({
+              cleanup: error.cleanup,
+              dispatch: NO_DISPATCH_RESULT,
+            });
+          }
           throw error;
         } finally {
           telemetry?.endPhase();
