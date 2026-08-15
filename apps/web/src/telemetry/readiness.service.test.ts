@@ -76,10 +76,33 @@ describe("assessReadiness", () => {
     });
   });
 
-  test("an unreadable telemetry store flips readiness with a reason code", async () => {
+  // Root ignores mode bits, so permission-based unreadability only bites
+  // unprivileged runners; the file-occupancy test below is the root-proof one.
+  const unprivileged = (process.getuid?.() ?? 0) !== 0;
+  test.skipIf(!unprivileged)(
+    "an unreadable telemetry store flips readiness with a reason code",
+    async () => {
+      const home = await scoreHome();
+      const dir = await withSegment(home, "demo");
+      await chmod(dir, 0o000);
+      vi.stubEnv("SCORE_HOME", home);
+      const report = await assessReadiness();
+      expect(report.ready).toBe(false);
+      expect(report.checks).toContainEqual({
+        name: "telemetry:demo",
+        ready: false,
+        reason_code: "telemetry-unreadable",
+      });
+      await chmod(dir, 0o755);
+    },
+  );
+
+  test("a store occupied by a regular file is unreadable even for root", async () => {
+    // chmod-based unreadability evaporates under a root runner, so the
+    // portable proof uses a file where the directory belongs — no
+    // permission bit is honored, the shape itself is wrong.
     const home = await scoreHome();
-    const dir = await withSegment(home, "demo");
-    await chmod(dir, 0o000);
+    await writeFile(join(home, "projects", "demo", "telemetry"), "not a store", "utf8");
     vi.stubEnv("SCORE_HOME", home);
     const report = await assessReadiness();
     expect(report.ready).toBe(false);
@@ -88,8 +111,25 @@ describe("assessReadiness", () => {
       ready: false,
       reason_code: "telemetry-unreadable",
     });
-    await chmod(dir, 0o755);
   });
+
+  // Root ignores mode bits, so the open-probe proof only bites unprivileged.
+  test.skipIf(!unprivileged)(
+    "a traversable dir over an unopenable segment is not ready",
+    async () => {
+      const home = await scoreHome();
+      const dir = await withSegment(home, "demo");
+      await chmod(join(dir, "2026-08-15.jsonl"), 0o000);
+      vi.stubEnv("SCORE_HOME", home);
+      const report = await assessReadiness();
+      expect(report.ready).toBe(false);
+      expect(report.checks).toContainEqual({
+        name: "telemetry:demo",
+        ready: false,
+        reason_code: "telemetry-unreadable",
+      });
+    },
+  );
 
   test("a missing resolved config flips only its own check", async () => {
     const home = await scoreHome();

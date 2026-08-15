@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { telemetryDir } from "@score/shared/config/layout";
 import { loadConfig } from "@score/shared/config/load";
@@ -76,7 +76,11 @@ async function telemetryReadable(key: string): Promise<boolean> {
   for (const name of names) {
     if (!SEGMENT_FILE.test(name)) continue;
     try {
-      await stat(join(dir, name));
+      // Probe with a real open, not stat: metadata stays readable on a
+      // mode-000 file, but TelemetryLogService.readSegment() could not
+      // open it — readiness must report what the reader can do.
+      const handle = await open(join(dir, name), "r");
+      await handle.close();
     } catch (error) {
       // A segment vanishing mid-probe is retention doing its job — the
       // reader expires cursors past it, it does not flip readiness.

@@ -53,15 +53,85 @@ export function parseEnvelope(block: string): StreamEnvelope | undefined {
   // A frame with an event name outside the closed v1 set is not ours —
   // reject rather than admit an unknown name as a parsed envelope.
   if (!EVENT_NAMES.includes(event as StreamEventName)) return undefined;
+  let payload: unknown;
   try {
-    return {
-      event: event as StreamEventName,
-      data: JSON.parse(data.join("\n")) as StreamEventData,
-      ...(sequence && { sequence }),
-    };
+    payload = JSON.parse(data.join("\n"));
   } catch {
     return undefined;
   }
+  if (!payloadMatches(event as StreamEventName, payload)) return undefined;
+  return {
+    event: event as StreamEventName,
+    data: payload as StreamEventData,
+    ...(sequence && { sequence }),
+  };
+}
+
+/**
+ * Payload guards per event name: the parser's return type promises a
+ * `StreamEventData`, so every recognized name must prove its payload's
+ * shape — a well-named frame with a malformed body is not a frame. Checks
+ * are structural only, matching the reader's tolerance: unknown fields ride
+ * along untouched, exactly as TelemetryLogService parses stored lines.
+ * `score.telemetry.metric`/`log` have no payload vocabulary in v1 (#53);
+ * until one exists, no payload can prove itself theirs.
+ */
+function payloadMatches(event: StreamEventName, payload: unknown): boolean {
+  switch (event) {
+    case "score.snapshot.project":
+      return (
+        isRecord(payload) &&
+        string(payload.project) &&
+        string(payload.health) &&
+        string(payload.observed_at)
+      );
+    case "score.telemetry.span":
+    case "score.telemetry.event":
+      return (
+        isRecord(payload) &&
+        (payload.source === "telemetry" || payload.source === "log") &&
+        isRecord(payload.record) &&
+        payload.record.kind === event.slice("score.telemetry.".length) &&
+        typeof payload.record.version === "number" &&
+        string(payload.record.time) &&
+        string(payload.record.name) &&
+        isRecord(payload.record.resource) &&
+        string(payload.record.resource.project)
+      );
+    case "score.telemetry.metric":
+    case "score.telemetry.log":
+      return false;
+    case "score.stream.caught_up":
+      return isRecord(payload) && payload.follow === true && isCursorMap(payload.through);
+    case "score.stream.error":
+      return (
+        isRecord(payload) &&
+        (payload.reason_code === "cursor-expired" ||
+          payload.reason_code === "not-ready" ||
+          payload.reason_code === "internal")
+      );
+  }
+}
+
+/** The fleet cursor is the resume token — every entry must be a real cursor. */
+function isCursorMap(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every(
+    (cursor) =>
+      isRecord(cursor) &&
+      string(cursor.project) &&
+      (cursor.source === "telemetry" || cursor.source === "log") &&
+      string(cursor.segment) &&
+      typeof cursor.byte_offset === "number",
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function string(value: unknown): value is string {
+  return typeof value === "string";
 }
 
 /**

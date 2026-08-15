@@ -65,8 +65,18 @@ test("data split across wire lines joins into one payload", () => {
   // The SSE spec delivers each data: line's content joined with newlines;
   // JSON allows newlines between tokens, so pretty-printed payloads must
   // reassemble — the parser joins before parsing, never per-line.
-  const block = 'event: score.telemetry.event\ndata: {\ndata: "a": 1\ndata: }\n\n';
-  expect(parseEnvelope(block)).toEqual({ event: "score.telemetry.event", data: { a: 1 } });
+  const block = [
+    "event: score.stream.caught_up",
+    "data: {",
+    'data:   "through": {},',
+    'data:   "follow": true',
+    "data: }",
+    "",
+  ].join("\n");
+  expect(parseEnvelope(block)).toEqual({
+    event: "score.stream.caught_up",
+    data: { through: {}, follow: true },
+  });
 });
 
 test("an error envelope renders only its reason code — no internals escape", () => {
@@ -87,4 +97,39 @@ test("non-frame input parses to undefined", () => {
 
 test("an event name outside the closed v1 set is not ours", () => {
   expect(parseEnvelope("event: other.system.event\ndata: {}\n")).toBeUndefined();
+});
+
+test.each([
+  ["error frame with a null payload", "score.stream.error", "null"],
+  ["error frame with an unknown reason code", "score.stream.error", '{"reason_code":"teapot"}'],
+  ["error frame with extra shape drift", "score.stream.error", '{"reason":1}'],
+  [
+    "snapshot missing observed_at",
+    "score.snapshot.project",
+    '{"project":"score","health":"running"}',
+  ],
+  [
+    "record payload without a resource",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y"}}',
+  ],
+  [
+    "span payload carrying an event record",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"}}}',
+  ],
+  [
+    "caught-up payload that does not follow",
+    "score.stream.caught_up",
+    '{"through":{},"follow":false}',
+  ],
+  [
+    "caught-up cursor with a foreign source",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"otlp","segment":"2026-08-15","byte_offset":0}},"follow":true}',
+  ],
+  ["reserved metric name with no payload vocabulary", "score.telemetry.metric", "{}"],
+  ["reserved log name with no payload vocabulary", "score.telemetry.log", "{}"],
+])("malformed frame: %s", (_name, event, data) => {
+  expect(parseEnvelope(`event: ${event}\ndata: ${data}\n`)).toBeUndefined();
 });
