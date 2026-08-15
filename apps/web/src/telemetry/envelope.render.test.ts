@@ -279,6 +279,11 @@ test.each([
     '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-08-15","byte_offset":1.5}},"follow":true}',
   ],
   [
+    "caught-up cursor with an unsafe-integer byte_offset",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-08-15","byte_offset":9007199254740992}},"follow":true}',
+  ],
+  [
     "caught-up cursor with a non-dated segment",
     "score.stream.caught_up",
     '{"through":{"k":{"project":"score","source":"telemetry","segment":"zzzz","byte_offset":0}},"follow":true}',

@@ -244,9 +244,10 @@ function isCursorMap(value: unknown): value is Record<string, unknown> {
       // stamp past today has never existed — it strands the cursor exactly
       // like an impossible date, but with a plausible-looking calendar day.
       cursor.segment <= utcTodayStamp() &&
-      // Offsets index into a byte buffer at line boundaries — negative or
-      // fractional values would misalign a resumed read.
-      Number.isInteger(cursor.byte_offset) &&
+      // Offsets index into a byte buffer at line boundaries — negative,
+      // fractional, or unsafe values (past every segment's end, so the
+      // reader would skip records forever) would misalign a resumed read.
+      Number.isSafeInteger(cursor.byte_offset) &&
       (cursor.byte_offset as number) >= 0,
   );
 }
