@@ -126,17 +126,19 @@ async function telemetryReadable(key: string): Promise<boolean> {
       if (!(await stat(path)).isFile()) return false;
     } catch (error) {
       if ((error as { code?: string }).code !== "ENOENT") return false;
-      // ENOENT with the name still occupying the directory: either
-      // retention just deleted the entry, or a dangling symlink sits at
-      // the segment path. The reader's snapshot includes the name and
-      // expires cursors against it, so only an entry that is fully gone
-      // may pass as retention — a link that still occupies the name
-      // (lstat succeeds where stat failed) is an unreadable segment.
+      // ENOENT with the name still in the readdir snapshot: only lstat's
+      // own ENOENT proves retention fully removed the entry. Anything
+      // lstat still finds (a dangling symlink, or an entry swapped in
+      // after stat's ENOENT) occupies a name the reader's snapshot
+      // selects and expires cursors against, and any other lstat failure
+      // leaves removal unproven — both are an unreadable segment, same
+      // rule as the store path above.
       try {
-        if ((await lstat(path)).isSymbolicLink()) return false;
-        continue;
-      } catch {
-        continue; // fully vanished by now — retention
+        await lstat(path);
+        return false;
+      } catch (lstatError) {
+        if ((lstatError as { code?: string }).code !== "ENOENT") return false;
+        continue; // fully vanished — retention
       }
     }
     try {

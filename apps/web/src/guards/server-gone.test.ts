@@ -29,22 +29,40 @@ function trackedFiles(): { root: string; paths: string[] } {
   return { root, paths };
 }
 
-test("no live reference to the deleted server stub survives", async () => {
+test("no live reference to the deleted server stub survives", () => {
   const patterns = serverPatterns();
   const { root, paths } = trackedFiles();
-  const offenders: string[] = [];
+  const offenders = new Set<string>();
   for (const path of paths) {
     // The tracked path itself first: a resurrected stub-app file (whatever
-    // its contents say) proves the app is back. Contents come from the git
-    // blob, not the filesystem: a tracked symlink's resolved target (a
-    // dangling link, a directory) is not what git versioned.
-    const text = blobText(root, path);
+    // its contents say) proves the app is back.
     for (const pattern of patterns) {
-      if (pattern.test(path)) offenders.push(path);
-      if (pattern.test(text)) offenders.push(path);
+      if (pattern.test(path)) offenders.add(path);
     }
   }
-  expect(offenders).toEqual([]);
+  // Contents come from the git blobs, not the filesystem: a tracked
+  // symlink's resolved target (a dangling link, a directory) is not what
+  // git versioned. All blobs stream out of ONE git process — spawning
+  // `git show` per tracked file times out on slow CI runners. Batch
+  // headers (`<oid> blob <size>`) cannot match the needle patterns and no
+  // pattern can match across a `\n`-delimited blob boundary, so a match
+  // anywhere in the batch is a real reference; only then pay per-file
+  // reads to name the offenders.
+  const batch = execFileSync("git", ["cat-file", "--batch"], {
+    cwd: root,
+    encoding: "utf8",
+    input: paths.map((path) => `HEAD:${path}`).join("\n"),
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (patterns.some((pattern) => pattern.test(batch))) {
+    for (const path of paths) {
+      const text = blobText(root, path);
+      for (const pattern of patterns) {
+        if (pattern.test(text)) offenders.add(path);
+      }
+    }
+  }
+  expect([...offenders]).toEqual([]);
 });
 
 /** `HEAD:<path>` — the versioned bytes. Untracked-in-HEAD paths read empty. */
