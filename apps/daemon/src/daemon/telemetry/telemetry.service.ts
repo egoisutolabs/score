@@ -54,32 +54,46 @@ export interface TickTelemetry {
 
 export interface TickTelemetryServiceOptions {
   /**
-   * Performs the retention sweep. Provided as a callback so projectTelemetry
-   * can wrap its failures into warnings; the recorder itself only decides
-   * when to call it.
+   * Performs the retention sweep; may throw. The service reports the failure
+   * and leaves the day unswept, so the next tick retries — an operator
+   * restoring directory permissions later the same day is recovered without
+   * a restart.
    */
   readonly sweep?: () => void;
-  /** Tick clock; overridable so tests can drive a UTC rollover. */
+  /** Wall clock for record timestamps; never used for durations. */
   readonly now?: () => Date;
+  /**
+   * Monotonic clock for span durations. Wall-clock subtraction would emit
+   * negative or inflated duration_ms under an NTP step mid-tick.
+   */
+  readonly mono?: () => number;
+  /** Telemetry-failure reports (a failed sweep, a disabled recorder). */
+  readonly onError?: (message: string) => void;
 }
 
 /**
  * Holds the open tick/phase spans of the pass in flight and appends each
  * closed span and each mapped decision as one complete record. End methods
  * are idempotent no-ops without a matching begin, so a wrapper's finally can
- * call them on every exit path.
+ * call them on every exit path. A telemetry-side failure (ids, clock, sweep)
+ * disables the recorder for the rest of the process and reports once —
+ * instrumentation is never authoritative over a phase or a pass (locked
+ * decision 9), so no method here may throw.
  */
 export class TickTelemetryService implements TickTelemetry {
   readonly #writer: TelemetryLogService;
   readonly #env: TelemetryEnv;
   readonly #correlation: SpanCorrelation;
   readonly #now: () => Date;
+  readonly #mono: () => number;
   readonly #sweep?: () => void;
+  readonly #onError?: (message: string) => void;
   // Retention mirrors the prose log's rule (file-log.ts): sweep at startup
   // and again whenever a later tick observes a new UTC date — a supervised
   // daemon runs for weeks, and a startup-only sweep would stop pruning after
-  // its first day.
+  // its first day. The date is recorded only after a successful sweep.
   #sweptDate: string | undefined;
+  #disabled = false;
   #tick: TickTrace | undefined;
   #tickOpenedAt = 0;
   #phase: PhaseTrace | undefined;
@@ -98,43 +112,61 @@ export class TickTelemetryService implements TickTelemetry {
     this.#env = { resource, dry_run: dryRun };
     this.#correlation = correlation;
     this.#now = options.now ?? (() => new Date());
+    this.#mono = options.mono ?? (() => performance.now());
     this.#sweep = options.sweep;
-    this.#sweepOnRollover();
+    this.#onError = options.onError;
+    this.#guarded(() => this.#sweepOnRollover());
   }
 
   beginTick(tickNumber: number): void {
-    this.#sweepOnRollover();
-    this.#tick = { trace_id: newTraceId(), span_id: newSpanId(), tick_number: tickNumber };
-    this.#tickOpenedAt = this.#now().getTime();
-    this.#correlation.trace_id = this.#tick.trace_id;
-    this.#correlation.span_id = this.#tick.span_id;
+    this.#guarded(() => {
+      this.#sweepOnRollover();
+      this.#tick = { trace_id: newTraceId(), span_id: newSpanId(), tick_number: tickNumber };
+      this.#tickOpenedAt = this.#mono();
+      this.#correlation.trace_id = this.#tick.trace_id;
+      this.#correlation.span_id = this.#tick.span_id;
+    });
   }
 
   beginPhase(name: string): void {
-    if (this.#tick === undefined) return;
-    this.#phase = {
-      trace_id: this.#tick.trace_id,
-      span_id: newSpanId(),
-      tick_number: this.#tick.tick_number,
-      phase: name,
-      parent_span_id: this.#tick.span_id,
-    };
-    this.#phaseOpenedAt = this.#now().getTime();
-    this.#phaseErrorType = undefined;
-    this.#phaseSuppressed = false;
-    this.#correlation.span_id = this.#phase.span_id;
+    this.#guarded(() => {
+      if (this.#tick === undefined) return;
+      this.#phase = {
+        trace_id: this.#tick.trace_id,
+        span_id: newSpanId(),
+        tick_number: this.#tick.tick_number,
+        phase: name,
+        parent_span_id: this.#tick.span_id,
+      };
+      this.#phaseOpenedAt = this.#mono();
+      this.#phaseErrorType = undefined;
+      this.#phaseSuppressed = false;
+      this.#correlation.span_id = this.#phase.span_id;
+    });
   }
 
   maintenanceDecisions(result: MaintenanceTickResult): void {
-    this.#decisions(maintenanceDecisionEvents(result, this.#phaseTrace(), this.#env, this.#time()));
+    this.#guarded(() => {
+      if (this.#phase === undefined) return;
+      for (const record of maintenanceDecisionEvents(result, this.#phase, this.#env, this.#time()))
+        this.#writer.append(record);
+    });
   }
 
   landingDecisions(results: readonly LandingResult[]): void {
-    this.#decisions(landingDecisionEvents(results, this.#phaseTrace(), this.#env, this.#time()));
+    this.#guarded(() => {
+      if (this.#phase === undefined) return;
+      for (const record of landingDecisionEvents(results, this.#phase, this.#env, this.#time()))
+        this.#writer.append(record);
+    });
   }
 
   repairDecisions(results: readonly RepairResult[]): void {
-    this.#decisions(repairDecisionEvents(results, this.#phaseTrace(), this.#env, this.#time()));
+    this.#guarded(() => {
+      if (this.#phase === undefined) return;
+      for (const record of repairDecisionEvents(results, this.#phase, this.#env, this.#time()))
+        this.#writer.append(record);
+    });
   }
 
   phaseSuppressed(): void {
@@ -147,8 +179,38 @@ export class TickTelemetryService implements TickTelemetry {
   }
 
   endPhase(): void {
-    if (this.#tick === undefined || this.#phase === undefined) return;
-    const closedAt = this.#now().getTime();
+    this.#guarded(() => {
+      if (this.#tick === undefined || this.#phase === undefined) return;
+      const openedAt = this.#phaseOpenedAt;
+      this.#appendPhase(openedAt);
+      this.#correlation.span_id = this.#tick.span_id;
+      this.#phase = undefined;
+    });
+  }
+
+  endTick(passError: string | null): void {
+    this.#guarded(() => {
+      if (this.#tick === undefined) return;
+      const openedAt = this.#tickOpenedAt;
+      const outcome: TickOutcome = passError === null ? "ok" : "error";
+      this.#writer.append(
+        tickSpanRecord({
+          trace: this.#tick,
+          env: this.#env,
+          started_at: openedAt,
+          ended_at: this.#mono(),
+          time: this.#time(),
+          outcome,
+        }),
+      );
+      this.#correlation.trace_id = undefined;
+      this.#correlation.span_id = undefined;
+      this.#tick = undefined;
+    });
+  }
+
+  #appendPhase(openedAt: number): void {
+    const phase = this.#phase as PhaseTrace;
     const outcome: PhaseOutcome =
       this.#phaseSuppressed === true
         ? "suppressed"
@@ -157,44 +219,15 @@ export class TickTelemetryService implements TickTelemetry {
           : "error";
     this.#writer.append(
       phaseSpanRecord({
-        trace: this.#phase,
+        trace: phase,
         env: this.#env,
-        started_at: this.#phaseOpenedAt,
-        ended_at: closedAt,
-        time: new Date(closedAt).toISOString(),
+        started_at: openedAt,
+        ended_at: this.#mono(),
+        time: this.#time(),
         outcome,
         ...(this.#phaseErrorType !== undefined && { error_type: this.#phaseErrorType }),
       }),
     );
-    this.#correlation.span_id = this.#tick.span_id;
-    this.#phase = undefined;
-  }
-
-  endTick(passError: string | null): void {
-    if (this.#tick === undefined) return;
-    const closedAt = this.#now().getTime();
-    const outcome: TickOutcome = passError === null ? "ok" : "error";
-    this.#writer.append(
-      tickSpanRecord({
-        trace: this.#tick,
-        env: this.#env,
-        started_at: this.#tickOpenedAt,
-        ended_at: closedAt,
-        time: new Date(closedAt).toISOString(),
-        outcome,
-      }),
-    );
-    this.#correlation.trace_id = undefined;
-    this.#correlation.span_id = undefined;
-    this.#tick = undefined;
-  }
-
-  #decisions(records: ReturnType<typeof maintenanceDecisionEvents>): void {
-    for (const record of records) this.#writer.append(record);
-  }
-
-  #phaseTrace(): PhaseTrace {
-    return this.#phase as PhaseTrace;
   }
 
   #time(): string {
@@ -205,8 +238,31 @@ export class TickTelemetryService implements TickTelemetry {
     if (this.#sweep === undefined) return;
     const today = this.#now().toISOString().slice(0, 10);
     if (today === this.#sweptDate) return;
-    this.#sweptDate = today;
+    // Only a successful sweep marks the day — a failure reports and leaves
+    // the day unswept so the next tick retries it.
     this.#sweep();
+    this.#sweptDate = today;
+  }
+
+  /**
+   * Telemetry must never suppress daemon work: any internal failure disables
+   * the recorder (silently for the caller, loudly via onError) instead of
+   * escaping into a phase or the pass loop.
+   */
+  #guarded(step: () => void): void {
+    if (this.#disabled) return;
+    try {
+      step();
+    } catch (error) {
+      this.#disabled = true;
+      this.#correlation.trace_id = undefined;
+      this.#correlation.span_id = undefined;
+      this.#onError?.(
+        `telemetry disabled after a failure: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }
 
@@ -223,32 +279,22 @@ export function projectTelemetry(
   correlation: SpanCorrelation,
 ): TickTelemetry {
   const resource: TelemetryResource = { project, daemon_pid: process.pid };
-  const writer = new TelemetryLogService(telemetryDir(project), resource, undefined, (message) => {
-    // The writer's failure report is the one new prose line; stamp it with
-    // the active span when it fires mid-pass. A throwing reporter stays the
-    // writer's problem (it swallows that itself) — never a phase's.
+  // The writer's failure report is the one new prose line; stamp it with the
+  // active span when it fires mid-pass. A throwing reporter stays the
+  // writer's problem (it swallows that itself) — never a phase's.
+  const report = (message: string) =>
     log.warn(
       correlation.trace_id === undefined
         ? message
         : `${message} (trace_id=${correlation.trace_id} span_id=${correlation.span_id})`,
     );
-  });
+  const writer = new TelemetryLogService(telemetryDir(project), resource, undefined, report);
   return new TickTelemetryService(writer, resource, dryRun, correlation, {
     // Telemetry keeps the prose log's retention window — no knob of its own.
-    // The sweep itself is wrapped so its failure warns like every other
-    // telemetry failure instead of throwing into a tick (locked decision 9).
-    ...(logRetentionDays !== undefined && {
-      sweep: () => {
-        try {
-          writer.sweepRetention(logRetentionDays);
-        } catch (error) {
-          log.warn(
-            `telemetry retention sweep failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      },
-    }),
+    // The service owns failure isolation: a failed sweep reports through the
+    // same warn path and retries next tick instead of throwing into one
+    // (locked decision 9).
+    ...(logRetentionDays !== undefined && { sweep: () => writer.sweepRetention(logRetentionDays) }),
+    onError: report,
   });
 }

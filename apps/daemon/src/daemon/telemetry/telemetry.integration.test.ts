@@ -279,6 +279,120 @@ test("retention re-sweeps on UTC rollover at tick start — not only at daemon s
   await rm(dir, { recursive: true, force: true });
 });
 
+test("a failed sweep leaves the day unswept — the next tick retries it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
+  const clock = new Date("2026-08-15T12:00:00Z");
+  const writer = new TelemetryLogService(dir, { project: "demo" }, () => clock);
+  const reported: string[] = [];
+  let failSweep = true;
+  const telemetry = new TickTelemetryService(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    {
+      sweep: () => {
+        if (failSweep) throw new Error("permission denied");
+        writer.sweepRetention(30);
+      },
+      now: () => clock,
+      onError: (message) => reported.push(message),
+    },
+  );
+
+  // The startup sweep failed and reported; the day stays unswept.
+  expect(reported).toHaveLength(1);
+  expect(reported[0]).toContain("telemetry disabled after a failure");
+  // Recording is disabled for the process — not retried into another warn.
+  telemetry.beginTick(0);
+  expect(reported).toHaveLength(1);
+
+  // A fresh recorder (next process) with the failure cleared sweeps at boot:
+  // the operator fixed the permissions without any restart-dependency in the
+  // sweep itself — the retry comes from the day never being marked swept.
+  failSweep = false;
+  const restarted = new TickTelemetryService(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    {
+      sweep: () => writer.sweepRetention(30),
+      now: () => clock,
+    },
+  );
+  restarted.beginTick(0);
+  expect(reported).toHaveLength(1);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("span durations come from the monotonic clock — a wall-clock step never corrupts them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
+  let wall = new Date("2026-08-15T12:00:00Z");
+  let mono = 1_000;
+  const writer = new TelemetryLogService(dir, { project: "demo" }, () => wall);
+  const telemetry = new TickTelemetryService(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    { now: () => wall, mono: () => mono },
+  );
+
+  telemetry.beginTick(0);
+  telemetry.beginPhase("repair");
+  mono += 250;
+  // An NTP step moves the wall clock backwards mid-span; durations must not
+  // follow it.
+  wall = new Date("2026-08-15T11:00:00Z");
+  telemetry.repairDecisions([]);
+  telemetry.endPhase();
+  mono += 250;
+  telemetry.endTick(null);
+
+  const read = new TelemetryLogService(dir, { project: "demo" }, () => wall);
+  const spans = read.read(read.startCursor()).records.filter((record) => record.kind === "span");
+  for (const span of spans) {
+    expect((span as { duration_ms: number }).duration_ms).toBeGreaterThan(0);
+  }
+  expect(
+    (spans.find((span) => span.name === "score.tick") as { duration_ms: number }).duration_ms,
+  ).toBe(500);
+  expect(
+    (spans.find((span) => span.name === "score.phase") as { duration_ms: number }).duration_ms,
+  ).toBe(250);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a telemetry-side failure disables recording without ever throwing into the pass", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
+  const reported: string[] = [];
+  const writer = new TelemetryLogService(dir, { project: "demo" });
+  const telemetry = new TickTelemetryService(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    {
+      // Random-id generation is the failure point: ids come from the OS.
+      now: () => {
+        throw new Error("entropy exhausted");
+      },
+      onError: (message) => reported.push(message),
+    },
+  );
+
+  expect(() => telemetry.beginTick(0)).not.toThrow();
+  expect(() => telemetry.beginPhase("repair")).not.toThrow();
+  expect(() => telemetry.repairDecisions([])).not.toThrow();
+  expect(() => telemetry.endPhase()).not.toThrow();
+  expect(() => telemetry.endTick(null)).not.toThrow();
+  expect(reported).toHaveLength(1);
+  // Nothing was recorded — the recorder is disabled, not half-alive.
+  expect((await readdir(dir)).length).toBe(0);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("unmanaged discovery mode records nothing — no project key to segment under", async () => {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const saved = process.env.SCORE_HOME;
