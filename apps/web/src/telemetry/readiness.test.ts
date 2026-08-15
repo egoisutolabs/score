@@ -219,8 +219,8 @@ describe("assessReadiness", () => {
     });
   });
 
-  // readFile blocks forever on a FIFO: the probe must reject these entries
-  // by type before loadConfig/readResolvedProject are ever called.
+  // A blocking readFile on a FIFO hangs forever: the probe must obtain the
+  // bytes via a nonblocking handle and reject non-regular entries by type.
   test.skipIf(!hasMkfifo)(
     "a FIFO at config.jsonc flips the config check without hanging",
     async () => {

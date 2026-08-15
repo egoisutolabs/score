@@ -30,6 +30,17 @@ export async function readResolvedProject(
     }
     throw error;
   }
+  return parseResolvedProject(key, text, path);
+}
+
+/**
+ * Parse + validate already-read resolved.json text. Split from
+ * readResolvedProject so a caller that must control how the bytes are
+ * obtained (the /readyz probe reads through a nonblocking handle to survive
+ * a FIFO swapped in at the path) never re-opens the path with a blocking
+ * readFile.
+ */
+export function parseResolvedProject(key: string, text: string, path: string): ResolvedProject {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

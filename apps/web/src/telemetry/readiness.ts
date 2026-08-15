@@ -1,9 +1,9 @@
 import { constants } from "node:fs";
-import { lstat, open, readdir, stat } from "node:fs/promises";
+import { type FileHandle, lstat, open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { configPath, resolvedPath, telemetryDir } from "@score/shared/config/layout";
-import { loadConfig } from "@score/shared/config/load";
-import { readResolvedProject } from "@score/shared/config/resolved";
+import { parseScoreConfig } from "@score/shared/config/load";
+import { parseResolvedProject } from "@score/shared/config/resolved";
 
 /**
  * The /readyz probe: can the app read everything a stream would serve —
@@ -29,8 +29,7 @@ export async function assessReadiness(): Promise<ReadinessReport> {
   const checks: ReadinessCheck[] = [];
   let selected: string[] = [];
   try {
-    await requireReadableFile(configPath(), "config");
-    const config = await loadConfig();
+    const config = parseScoreConfig(await readRegularFile(configPath(), "config"));
     checks.push({ name: "config", ready: true });
     // Disabled projects have no daemon and no store — probing them would
     // report red for a project the stream is not allowed to select anyway.
@@ -44,8 +43,8 @@ export async function assessReadiness(): Promise<ReadinessReport> {
   }
   for (const key of selected) {
     try {
-      await requireReadableFile(resolvedPath(key), `resolved:${key}`);
-      await readResolvedProject(key);
+      const path = resolvedPath(key);
+      parseResolvedProject(key, await readRegularFile(path, `resolved:${key}`), path);
       checks.push({ name: `resolved:${key}`, ready: true });
     } catch {
       checks.push({ name: `resolved:${key}`, ready: false, reason_code: "resolved-unreadable" });
@@ -64,20 +63,29 @@ async function telemetryCheck(key: string): Promise<ReadinessCheck> {
 }
 
 /**
- * readFile-based owners (loadConfig, readResolvedProject) block forever on
- * a FIFO — the probe must reject a non-regular entry by type before the
- * reader is ever called, or /readyz hangs instead of answering 503. A
- * missing entry passes through so the owner reports it in its own words.
+ * A blocking readFile on a FIFO hangs /readyz forever instead of answering
+ * 503, and a stat-then-readFile pair leaves a swap race between the calls.
+ * So the probe obtains the bytes itself: open nonblocking (a FIFO yields a
+ * handle immediately instead of blocking), fstat the handle to prove the
+ * descriptor is a regular file, and read through that same descriptor —
+ * the path is never re-touched, so nothing swapped in later can hang us.
  */
-async function requireReadableFile(path: string, what: string): Promise<void> {
-  let isFile: boolean;
+async function readRegularFile(path: string, what: string): Promise<string> {
+  let handle: FileHandle;
   try {
-    isFile = (await stat(path)).isFile();
+    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (error) {
-    if ((error as { code?: string }).code === "ENOENT") return;
     throw new Error(`${what} unreadable at ${path}: ${String(error)}`);
   }
-  if (!isFile) throw new Error(`${what} is not a regular file at ${path}`);
+  try {
+    if (!(await handle.stat()).isFile()) {
+      throw new Error(`${what} is not a regular file at ${path}`);
+    }
+    // O_NONBLOCK is inert on a regular file — this read cannot hang.
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 async function telemetryReadable(key: string): Promise<boolean> {

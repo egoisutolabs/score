@@ -19,7 +19,16 @@ import {
 export const PROJECT_KEY_PATTERN = /^[a-z0-9-]+$/;
 
 export async function loadConfig(path: string = configPath()): Promise<ScoreConfig> {
-  const text = await readFile(path, "utf8");
+  return parseScoreConfig(await readFile(path, "utf8"));
+}
+
+/**
+ * Parse + validate already-read config text. Split from loadConfig so a
+ * caller that must control how the bytes are obtained (the /readyz probe
+ * reads through a nonblocking handle to survive a FIFO swapped in at the
+ * path) never re-opens the path with a blocking readFile.
+ */
+export function parseScoreConfig(text: string): ScoreConfig {
   let parsed: unknown;
   try {
     parsed = parseJsonc(text);
