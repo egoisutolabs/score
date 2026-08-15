@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
@@ -93,6 +93,49 @@ function installedDefinitionPath(key: string): string {
   return join(projectDir(key), "job.plist");
 }
 
+/**
+ * Serializes the multi-step supervisor mutations (`up`'s and `restart`'s
+ * stop → install → record → start) per project across processes: without
+ * it, two concurrent commands can interleave their install and record
+ * steps so the record agrees with one command while the supervisor runs
+ * the other's bytes — a mismatch no later reconciliation can see. The
+ * contended caller fails with a clear message instead of mutating; a lock
+ * whose holder is dead (or unreadable) is broken so a process death while
+ * holding it costs at most the one retried command.
+ * ponytail: pid-liveness staleness check — a reused pid could pin a stale
+ * lock; switch to timestamp+timeout if that ever bites.
+ */
+async function withProjectLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const lockPath = join(projectDir(key), "mutate.lock");
+  await mkdir(projectDir(key), { recursive: true });
+  for (;;) {
+    try {
+      await writeFile(lockPath, String(process.pid), { flag: "wx" });
+      break;
+    } catch {
+      const holder = Number(await readFile(lockPath, "utf8").catch(() => ""));
+      let alive = false;
+      if (Number.isInteger(holder) && holder > 0) {
+        try {
+          process.kill(holder, 0);
+          alive = true;
+        } catch {
+          alive = false;
+        }
+      }
+      if (alive) {
+        throw new Error(`'${key}' is being modified by pid ${holder} — retry when it finishes`);
+      }
+      await rm(lockPath, { force: true });
+    }
+  }
+  try {
+    return await action();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+
 export interface UpDependencies {
   readonly adapter: SupervisorAdapter;
   readonly invocationFor: (key: string) => readonly string[];
@@ -178,12 +221,14 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
   let restarted = 0;
   const apply = async (project: ResolvedProject, restart: boolean): Promise<void> => {
     try {
-      const definition = renderFor(project);
-      if (restart) await adapter.stop(project.key);
-      await writeResolvedJson(project);
-      await adapter.install(project.key, definition);
-      await writeFile(installedDefinitionPath(project.key), definition, "utf8");
-      await adapter.start(project.key);
+      await withProjectLock(project.key, async () => {
+        const definition = renderFor(project);
+        if (restart) await adapter.stop(project.key);
+        await writeResolvedJson(project);
+        await adapter.install(project.key, definition);
+        await writeFile(installedDefinitionPath(project.key), definition, "utf8");
+        await adapter.start(project.key);
+      });
       if (restart) restarted++;
       else started++;
     } catch (error) {
@@ -198,6 +243,50 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
   console.log(
     `started=${started} restarted=${restarted} unchanged=${unchanged.length} removed=${removed.length}`,
   );
+}
+
+/**
+ * Forced restart, the TUI `r` semantics kept on the CLI path: `up` only
+ * restarts on config/definition drift, so a wedged daemon with an unchanged
+ * config needs this. Reuses the saved definition install() last wrote rather
+ * than re-rendering — restart must bring back exactly the job that was
+ * running, never silently apply config edits (`score up` owns that).
+ */
+export async function runRestart(
+  args: readonly string[],
+  adapter: SupervisorAdapter = defaultSupervisor().adapter,
+): Promise<void> {
+  const key = parseSingleKey(args, "restart <key>");
+  if (key === undefined) throw new Error("usage: score restart <key>");
+  // Disabled or unknown projects fail closed before any adapter call —
+  // restart must not be a back door around `up`'s enabled-only planning.
+  const desired = resolveProjects(await loadConfig());
+  if (!desired.some((project) => project.key === key)) {
+    throw new Error(`no enabled project '${key}' in config`);
+  }
+  // The read sits inside the lock too: it must not observe a record a
+  // concurrent `up` is mid-way through replacing.
+  await withProjectLock(key, async () => {
+    // Read before stop: a missing or empty saved definition must fail here,
+    // without booting out a running job we could not bring back.
+    const definition = await readFile(installedDefinitionPath(key), "utf8").catch(() => null);
+    if (definition === null || definition.trim() === "") {
+      throw new Error(`no saved job definition for '${key}' — run: score up ${key}`);
+    }
+    // stop → install → start, each boundary convergent (INVARIANTS.md):
+    // a death after stop leaves a definition-only job the next `score up`
+    // plans as a start; a death after install leaves a registered job the
+    // supervisor launches itself (launchd KeepAlive implies RunAtLoad,
+    // systemd installs with `enable --now`), and a retried restart converges.
+    await adapter.stop(key);
+    await adapter.install(key, definition);
+    // Keep the "what install() last wrote" record accurate — with the lock
+    // this is a no-op rewrite, kept so the record invariant holds locally
+    // even if a stale lock was ever broken mid-mutation.
+    await writeFile(installedDefinitionPath(key), definition, "utf8");
+    await adapter.start(key);
+  });
+  console.log(`restarted '${key}'`);
 }
 
 export async function runDown(

@@ -9,6 +9,7 @@ import {
   resolvedPath,
   scoreHome,
   statusPath,
+  telemetryDir,
 } from "@score/shared/config/layout";
 import { afterEach, expect, test } from "vitest";
 
@@ -32,6 +33,7 @@ test("every layout path lands under SCORE_HOME when set", () => {
   expect(resolvedPath("score")).toBe("/tmp/x/projects/score/resolved.json");
   expect(statusPath("score")).toBe("/tmp/x/projects/score/status.json");
   expect(logsDir("score")).toBe("/tmp/x/projects/score/logs");
+  expect(telemetryDir("score")).toBe("/tmp/x/projects/score/telemetry");
   expect(promptsDir("score")).toBe("/tmp/x/projects/score/prompts");
   expect(crashLogPath("score")).toBe("/tmp/x/projects/score/launchd-crash.log");
 });
