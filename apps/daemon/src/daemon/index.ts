@@ -5,3 +5,4 @@
  */
 export * from "./daemon.run";
 export * from "./recovery.policy";
+export * from "./telemetry.render";
