@@ -166,7 +166,9 @@ export class OpencodeService implements AgentRuntime {
         cursor,
       })) as SessionListResponse;
       sessions.push(...page.data);
-      if (page.cursor.next === undefined) return sessions;
+      // opencode 1.18.15 signals exhaustion with cursor.next: null (not absent);
+      // carrying it forward produced a literal `cursor=null` that 400s (#60).
+      if (page.cursor.next == null) return sessions;
       cursor = page.cursor.next;
     }
   }
@@ -175,14 +177,16 @@ export class OpencodeService implements AgentRuntime {
   async #request(
     method: "GET" | "POST" | "DELETE",
     path: string,
-    query: Record<string, string | undefined> = {},
+    query: Record<string, string | null | undefined> = {},
     body?: unknown,
   ): Promise<unknown> {
     if (method !== "GET" && this.options.dryRun) return undefined;
 
     const url = new URL(path, this.baseUrl);
     for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined) url.searchParams.set(key, value);
+      // Skip nullish, not just undefined: a null would serialize to the
+      // literal string "null" and the server rejects it with a 400 (#60).
+      if (value != null) url.searchParams.set(key, value);
     }
     const response = await fetch(url, {
       method,
