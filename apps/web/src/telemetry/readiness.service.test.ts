@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
@@ -160,6 +161,42 @@ describe("assessReadiness", () => {
       });
     },
   );
+
+  // A dangling symlink at a segment path still occupies the name — the
+  // reader's snapshot includes it and expires cursors, so it is corruption,
+  // not retention. Symlinks exist wherever this suite runs (CI is Unix).
+  test("a dangling symlink at a segment path flips readiness", async () => {
+    const home = await scoreHome();
+    const dir = join(home, "projects", "demo", "telemetry");
+    await mkdir(dir, { recursive: true });
+    await symlink(join(dir, "no-such-target"), join(dir, "2026-08-15.jsonl"));
+    vi.stubEnv("SCORE_HOME", home);
+    const report = await assessReadiness();
+    expect(report.ready).toBe(false);
+    expect(report.checks).toContainEqual({
+      name: "telemetry:demo",
+      ready: false,
+      reason_code: "telemetry-unreadable",
+    });
+  });
+
+  // Metadata is not readability: /proc/self/mem is a regular file that
+  // opens and fstats fine yet fails the read (EIO). Present on Linux only.
+  const hasProcMem = existsSync("/proc/self/mem");
+  test.skipIf(!hasProcMem)("a segment whose bytes cannot be read flips readiness", async () => {
+    const home = await scoreHome();
+    const dir = join(home, "projects", "demo", "telemetry");
+    await mkdir(dir, { recursive: true });
+    await symlink("/proc/self/mem", join(dir, "2026-08-15.jsonl"));
+    vi.stubEnv("SCORE_HOME", home);
+    const report = await assessReadiness();
+    expect(report.ready).toBe(false);
+    expect(report.checks).toContainEqual({
+      name: "telemetry:demo",
+      ready: false,
+      reason_code: "telemetry-unreadable",
+    });
+  });
 
   // readFile blocks forever on a FIFO: the probe must reject these entries
   // by type before loadConfig/readResolvedProject are ever called.

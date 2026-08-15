@@ -23,21 +23,23 @@ function serverPatterns(): RegExp[] {
   ];
 }
 
-function trackedFiles(): string[] {
+function trackedFiles(): { root: string; paths: string[] } {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const out = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" });
-  return out
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => `${root}${line}`);
+  const paths = out.split("\n").filter((line) => line !== "");
+  return { root, paths };
 }
 
 test("no live reference to the deleted server stub survives", async () => {
   const patterns = serverPatterns();
+  const { root, paths } = trackedFiles();
   const offenders: string[] = [];
-  for (const path of trackedFiles()) {
-    const text = await readFile(path, "utf8").catch(() => "");
+  for (const path of paths) {
+    // The tracked path itself first: a resurrected stub-app file (whatever
+    // its contents say) proves the app is back.
+    const text = await readFile(`${root}${path}`, "utf8").catch(() => "");
     for (const pattern of patterns) {
+      if (pattern.test(path)) offenders.push(path);
       if (pattern.test(text)) offenders.push(path);
     }
   }

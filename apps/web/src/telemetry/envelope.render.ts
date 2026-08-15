@@ -22,10 +22,18 @@ const EVENT_NAMES: readonly StreamEventName[] = [
  * spec joins them back with newlines, so multi-line JSON survives the trip.
  */
 export function renderEnvelope(envelope: StreamEnvelope): string {
+  // Excess keys ride along for open payload types, but the error contract
+  // is closed: structural typing lets a caller spread extra fields into
+  // error data (a stack trace, a path), so the wire projection for error
+  // frames is explicit — only reason_code ever leaves the process.
+  const data =
+    envelope.event === "score.stream.error"
+      ? { reason_code: envelope.data.reason_code }
+      : envelope.data;
   const lines: string[] = [];
   if (envelope.sequence !== undefined) lines.push(`id: ${renderStreamId(envelope.sequence)}`);
   lines.push(`event: ${envelope.event}`);
-  for (const line of JSON.stringify(envelope.data).split("\n")) {
+  for (const line of JSON.stringify(data).split("\n")) {
     lines.push(`data: ${line}`);
   }
   return `${lines.join("\n")}\n\n`;

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { StreamEnvelope } from "./envelope.interface";
+import type { StreamEnvelope, StreamErrorData } from "./envelope.interface";
 import { parseEnvelope, renderEnvelope, streamErrorEnvelope } from "./envelope.render";
 
 // The discriminated union is the compile-time proof: each expect-error says
@@ -113,6 +113,19 @@ test("data split across wire lines joins into one payload", () => {
 test("an error envelope renders only its reason code — no internals escape", () => {
   const block = renderEnvelope(streamErrorEnvelope("cursor-expired"));
   expect(block).toBe('event: score.stream.error\ndata: {"reason_code":"cursor-expired"}\n\n');
+});
+
+test("error frames strip fields structural typing let through", () => {
+  // A spread variable keeps excess keys assignable — the renderer's error
+  // projection, not the type, must keep them off the wire.
+  const smuggled = {
+    ...streamErrorEnvelope("internal").data,
+    stack: "at secret/path.ts:1:1",
+    path: "/home/operator",
+  } as StreamErrorData;
+  const block = renderEnvelope({ event: "score.stream.error", data: smuggled });
+  expect(block).toBe('event: score.stream.error\ndata: {"reason_code":"internal"}\n\n');
+  expect(parseEnvelope(block)?.data).toEqual({ reason_code: "internal" });
 });
 
 test("non-frame input parses to undefined", () => {

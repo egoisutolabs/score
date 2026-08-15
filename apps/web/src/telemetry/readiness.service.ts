@@ -1,4 +1,4 @@
-import { open, readdir, stat } from "node:fs/promises";
+import { lstat, open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { configPath, resolvedPath, telemetryDir } from "@score/shared/config/layout";
 import { loadConfig } from "@score/shared/config/load";
@@ -94,21 +94,41 @@ async function telemetryReadable(key: string): Promise<boolean> {
   }
   for (const name of names) {
     if (!SEGMENT_FILE.test(name)) continue;
+    const path = join(dir, name);
     try {
-      const path = join(dir, name);
       // Type-check before any blocking open: a FIFO named like a segment
       // blocks a read-only open forever, and the reader's readFileSync
       // would never see it — only a path that is already a regular file
-      // is worth probing further. The handle-side re-stat covers an entry
-      // swapped between the two calls; the residual stat→open race window
-      // is accepted (an atomic swap mid-probe is retention, not corruption).
+      // is worth probing further.
       if (!(await stat(path)).isFile()) return false;
+    } catch (error) {
+      if ((error as { code?: string }).code !== "ENOENT") return false;
+      // ENOENT with the name still occupying the directory: either
+      // retention just deleted the entry, or a dangling symlink sits at
+      // the segment path. The reader's snapshot includes the name and
+      // expires cursors against it, so only an entry that is fully gone
+      // may pass as retention — a link that still occupies the name
+      // (lstat succeeds where stat failed) is an unreadable segment.
+      try {
+        if ((await lstat(path)).isSymbolicLink()) return false;
+        continue;
+      } catch {
+        continue; // fully vanished by now — retention
+      }
+    }
+    try {
       // The open is the permission probe: metadata stays readable on a
       // mode-000 file, but TelemetryLogService.readSegment() could not open
       // it — readiness must report what the reader can do.
       const handle = await open(path, "r");
       try {
+        // Handle-side re-stat covers an entry swapped between the calls.
         if (!(await handle.stat()).isFile()) return false;
+        // Metadata is not readability: procfs-style regular files open and
+        // fstat fine yet fail the read itself — prove the bytes come back.
+        // A zero-byte segment (writer created it, no complete line yet)
+        // reads zero bytes and passes; the syscall succeeding is the proof.
+        await handle.read(Buffer.alloc(1), 0, 1, 0);
       } finally {
         await handle.close();
       }
