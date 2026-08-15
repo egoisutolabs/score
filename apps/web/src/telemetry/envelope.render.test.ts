@@ -121,6 +121,25 @@ test("a span envelope round-trips with its required span_id", () => {
   expect(parseEnvelope(renderEnvelope(envelope))).toEqual(envelope);
 });
 
+test("a record with optional base fields populated round-trips", () => {
+  const envelope: StreamEnvelope = {
+    event: "score.telemetry.event",
+    data: {
+      source: "telemetry",
+      record: {
+        version: 1,
+        kind: "event",
+        time: "2026-08-15T00:00:01.000Z",
+        name: "score.dispatch.decision",
+        resource: { project: "score", daemon_pid: 4242 },
+        subject: { session: "issue-55", branch: "issue-55-x", issue_number: 55 },
+        attributes: { reason_code: "capacity_available", attempt: 1, replayed: false },
+      },
+    },
+  };
+  expect(parseEnvelope(renderEnvelope(envelope))).toEqual(envelope);
+});
+
 test.each([
   ["error frame with a null payload", "score.stream.error", "null"],
   ["error frame with an unknown reason code", "score.stream.error", '{"reason_code":"teapot"}'],
@@ -134,6 +153,31 @@ test.each([
     "record payload without a resource",
     "score.telemetry.event",
     '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y"}}',
+  ],
+  [
+    "record payload with a non-record subject",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"},"subject":7}}',
+  ],
+  [
+    "record payload with a null attributes value",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"},"attributes":null}}',
+  ],
+  [
+    "record payload with a nested attribute value",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"},"attributes":{"nested":{"deep":1}}}}',
+  ],
+  [
+    "record payload with a string daemon_pid",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score","daemon_pid":"4242"}}}',
+  ],
+  [
+    "record payload with a non-string session subject",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"},"subject":{"session":55}}}',
   ],
   [
     "span payload carrying an event record",

@@ -4,4 +4,6 @@
  * @score/core/@score/shared state; refuses UI, mutation, and any authority
  * over lifecycle (controls stay in the CLI).
  */
+
+export * as app from "./app";
 export * from "./telemetry";

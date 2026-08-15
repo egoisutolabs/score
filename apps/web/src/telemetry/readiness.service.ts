@@ -76,12 +76,18 @@ async function telemetryReadable(key: string): Promise<boolean> {
   for (const name of names) {
     if (!SEGMENT_FILE.test(name)) continue;
     try {
-      // Probe with a real open, not path stat: metadata stays readable on a
+      const path = join(dir, name);
+      // Type-check before any blocking open: a FIFO named like a segment
+      // blocks a read-only open forever, and the reader's readFileSync
+      // would never see it — only a path that is already a regular file
+      // is worth probing further. The handle-side re-stat covers an entry
+      // swapped between the two calls; the residual stat→open race window
+      // is accepted (an atomic swap mid-probe is retention, not corruption).
+      if (!(await stat(path)).isFile()) return false;
+      // The open is the permission probe: metadata stays readable on a
       // mode-000 file, but TelemetryLogService.readSegment() could not open
-      // it — readiness must report what the reader can do. The handle's own
-      // stat then rejects a directory named like a segment: opening one
-      // succeeds on Linux, while the reader's readFileSync takes EISDIR.
-      const handle = await open(join(dir, name), "r");
+      // it — readiness must report what the reader can do.
+      const handle = await open(path, "r");
       try {
         if (!(await handle.stat()).isFile()) return false;
       } finally {

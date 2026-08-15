@@ -17,7 +17,9 @@ function serverPatterns(): RegExp[] {
   return [
     new RegExp(`@score/${fragment}\\b`),
     new RegExp(`apps/${fragment}\\b`),
-    new RegExp(`apps/\\{[a-z,-]*,${fragment}\\}`),
+    // Any member position inside an app brace expansion — `apps/{daemon,`…
+    // …`,tui}` lists the stub as live wherever it sits, not just last.
+    new RegExp(`apps/\\{(?:[a-z0-9-]+,)*${fragment}(?:,[a-z0-9-]+)*\\}`),
   ];
 }
 
@@ -40,4 +42,22 @@ test("no live reference to the deleted server stub survives", async () => {
     }
   }
   expect(offenders).toEqual([]);
+});
+
+test("the brace pattern matches the stub at any member position", () => {
+  // Sample strings are fragment-assembled like the needle, so this file
+  // never carries a live-form reference the scan test above would catch.
+  const apps = (expansion: string) => `apps/{${expansion}}`;
+  const flagged = [
+    apps(NEEDLE),
+    apps(`daemon,${NEEDLE}`),
+    apps(`daemon,${NEEDLE},tui`),
+    apps(`${NEEDLE},daemon,tui`),
+  ];
+  const brace = serverPatterns()[2];
+  if (brace === undefined) throw new Error("brace pattern missing");
+  for (const sample of flagged) expect(brace.test(sample), sample).toBe(true);
+  for (const clean of [apps("daemon,tui,web"), `apps/${["w", "eb"].join("")}`]) {
+    expect(brace.test(clean), clean).toBe(false);
+  }
 });

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,6 +130,36 @@ describe("assessReadiness", () => {
       reason_code: "telemetry-unreadable",
     });
   });
+
+  // A FIFO at a segment path blocks a plain open forever — the probe must
+  // reject it by entry type, never by trying to read it. CI runners are
+  // Unix; where mkfifo is absent there is nothing to prove here. (BSD
+  // mkfifo rejects --version, so probe availability with command -v.)
+  const hasMkfifo = (() => {
+    try {
+      execFileSync("sh", ["-c", "command -v mkfifo"]);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  test.skipIf(!hasMkfifo)(
+    "a FIFO named like a segment flips readiness without hanging",
+    async () => {
+      const home = await scoreHome();
+      const dir = join(home, "projects", "demo", "telemetry");
+      await mkdir(dir, { recursive: true });
+      execFileSync("mkfifo", [join(dir, "2026-08-15.jsonl")]);
+      vi.stubEnv("SCORE_HOME", home);
+      const report = await assessReadiness();
+      expect(report.ready).toBe(false);
+      expect(report.checks).toContainEqual({
+        name: "telemetry:demo",
+        ready: false,
+        reason_code: "telemetry-unreadable",
+      });
+    },
+  );
 
   // Root ignores mode bits, so the open-probe proof only bites unprivileged.
   test.skipIf(!unprivileged)(

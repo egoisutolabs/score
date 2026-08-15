@@ -126,8 +126,41 @@ function isTelemetryRecordPayload(
     typeof record.version === "number" &&
     string(record.time) &&
     string(record.name) &&
-    isRecord(record.resource) &&
-    string(record.resource.project)
+    isResource(record.resource) &&
+    optionalField(record.subject, isSubject) &&
+    optionalField(record.attributes, isAttributes)
+  );
+}
+
+function isResource(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && string(value.project) && optionalField(value.daemon_pid, isNumber);
+}
+
+/**
+ * Subject members copy dispatch identity verbatim; each proves its declared
+ * type when present, so a consumer trusting TelemetrySubject never reads a
+ * number where a session name was promised.
+ */
+function isSubject(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    optionalField(value.session, string) &&
+    optionalField(value.branch, string) &&
+    optionalField(value.issue_number, isNumber) &&
+    optionalField(value.pull_request_number, isNumber)
+  );
+}
+
+/** Attribute values are primitives only — the record contract's whole shape. */
+function isAttributes(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (attribute) =>
+        typeof attribute === "string" ||
+        typeof attribute === "number" ||
+        typeof attribute === "boolean",
+    )
   );
 }
 
