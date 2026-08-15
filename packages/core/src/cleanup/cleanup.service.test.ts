@@ -1,4 +1,4 @@
-import { CleanupService } from "@score/core/cleanup/cleanup.service";
+import { CleanupService, CleanupTickFailedError } from "@score/core/cleanup/cleanup.service";
 import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import { expect, test } from "vitest";
@@ -544,4 +544,38 @@ test("namespaced cleanup stops the exact session its dispatch created", async ()
   ).run(false);
   expect(result[0]?.action).toBe("CLEANED");
   expect(agents.stopped).toEqual(["score-demo-issue-1"]);
+});
+
+test("stranded (#64): a later probe failure carries earlier stranded decisions in partial", async () => {
+  const other: WorktreeObservation = {
+    path: "/wt/issue-22-fix",
+    branch: "issue-22-fix",
+    headSha: "other-sha",
+    locked: false,
+  };
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.live = [strandedWorktree, other];
+  const agents = makeStrandedAgents(["issue-21"]);
+  const realSessionExists = agents.sessionExists.bind(agents);
+  agents.sessionExists = async (sessionName: string) => {
+    if (sessionName === "issue-22") throw new Error("tmux unreachable");
+    return realSessionExists(sessionName);
+  };
+  const service = makeStrandedService(workspace, agents);
+
+  // Tick 0: issue 21 sits inside its first silence window when issue 22's
+  // probe fails — nothing external happened, so partial is empty.
+  await expect(service.run(false)).rejects.toMatchObject({ partial: [] });
+
+  // Tick 1: issue 21's ping lands before issue 22's probe fails again. The
+  // ping is a completed external mutation and must ride the error.
+  const thrown = await service.run(false).then(
+    () => {
+      throw new Error("expected CleanupTickFailedError");
+    },
+    (error) => error as CleanupTickFailedError,
+  );
+  expect(thrown).toBeInstanceOf(CleanupTickFailedError);
+  expect(thrown.partial).toEqual([{ issueNumber: 21, action: "STRANDED_PINGED", dryRun: false }]);
+  expect(agents.pinged).toHaveLength(1);
 });

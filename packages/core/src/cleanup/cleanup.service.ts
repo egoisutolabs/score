@@ -110,7 +110,7 @@ export class CleanupService {
         results.push({ pullRequestNumber: change.number, action: "CLEANED" });
       }
 
-      results.push(...(await this.#reclaimStranded(merged, dryRun)));
+      await this.#reclaimStranded(merged, dryRun, results);
 
       // A clean, correctly checked-out primary branch is the only path to an automatic pull.
       if (cleaned > 0 && this.options.autoPullMain) {
@@ -134,10 +134,13 @@ export class CleanupService {
   async #reclaimStranded(
     merged: readonly PullRequestIdentity[],
     dryRun: boolean,
-  ): Promise<readonly StrandedCleanupResult[]> {
+    // The caller's sink, not a local array: a ping or respawn is an external
+    // mutation, and a later observation failure must not erase its decision
+    // from CleanupTickFailedError.partial.
+    results: CleanupResult[],
+  ): Promise<void> {
     const tick = this.#tick++;
     const staleTicks = this.options.staleTicks ?? 10;
-    const results: StrandedCleanupResult[] = [];
     // A branch with any PR — open (repair's domain), merged (the loop
     // above's domain), or closed (an operator's abandonment verdict) — is
     // never stranded.
@@ -257,7 +260,6 @@ export class CleanupService {
     for (const issueNumber of this.#stranded.keys()) {
       if (!seen.has(issueNumber)) this.#stranded.delete(issueNumber);
     }
-    return results;
   }
 
   /**
