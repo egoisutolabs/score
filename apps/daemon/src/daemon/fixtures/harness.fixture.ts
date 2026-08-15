@@ -5,6 +5,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
@@ -115,8 +116,28 @@ export function managedResponses(repo: string): FakeResponder {
 
 export const SEEDED_ISSUE_NUMBER = 7;
 export const SEEDED_ISSUE_TITLE = "Demo issue";
-/** Matches createWorkIdentity's `issue-<n>-<slug(title)>` branch naming. */
-export const SEEDED_ISSUE_BRANCH = `issue-${SEEDED_ISSUE_NUMBER}-demo-issue`;
+
+/**
+ * The seeded issue's worktree branch. Derived from the identity authority —
+ * a fixture module is production-shaped source, so boundary.test.ts's
+ * no-shape-literals rule applies to it exactly as to any non-test file.
+ */
+export function seededIssueBranch(workspaceRoot = "/workspace"): string {
+  return createWorkIdentity(
+    workspaceRoot,
+    {
+      number: SEEDED_ISSUE_NUMBER,
+      title: SEEDED_ISSUE_TITLE,
+      body: "",
+      labels: [],
+      state: "OPEN",
+      stateReason: null,
+      url: `https://github.com/egoisutolabs/demo/issues/${SEEDED_ISSUE_NUMBER}`,
+      comments: [],
+    },
+    "demo",
+  ).branch;
+}
 
 /**
  * Same git/gh proofs as managedResponses, plus one real open, dispatchable

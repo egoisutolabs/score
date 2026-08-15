@@ -28,7 +28,7 @@ import {
   managedResponsesSeeded,
   PROVEN_STRAY,
   RECONCILE_OPTIONS,
-  SEEDED_ISSUE_BRANCH,
+  seededIssueBranch,
   WEDGE_MESSAGE,
   WEDGE_PR_NUMBER,
   wedgeFixture,
@@ -423,7 +423,7 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
   // Pre-existing worktree dir: createWorktree() short-circuits on it (real
   // git plumbing is out of scope for a FakeRunner), so the briefing write
   // that follows has somewhere real to land TASK.md.
-  await mkdir(join(worktree, SEEDED_ISSUE_BRANCH), { recursive: true });
+  await mkdir(join(worktree, seededIssueBranch(worktree)), { recursive: true });
   let result!: {
     startCalls: number;
     stopCalls: number;
