@@ -88,8 +88,17 @@ async function telemetryReadable(key: string): Promise<boolean> {
     names = await readdir(dir);
   } catch (error) {
     // No store yet is a valid empty state: a reader starts at today's
-    // segment, so readiness must not demand telemetry that was never written.
-    if ((error as { code?: string }).code === "ENOENT") return true;
+    // segment, so readiness must not demand telemetry that was never
+    // written. A dangling symlink at the store path is not that state —
+    // the name is occupied, so the writer's recursive mkdir fails EEXIST
+    // and the reader's scan finds nothing where segments should live.
+    if ((error as { code?: string }).code === "ENOENT") {
+      try {
+        return !(await lstat(dir)).isSymbolicLink();
+      } catch {
+        return true; // genuinely absent
+      }
+    }
     return false;
   }
   for (const name of names) {

@@ -162,6 +162,27 @@ describe("assessReadiness", () => {
     },
   );
 
+  // A dangling symlink at the store path is not an empty store: the name
+  // is occupied (writer mkdir takes EEXIST), so readiness must flip even
+  // though stat reports ENOENT — the empty-store allowance is for absent
+  // paths only.
+  test("a dangling symlink at the telemetry dir flips readiness", async () => {
+    const home = await scoreHome();
+    await mkdir(join(home, "projects", "demo"), { recursive: true });
+    await symlink(
+      join(home, "projects", "demo", "no-such-store"),
+      join(home, "projects", "demo", "telemetry"),
+    );
+    vi.stubEnv("SCORE_HOME", home);
+    const report = await assessReadiness();
+    expect(report.ready).toBe(false);
+    expect(report.checks).toContainEqual({
+      name: "telemetry:demo",
+      ready: false,
+      reason_code: "telemetry-unreadable",
+    });
+  });
+
   // A dangling symlink at a segment path still occupies the name — the
   // reader's snapshot includes it and expires cursors, so it is corruption,
   // not retention. Symlinks exist wherever this suite runs (CI is Unix).
