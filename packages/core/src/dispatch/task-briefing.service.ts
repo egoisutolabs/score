@@ -75,7 +75,8 @@ cannot properly fix within this issue's scope:
 3. Self-review the full diff hunk-by-hunk as if it were a stranger's PR,
    against this repository's own review rules (\`AGENTS.md\` Code Review Rules
    and \`INVARIANTS.md\` where present). Fix everything you would flag in
-   review before committing.
+   review. If the review changed anything, re-run required verification over
+   the fixes before committing.
 4. Commit with a concise message. Do not add Co-Authored-By or Claude-Session trailers.
 5. Push the branch.
 6. Open a PR with \`Fixes #${issue.number}\` in the body. Do not add a "Generated with Claude Code" footer or any session URLs.
