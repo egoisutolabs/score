@@ -197,6 +197,42 @@ test("a failing phase records its span as error with error.type, and the remaini
   );
 }, 20_000);
 
+test("a fatal pass-START status write still lands an error tick record", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const runner = new FakeRunner(managedResponsesSeeded(repo));
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    // The pass-start write (state: "running") fails — the earlier "starting"
+    // heartbeat at loop entry still succeeds. The pass exits before any phase
+    // runs, but after the tick span opened.
+    const status = {
+      write: (partial: { state?: string }) =>
+        partial.state === "running"
+          ? Promise.reject(new Error("tmp unwritable"))
+          : Promise.resolve(),
+      settle: () => Promise.resolve(),
+    } as unknown as StatusWriter;
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await expect(runDaemonLoop(parsed, log, { fileLog, status }, { runner })).rejects.toThrow(
+      "tmp unwritable",
+    );
+  });
+
+  // The root span exists and records the exceptional exit as an error pass —
+  // no phase spans, exactly one trace for the aborted tick.
+  const spans = (await readTelemetry(home)).filter(
+    (record) => record.kind === "span",
+  ) as TelemetrySpan[];
+  expect(spans.filter((span) => span.name === "score.tick")).toHaveLength(1);
+  const tick = spans.find((span) => span.name === "score.tick");
+  expect(tick?.attributes?.["score.outcome"]).toBe("error");
+  expect(spans.filter((span) => span.name === "score.phase")).toEqual([]);
+}, 20_000);
+
 test("a fatal pass exit still closes the tick span, marked as an error pass", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
   const { home } = await managedFixture(repo);

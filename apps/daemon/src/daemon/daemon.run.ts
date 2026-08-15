@@ -869,15 +869,18 @@ export async function runDaemonLoop(
         currentTick = daemon.tick;
         const startedAt = Date.now();
         passError = null;
-        await status?.write({
-          state: "running",
-          tick: currentTick,
-          last_pass_started_at: new Date().toISOString(),
-        });
-        observations.startPass();
-        for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
+        // The tick span opens before the awaited status write: a fatal
+        // pass-start failure must still land a (error) score.tick record,
+        // not exit ahead of the span entirely.
         telemetry?.beginTick(currentTick);
         try {
+          await status?.write({
+            state: "running",
+            tick: currentTick,
+            last_pass_started_at: new Date().toISOString(),
+          });
+          observations.startPass();
+          for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
           // D1 reconciliation runs before the phases of every pass, not only
           // at startup (the first pass runs immediately, so this is the
           // startup check too): a caught pushDefaultBranch failure strands a
