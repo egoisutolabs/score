@@ -91,12 +91,22 @@ async function startFakeOpencode(): Promise<FakeOpencode> {
     }
 
     if (method === "GET" && url.pathname === "/api/session") {
+      // The real binary rejects the literal string "null" as a cursor (#60).
+      if (query.cursor === "null") {
+        sendJson(res, 400, { error: "invalid cursor" });
+        return;
+      }
       const search = query.search ?? "";
       const matches = sessions.filter((candidate) => candidate.title.includes(search));
       const cursor = query.cursor ? Number(query.cursor) : 0;
       const page = matches.slice(cursor, cursor + PAGE_SIZE);
-      const next = cursor + PAGE_SIZE < matches.length ? String(cursor + PAGE_SIZE) : undefined;
-      sendJson(res, 200, { data: page, cursor: { next } } satisfies SessionListResponse);
+      // Observed opencode 1.18.15 wire shape: exhaustion is an explicit
+      // null, never an absent field — the shape that reproduced #60.
+      const next = cursor + PAGE_SIZE < matches.length ? String(cursor + PAGE_SIZE) : null;
+      sendJson(res, 200, {
+        data: page,
+        cursor: { previous: null, next },
+      } satisfies SessionListResponse);
       return;
     }
 
@@ -191,6 +201,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // #60: a null cursor must never leak into a request URL, in any test's flow.
+  expect(fake.requests.some((r) => r.query.cursor === "null")).toBe(false);
   await fake.close();
 });
 
@@ -229,6 +241,27 @@ test("listSessions aggregates titles across pages, filtered to the exact score-<
   expect([...listed].sort()).toEqual(["score-ns-issue-1", "score-ns-issue-2", "score-ns-issue-3"]);
   const searches = fake.requests.filter((r) => r.path === "/api/session");
   expect(searches.length).toBeGreaterThan(1); // 4 substring matches, PAGE_SIZE 2 forces a second page
+});
+
+test("an empty first page with cursor.next: null terminates without a follow-up request (#60)", async () => {
+  await expect(service.listSessions()).resolves.toEqual([]);
+  const searches = fake.requests.filter((r) => r.path === "/api/session");
+  expect(searches).toHaveLength(1);
+});
+
+test("multi-page walk: a real next cursor is followed, then next: null stops the walk (#60)", async () => {
+  fake.sessions.push(
+    session("ses_1", "score-ns-issue-1", "/work/1"),
+    session("ses_2", "score-ns-issue-2", "/work/2"),
+    session("ses_3", "score-ns-issue-3", "/work/3"),
+  );
+
+  const listed = await service.listSessions();
+  expect([...listed].sort()).toEqual(["score-ns-issue-1", "score-ns-issue-2", "score-ns-issue-3"]);
+  // 3 matches at PAGE_SIZE 2: page at cursor 0 (next "2"), page at cursor 2
+  // (next null) — exactly two requests, no third chasing the null.
+  const searches = fake.requests.filter((r) => r.path === "/api/session");
+  expect(searches.map((r) => r.query.cursor)).toEqual([undefined, "2"]);
 });
 
 test("duplicate exact titles make sessionExists, ping, stop, and startImplementation all throw", async () => {
