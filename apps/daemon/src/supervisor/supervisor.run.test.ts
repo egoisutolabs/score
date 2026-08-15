@@ -1,17 +1,18 @@
 import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { LaunchdSupervisor } from "@score/core/supervisor/launchd.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { runDown, runUp, type UpDependencies } from "./supervisor.run";
+import { runDown, runRestart, runUp, type UpDependencies } from "./supervisor.run";
 
 class RecordingRunner implements CommandRunner {
   readonly calls: string[][] = [];
   listOutput = "";
   failBootstrapMatching: string | undefined;
   failBootoutMatching: string | undefined;
+  failKickstartMatching: string | undefined;
 
   async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
     this.calls.push([...command]);
@@ -19,7 +20,8 @@ class RecordingRunner implements CommandRunner {
       pattern !== undefined && command.some((argument) => argument.includes(pattern));
     const failed =
       (command[1] === "bootstrap" && matches(this.failBootstrapMatching)) ||
-      (command[1] === "bootout" && matches(this.failBootoutMatching));
+      (command[1] === "bootout" && matches(this.failBootoutMatching)) ||
+      (command[1] === "kickstart" && matches(this.failKickstartMatching));
     return {
       command: [...command],
       cwd: options.cwd,
@@ -74,9 +76,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function projectBlock(key: string, mainLocation: string, tick: number): string {
+function projectBlock(key: string, mainLocation: string, tick: number, enabled = true): string {
   return `"${key}": {
-    "enabled": true,
+    "enabled": ${enabled},
     "main_location": "${mainLocation}",
     "worktree_location": "/wt/${key}",
     "github_repo": "egoisutolabs/${key}",
@@ -351,6 +353,176 @@ test("down continues past a failing job and reports it", async () => {
     ["launchctl", "bootout", "gui/501/dev.score.alpha"],
     ["launchctl", "bootout", "gui/501/dev.score.beta"],
   ]);
+});
+
+test("restart forces stop→install→start on a loaded-but-unchanged job (TUI `r` parity)", async () => {
+  // `up` would report this job unchanged and touch nothing — a crashed or
+  // wedged daemon needs the forced path. Same state covers the crashed-job
+  // case: still registered, brought back to running.
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  logs = [];
+
+  await runRestart(["alpha"], deps.adapter);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score.alpha"],
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs).toContain("restarted 'alpha'");
+});
+
+test("restart with no saved definition fails before any adapter call (read-before-stop)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow(
+    "no saved job definition for 'alpha'",
+  );
+  expect(runner.calls).toEqual([]);
+});
+
+test("restart with an empty (corrupt) saved definition fails before stopping", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  await writeFile(join(home, "projects", "alpha", "job.plist"), "");
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow(
+    "no saved job definition for 'alpha'",
+  );
+  expect(runner.calls).toEqual([]);
+});
+
+test("restart refuses a disabled or unknown project before touching the supervisor", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000, false)]);
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow(
+    "no enabled project 'alpha' in config",
+  );
+  await expect(runRestart(["ghost"], deps.adapter)).rejects.toThrow(
+    "no enabled project 'ghost' in config",
+  );
+  expect(runner.calls).toEqual([]);
+});
+
+test("restart requires a key and rejects malformed ones", async () => {
+  await expect(runRestart([], deps.adapter)).rejects.toThrow("usage: score restart <key>");
+  await expect(runRestart(["../../x"], deps.adapter)).rejects.toThrow("invalid project key");
+  expect(runner.calls).toEqual([]);
+});
+
+test("restart step failure at stop: job untouched, next up is a no-op (converged)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  runner.failBootoutMatching = "dev.score.alpha";
+
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow();
+  expect(runner.mutations()).toEqual([["launchctl", "bootout", "gui/501/dev.score.alpha"]]);
+
+  runner.failBootoutMatching = undefined;
+  runner.calls.length = 0;
+  logs = [];
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([]);
+  expect(logs.at(-1)).toBe("started=0 restarted=0 unchanged=1 removed=0");
+});
+
+test("restart death after stop: next `score up` re-installs and starts (RETRIED)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  runner.failBootstrapMatching = "dev.score.alpha";
+
+  // A bootstrap failure leaves the same state as a death between stop and
+  // install: booted out, definition files intact.
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow();
+  expect(runner.mutations().map((call) => call[1])).toEqual(["bootout", "bootstrap"]);
+
+  runner.failBootstrapMatching = undefined;
+  runner.calls.length = 0;
+  runner.listOutput = "";
+  logs = [];
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
+test("restart death after install: job registered, a retried restart converges", async () => {
+  // install() itself launches the job on both platforms (launchd KeepAlive
+  // implies RunAtLoad; systemd enables --now), so this state is not wedged
+  // even before the retry.
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  runner.failKickstartMatching = "dev.score.alpha";
+
+  await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow();
+  expect(runner.mutations().map((call) => call[1])).toEqual(["bootout", "bootstrap", "kickstart"]);
+
+  runner.failKickstartMatching = undefined;
+  runner.calls.length = 0;
+  logs = [];
+  await runRestart(["alpha"], deps.adapter);
+  expect(runner.mutations().map((call) => call[1])).toEqual(["bootout", "bootstrap", "kickstart"]);
+  expect(logs).toContain("restarted 'alpha'");
+});
+
+test("a deregistered job with its definition kept: `up` re-installs and starts (TUI start parity)", async () => {
+  await writeConfig([
+    projectBlock("alpha", "/repos/alpha", 5000),
+    projectBlock("beta", "/repos/beta", 7000),
+  ]);
+  await runUp([], deps);
+  runner.calls.length = 0;
+  // alpha booted out (definition-only), beta still loaded.
+  runner.listOutput = "2\t0\tdev.score.beta";
+  logs = [];
+
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=1 removed=0");
+});
+
+test("no lifecycle HTTP route: web/server sources touching routes or fetch carry no lifecycle verbs", async () => {
+  // The control half of decision 6/7 (#58): lifecycle authority stays in the
+  // CLI/supervisor path, so no HTTP-facing app may install/start/stop jobs.
+  const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
+  const offenders: string[] = [];
+  for (const app of ["server", "web"]) {
+    // A missing app is vacuously clean.
+    const entries = await readdir(join(repoRoot, "apps", app), {
+      recursive: true,
+      withFileTypes: true,
+    }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) {
+        continue;
+      }
+      const path = join(entry.parentPath, entry.name);
+      if (path.includes(`${sep}node_modules${sep}`)) continue;
+      const source = await readFile(path, "utf8");
+      if (
+        /route|fetch/i.test(source) &&
+        /\b(install|uninstall|start|stop|restart|kickstart|bootout|bootstrap)\b/i.test(source)
+      ) {
+        offenders.push(path);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
 });
 
 test("down with no argument stops all score jobs and nothing else", async () => {

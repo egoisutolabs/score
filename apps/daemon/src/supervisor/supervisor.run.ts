@@ -200,6 +200,42 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
   );
 }
 
+/**
+ * Forced restart, the TUI `r` semantics kept on the CLI path: `up` only
+ * restarts on config/definition drift, so a wedged daemon with an unchanged
+ * config needs this. Reuses the saved definition install() last wrote rather
+ * than re-rendering — restart must bring back exactly the job that was
+ * running, never silently apply config edits (`score up` owns that).
+ */
+export async function runRestart(
+  args: readonly string[],
+  adapter: SupervisorAdapter = defaultSupervisor().adapter,
+): Promise<void> {
+  const key = parseSingleKey(args, "restart <key>");
+  if (key === undefined) throw new Error("usage: score restart <key>");
+  // Disabled or unknown projects fail closed before any adapter call —
+  // restart must not be a back door around `up`'s enabled-only planning.
+  const desired = resolveProjects(await loadConfig());
+  if (!desired.some((project) => project.key === key)) {
+    throw new Error(`no enabled project '${key}' in config`);
+  }
+  // Read before stop: a missing or empty saved definition must fail here,
+  // without booting out a running job we could not bring back.
+  const definition = await readFile(installedDefinitionPath(key), "utf8").catch(() => null);
+  if (definition === null || definition.trim() === "") {
+    throw new Error(`no saved job definition for '${key}' — run: score up ${key}`);
+  }
+  // stop → install → start, each boundary convergent (INVARIANTS.md):
+  // a death after stop leaves a definition-only job the next `score up`
+  // plans as a start; a death after install leaves a registered job the
+  // supervisor launches itself (launchd KeepAlive implies RunAtLoad,
+  // systemd installs with `enable --now`), and a retried restart converges.
+  await adapter.stop(key);
+  await adapter.install(key, definition);
+  await adapter.start(key);
+  console.log(`restarted '${key}'`);
+}
+
 export async function runDown(
   args: readonly string[],
   adapter: SupervisorAdapter = defaultSupervisor().adapter,
