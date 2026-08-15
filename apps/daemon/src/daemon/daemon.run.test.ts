@@ -7,12 +7,7 @@ import { join } from "node:path";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
 import { StatusWriter } from "@score/core/daemon/status.service";
-import type { CommandResult } from "@score/shared/command.interface";
-import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
-import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
-import { resolveProjects } from "@score/shared/config/resolve";
 import { createFileLogger } from "@score/shared/file-log";
-import type { Logger, LogLine } from "@score/shared/log";
 import { expect, test, vi } from "vitest";
 import {
   bootstrapDaemon,
@@ -24,10 +19,16 @@ import {
 } from "./daemon.run";
 import type { WedgeFixture } from "./fixtures";
 import {
+  CaptureLogger,
   commitWedge,
   ExecRunner,
+  FakeRunner,
+  managedFixture,
+  managedResponses,
+  managedResponsesSeeded,
   PROVEN_STRAY,
   RECONCILE_OPTIONS,
+  SEEDED_ISSUE_BRANCH,
   WEDGE_MESSAGE,
   WEDGE_PR_NUMBER,
   wedgeFixture,
@@ -67,41 +68,6 @@ test("--project takes a value; --managed and --config require --project", () => 
   expect(() => parseDaemonArguments(["--config", "/x"])).toThrow("--config requires --project");
 });
 
-class FakeRunner implements CommandRunner {
-  readonly calls: {
-    command: readonly string[];
-    cwd: string;
-    mutates: boolean | undefined;
-    dryRun: boolean | undefined;
-  }[] = [];
-
-  constructor(
-    private readonly respond: (command: readonly string[]) => {
-      exitCode?: number;
-      stdout?: string;
-    } = () => ({}),
-  ) {}
-
-  async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
-    this.calls.push({
-      command,
-      cwd: options.cwd,
-      mutates: options.mutates,
-      dryRun: options.dryRun,
-    });
-    const response = this.respond(command);
-    return {
-      command,
-      cwd: options.cwd,
-      exitCode: response.exitCode ?? 0,
-      stdout: response.stdout ?? "",
-      stderr: "",
-      timedOut: false,
-      dryRun: false,
-    };
-  }
-}
-
 async function withEnv(vars: Record<string, string>, body: () => Promise<void>): Promise<void> {
   const saved = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
   Object.assign(process.env, vars);
@@ -113,90 +79,6 @@ async function withEnv(vars: Record<string, string>, body: () => Promise<void>):
       else process.env[name] = value;
     }
   }
-}
-
-/** Writes a valid resolved.json for `demo` under a temp SCORE_HOME and returns both dirs. */
-async function managedFixture(
-  mainLocation: string,
-  agent: AgentConfig = { harness: "claude", model: "claude-sonnet-5" },
-  tickIntervalMs = 5000,
-): Promise<{ home: string; worktree: string }> {
-  const home = await mkdtemp(join(tmpdir(), "score-home-"));
-  const worktree = join(home, "wt-demo");
-  const config: ScoreConfig = {
-    version: 1,
-    projects: {
-      demo: {
-        enabled: true,
-        main_location: mainLocation,
-        worktree_location: worktree,
-        github_repo: "egoisutolabs/demo",
-        config: {
-          tick_interval_ms: tickIntervalMs,
-          max_parallel: 2,
-          agent,
-        },
-      },
-    },
-  };
-  const [project] = resolveProjects(config);
-  await mkdir(join(home, "projects", "demo"), { recursive: true });
-  await writeFile(join(home, "projects", "demo", "resolved.json"), JSON.stringify(project));
-  return { home, worktree };
-}
-
-function managedResponses(repo: string) {
-  return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
-    if (command[1] === "rev-parse" && command.includes("--abbrev-ref")) {
-      return { stdout: "origin/develop\n" };
-    }
-    if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
-    if (command[1] === "remote") return { stdout: "git@github.com:egoisutolabs/demo.git\n" };
-    if (command[1] === "config") return { exitCode: 1 };
-    if (command[1] === "repo") return { stdout: '{"nameWithOwner":"egoisutolabs/demo"}\n' };
-    // No tmux server running yet: the env scrub fails and that must be fine.
-    if (command[1] === "set-environment") return { exitCode: 1 };
-    if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
-    return {};
-  };
-}
-
-const SEEDED_ISSUE_NUMBER = 7;
-const SEEDED_ISSUE_TITLE = "Demo issue";
-/** Matches createWorkIdentity's `issue-<n>-<slug(title)>` branch naming. */
-const SEEDED_ISSUE_BRANCH = `issue-${SEEDED_ISSUE_NUMBER}-demo-issue`;
-
-/**
- * Same git/gh proofs as managedResponses, plus one real open, dispatchable
- * issue and empty PR lists. A real candidate forces dispatch (not just
- * repair's unconditional listSessions) through the shared AgentRuntime, and
- * lets a dry-run test prove suppression against a call that would otherwise
- * happen — a candidate-free backlog can't tell either apart.
- */
-function managedResponsesOpencode(repo: string) {
-  const base = managedResponses(repo);
-  const issueJson = JSON.stringify({
-    number: SEEDED_ISSUE_NUMBER,
-    title: SEEDED_ISSUE_TITLE,
-    body: "",
-    // isOpenChildIssue requires an eligibleLabelPrefix match (default "epic:").
-    labels: [{ name: "epic:demo" }],
-    state: "OPEN",
-    stateReason: null,
-    url: `https://github.com/egoisutolabs/demo/issues/${SEEDED_ISSUE_NUMBER}`,
-  });
-  return (command: readonly string[]): { exitCode?: number; stdout?: string } => {
-    if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
-      return { stdout: `[${issueJson}]\n` };
-    }
-    if (command[0] === "gh" && command[1] === "issue" && command[2] === "view") {
-      return { stdout: `${issueJson}\n` };
-    }
-    if (command[0] === "gh" && command[1] === "pr") {
-      return { stdout: "[]\n" };
-    }
-    return base(command);
-  };
 }
 
 test("a separator-bearing --project key is rejected before any state path is built", async () => {
@@ -571,7 +453,7 @@ async function runOpencodeLoop(dryRun: boolean): Promise<{
       const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
       const fileLog = createFileLogger(join(runsDir, "logs"), false);
       const status = new StatusWriter(join(runsDir, "status.json"));
-      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      const runner = new FakeRunner(managedResponsesSeeded(repo));
       const args = dryRun
         ? ["--project", "demo", "--once", "--dry-run"]
         : ["--project", "demo", "--once"];
@@ -643,7 +525,7 @@ test("managed opencode: an unexpected child exit rejects runDaemonLoop with the 
       const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
       const fileLog = createFileLogger(join(runsDir, "logs"), false);
       const status = new StatusWriter(join(runsDir, "status.json"));
-      const runner = new FakeRunner(managedResponsesOpencode(repo));
+      const runner = new FakeRunner(managedResponsesSeeded(repo));
       // once:false — a fatal exit must interrupt the long-running loop, not
       // just be reachable when the loop was already going to stop anyway.
       const parsed = parseDaemonArguments(["--project", "demo"]);
@@ -960,22 +842,6 @@ test("unmanaged bootstrap keeps discovery and env-first tuning", async () => {
     },
   );
 });
-
-class CaptureLogger implements Logger {
-  readonly logged: LogLine[] = [];
-  info(text: string): void {
-    this.logged.push({ level: "info", text });
-  }
-  warn(text: string): void {
-    this.logged.push({ level: "warn", text });
-  }
-  debug(text: string): void {
-    this.logged.push({ level: "debug", text });
-  }
-  lines(lines: readonly LogLine[]): void {
-    this.logged.push(...lines);
-  }
-}
 
 /** git repo with one commit; when staged, a synthetic MERGE_HEAD points at HEAD. */
 async function fixtureRepo(stagedMerge: boolean): Promise<string> {

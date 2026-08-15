@@ -1,124 +1,23 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StatusWriter } from "@score/core/daemon/status.service";
+import type { StatusWriter } from "@score/core/daemon/status.service";
+import { StatusWriter as RealStatusWriter } from "@score/core/daemon/status.service";
 import type { TelemetryRecord, TelemetrySpan } from "@score/core/telemetry/telemetry.interface";
 import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
-import type { CommandResult } from "@score/shared/command.interface";
-import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
-import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
-import { resolveProjects } from "@score/shared/config/resolve";
 import { createFileLogger } from "@score/shared/file-log";
-import type { Logger, LogLine } from "@score/shared/log";
+import type { LogLine } from "@score/shared/log";
 import { expect, test } from "vitest";
-import { parseDaemonArguments, runDaemonLoop, tickTelemetry } from "./daemon.run";
-
-class FakeRunner implements CommandRunner {
-  readonly calls: string[][] = [];
-
-  constructor(
-    private readonly respond: (command: readonly string[]) => {
-      exitCode?: number;
-      stdout?: string;
-      stderr?: string;
-    },
-  ) {}
-
-  async run(command: readonly string[], options: RunCommandOptions): Promise<CommandResult> {
-    this.calls.push([...command]);
-    const response = this.respond(command);
-    return {
-      command,
-      cwd: options.cwd,
-      exitCode: response.exitCode ?? 0,
-      stdout: response.stdout ?? "",
-      stderr: response.stderr ?? "",
-      timedOut: false,
-      dryRun: false,
-    };
-  }
-}
-
-class CaptureLogger implements Logger {
-  readonly logged: LogLine[] = [];
-  info(text: string): void {
-    this.logged.push({ level: "info", text });
-  }
-  warn(text: string): void {
-    this.logged.push({ level: "warn", text });
-  }
-  debug(text: string): void {
-    this.logged.push({ level: "debug", text });
-  }
-  lines(lines: readonly LogLine[]): void {
-    this.logged.push(...lines);
-  }
-}
+import { parseDaemonArguments, runDaemonLoop } from "../daemon.run";
+import { CaptureLogger, FakeRunner, managedFixture, managedResponsesSeeded } from "../fixtures";
+import { TickTelemetryService } from "./telemetry.service";
 
 const SEEDED_ISSUE = 7;
 
-/** managedFixture from daemon.run.test.ts, minimal: one demo project, 5s tick. */
-async function managedHome(
-  mainLocation: string,
-  agent: AgentConfig = { harness: "claude", model: "claude-sonnet-5" },
-): Promise<{ home: string; worktree: string }> {
-  const home = await mkdtemp(join(tmpdir(), "score-home-"));
-  const worktree = join(home, "wt-demo");
-  const config: ScoreConfig = {
-    version: 1,
-    projects: {
-      demo: {
-        enabled: true,
-        main_location: mainLocation,
-        worktree_location: worktree,
-        github_repo: "egoisutolabs/demo",
-        config: { tick_interval_ms: 5000, max_parallel: 2, agent },
-      },
-    },
-  };
-  const [project] = resolveProjects(config);
-  await mkdir(join(home, "projects", "demo"), { recursive: true });
-  await writeFile(join(home, "projects", "demo", "resolved.json"), JSON.stringify(project));
-  return { home, worktree };
-}
-
-/** One seeded dispatchable issue; empty PR lists; clean reconcile. */
-function responses(repo: string) {
-  const issueJson = JSON.stringify({
-    number: SEEDED_ISSUE,
-    title: "Demo issue",
-    body: "",
-    labels: [{ name: "epic:demo" }],
-    state: "OPEN",
-    stateReason: null,
-    url: "https://github.com/egoisutolabs/demo/issues/7",
-  });
-  return (command: readonly string[]): { exitCode?: number; stdout?: string; stderr?: string } => {
-    if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
-      return { stdout: `[${issueJson}]\n` };
-    }
-    if (command[0] === "gh" && command[1] === "issue") return { stdout: `${issueJson}\n` };
-    if (command[0] === "gh" && command[1] === "pr") return { stdout: "[]\n" };
-    if (command[1] === "rev-parse" && command.includes("--abbrev-ref")) {
-      return { stdout: "origin/develop\n" };
-    }
-    if (command[1] === "rev-parse") return { stdout: `${repo}\n` };
-    if (command[1] === "remote") return { stdout: "git@github.com:egoisutolabs/demo.git\n" };
-    if (command[1] === "config") return { exitCode: 1 };
-    if (command[1] === "repo") return { stdout: '{"nameWithOwner":"egoisutolabs/demo"}\n' };
-    if (command[1] === "set-environment") return { exitCode: 1 };
-    // #64's fail-closed sessionExists: exit 1 alone is not absence — tmux's
-    // own "can't find session" stderr is what confirms the session is gone.
-    if (command[1] === "has-session") return { exitCode: 1, stderr: "can't find session\n" };
-    if (command[1] === "symbolic-ref") return { stdout: "refs/remotes/origin/develop\n" };
-    return {};
-  };
-}
-
 interface LoopRun {
   readonly log: CaptureLogger;
-  readonly commands: readonly string[][];
+  readonly commands: readonly (readonly string[])[];
 }
 
 async function withHomeEnv<T>(home: string, body: () => Promise<T>): Promise<T> {
@@ -134,14 +33,14 @@ async function withHomeEnv<T>(home: string, body: () => Promise<T>): Promise<T> 
 
 async function runOnce(repo: string, home: string): Promise<LoopRun> {
   return withHomeEnv(home, async () => {
-    const runner = new FakeRunner(responses(repo));
+    const runner = new FakeRunner(managedResponsesSeeded(repo));
     const log = new CaptureLogger();
     const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
     const fileLog = createFileLogger(join(runsDir, "logs"), false);
-    const status = new StatusWriter(join(runsDir, "status.json"));
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
     const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
     await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
-    return { log, commands: runner.calls.map((call) => [...call]) };
+    return { log, commands: runner.calls.map((call) => call.command) };
   });
 }
 
@@ -159,7 +58,7 @@ async function readTelemetry(home: string): Promise<TelemetryRecord[]> {
 
 test("one dry-run pass yields one tick root span with ordered phase children sharing its trace", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedHome(repo);
+  const { home } = await managedFixture(repo);
   await runOnce(repo, home);
 
   const records = await readTelemetry(home);
@@ -214,7 +113,7 @@ test("a JSONL append failure changes no phase result, render output, or phase or
   // Both runs share one repo + home: the prose log embeds their paths, so a
   // parity diff is only meaningful over identical fixtures.
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedHome(repo);
+  const { home } = await managedFixture(repo);
   const control = await runOnce(repo, home);
 
   // Make every append fail hard: the telemetry segment path exists as a file,
@@ -246,7 +145,7 @@ test("a JSONL append failure changes no phase result, render output, or phase or
 
 test("a failing phase records its span as error with error.type, and the remaining phases still run", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  const { home } = await managedHome(repo);
+  const { home } = await managedFixture(repo);
   await withHomeEnv(home, async () => {
     // Malformed `gh issue list` JSON makes observeIssues throw inside the
     // cleanup+dispatch phase — the exact mid-phase failure path whose span
@@ -255,12 +154,12 @@ test("a failing phase records its span as error with error.type, and the remaini
       if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
         return { stdout: "{not json\n" };
       }
-      return responses(repo)(command);
+      return managedResponsesSeeded(repo)(command);
     });
     const log = new CaptureLogger();
     const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
     const fileLog = createFileLogger(join(runsDir, "logs"), false);
-    const status = new StatusWriter(join(runsDir, "status.json"));
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
     const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
 
     // The pass completes; the phase error is DaemonService's caught path.
@@ -298,13 +197,51 @@ test("a failing phase records its span as error with error.type, and the remaini
   );
 }, 20_000);
 
+test("a fatal pass exit still closes the tick span, marked as an error pass", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const runner = new FakeRunner(managedResponsesSeeded(repo));
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    // The pass-starting writes succeed; the end-of-pass write fails, so the
+    // tick callback exits through its catch after the phase spans landed.
+    const status = {
+      write: (partial: Record<string, unknown>) =>
+        partial.last_pass_completed_at === undefined
+          ? Promise.resolve()
+          : Promise.reject(new Error("disk full")),
+      settle: () => Promise.resolve(),
+    } as unknown as StatusWriter;
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await expect(runDaemonLoop(parsed, log, { fileLog, status }, { runner })).rejects.toThrow(
+      "disk full",
+    );
+  });
+
+  // The root span closed despite the exception: every phase span sits under
+  // one trace, and the tick is recorded as an error pass.
+  const spans = (await readTelemetry(home)).filter(
+    (record) => record.kind === "span",
+  ) as TelemetrySpan[];
+  const tick = spans.find((span) => span.name === "score.tick");
+  expect(tick?.attributes?.["score.outcome"]).toBe("error");
+  const traceId = tick?.attributes?.trace_id;
+  for (const phase of spans.filter((span) => span.name === "score.phase")) {
+    expect(phase.attributes?.trace_id).toBe(traceId);
+    expect(phase.parent_span_id).toBe(tick?.span_id);
+  }
+}, 20_000);
+
 test("retention re-sweeps on UTC rollover at tick start — not only at daemon startup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
   // Inside the 30-day window on Aug 15 (cutoff Jul 16); stale after Aug 20.
   await writeFile(join(dir, "2026-07-20.jsonl"), "{}\n");
   let clock = new Date("2026-08-15T12:00:00Z");
   const writer = new TelemetryLogService(dir, { project: "demo" }, () => clock);
-  const telemetry = tickTelemetry(
+  const telemetry = new TickTelemetryService(
     writer,
     { project: "demo" },
     true,
@@ -374,20 +311,24 @@ test("unmanaged discovery mode records nothing — no project key to segment und
 test("no phase module imports the telemetry log writer; no OTel SDK ships anywhere", async () => {
   const phaseFeatures = ["cleanup", "dispatch", "landing", "repair"] as const;
   for (const feature of phaseFeatures) {
-    const dir = new URL(`../../../../packages/core/src/${feature}/`, import.meta.url);
+    const dir = new URL(`../../../../../packages/core/src/${feature}/`, import.meta.url);
     for (const name of await readdir(dir)) {
       if (!name.endsWith(".ts")) continue;
       const source = await readFile(new URL(name, dir), "utf8");
       expect(source.includes("telemetry")).toBe(false);
     }
   }
-  const packageRoot = new URL("../../../../", import.meta.url);
-  for (const group of ["", "apps/", "packages/"]) {
-    const base = new URL(group, packageRoot);
-    for (const entry of await readdir(base, { withFileTypes: true })) {
-      if (!entry.isFile() || entry.name !== "package.json") continue;
-      const raw = await readFile(new URL(entry.name, base), "utf8");
-      expect(raw.toLowerCase()).not.toContain("opentelemetry");
+  // Every workspace manifest, not just the root: the daemon, the libraries,
+  // and any future app must each stay free of an OTel SDK dependency.
+  const packageRoot = new URL("../../../../../", import.meta.url);
+  const manifests = ["package.json"];
+  for (const group of ["apps", "packages"]) {
+    for (const entry of await readdir(new URL(group, packageRoot), { withFileTypes: true })) {
+      if (entry.isDirectory()) manifests.push(`${group}/${entry.name}/package.json`);
     }
+  }
+  for (const manifest of manifests) {
+    const raw = await readFile(new URL(manifest, packageRoot), "utf8");
+    expect(raw.toLowerCase()).not.toContain("opentelemetry");
   }
 });

@@ -19,18 +19,13 @@ import {
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
-import type { LandingResult } from "@score/core/landing/change.interface";
 import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
-import type { MaintenanceTickResult } from "@score/core/maintenance/maintenance.service";
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
-import type { RepairResult } from "@score/core/repair/repair-result.interface";
-import type { TelemetryResource } from "@score/core/telemetry/telemetry.interface";
-import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import {
   BunCommandRunner,
   LoggingCommandRunner,
@@ -39,7 +34,7 @@ import {
 import { agentConfigFromCommand } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/config.interface";
-import { logsDir, promptsDir, statusPath, telemetryDir } from "@score/shared/config/layout";
+import { logsDir, promptsDir, statusPath } from "@score/shared/config/layout";
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
@@ -55,22 +50,8 @@ import { createLogger } from "@score/shared/log";
 import { GitHubService } from "@score/tracker/github.service";
 import { renderRepairRun } from "../repair/repair.run";
 import { proveLandingAuthorship } from "./recovery.policy";
-import type {
-  PhaseOutcome,
-  PhaseTrace,
-  TelemetryEnv,
-  TickOutcome,
-  TickTrace,
-} from "./telemetry.render";
-import {
-  landingDecisionEvents,
-  maintenanceDecisionEvents,
-  newSpanId,
-  newTraceId,
-  phaseSpanRecord,
-  repairDecisionEvents,
-  tickSpanRecord,
-} from "./telemetry.render";
+import type { SpanCorrelation } from "./telemetry";
+import { projectTelemetry } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
@@ -524,200 +505,6 @@ interface DaemonLoopOverrides {
   readonly runner?: CommandRunner;
 }
 
-/**
- * Correlation ids of the span active right now. The telemetry writer's
- * rate-limited failure prose reads this box so a new log line emitted inside
- * a span carries the span's trace_id/span_id (epic #58: correlated logs).
- */
-interface SpanCorrelation {
-  trace_id?: string;
-  span_id?: string;
-}
-
-/**
- * The telemetry face the loop talks to. Undefined (unmanaged discovery mode,
- * no project key) records nothing; phases never see it — only the composition
- * below and the phase wrappers call it with results the phases already
- * returned. Every append is a complete single record: telemetry is never a
- * transaction boundary and a pass never waits on a commit.
- */
-interface TickTelemetry {
-  beginTick(tickNumber: number): void;
-  beginPhase(name: string): void;
-  maintenanceDecisions(result: MaintenanceTickResult): void;
-  landingDecisions(results: readonly LandingResult[]): void;
-  repairDecisions(results: readonly RepairResult[]): void;
-  /** Marks the phase span's outcome "suppressed" — the landing-skipped guard. */
-  phaseSuppressed(): void;
-  phaseFailed(error: unknown): void;
-  endPhase(): void;
-  endTick(passError: string | null): void;
-}
-
-function projectTelemetry(
-  project: string,
-  dryRun: boolean,
-  logRetentionDays: number | undefined,
-  log: Logger,
-  correlation: SpanCorrelation,
-): TickTelemetry {
-  const resource: TelemetryResource = { project, daemon_pid: process.pid };
-  const writer = new TelemetryLogService(telemetryDir(project), resource, undefined, (message) => {
-    // The writer's failure report is the one new prose line; stamp it with
-    // the active span when it fires mid-pass. A throwing reporter stays the
-    // writer's problem (it swallows that itself) — never a phase's.
-    log.warn(
-      correlation.trace_id === undefined
-        ? message
-        : `${message} (trace_id=${correlation.trace_id} span_id=${correlation.span_id})`,
-    );
-  });
-  return tickTelemetry(writer, resource, dryRun, correlation, {
-    // Telemetry keeps the prose log's retention window — no knob of its own.
-    // The sweep itself is wrapped so its failure warns like every other
-    // telemetry failure instead of throwing into a tick (locked decision 9).
-    ...(logRetentionDays !== undefined && {
-      sweep: () => {
-        try {
-          writer.sweepRetention(logRetentionDays);
-        } catch (error) {
-          log.warn(
-            `telemetry retention sweep failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      },
-    }),
-  });
-}
-
-export interface TickTelemetryOptions {
-  /**
-   * Performs the retention sweep. Provided as a callback so projectTelemetry
-   * can wrap its failures into warnings; the recorder itself only decides
-   * when to call it.
-   */
-  readonly sweep?: () => void;
-  /** Tick clock; overridable so tests can drive a UTC rollover. */
-  readonly now?: () => Date;
-}
-
-export function tickTelemetry(
-  writer: TelemetryLogService,
-  resource: TelemetryResource,
-  dryRun: boolean,
-  correlation: SpanCorrelation,
-  options: TickTelemetryOptions = {},
-): TickTelemetry {
-  const env: TelemetryEnv = { resource, dry_run: dryRun };
-  const now = options.now ?? (() => new Date());
-  // Retention mirrors the prose log's rule (file-log.ts): sweep at startup
-  // and again whenever a later tick observes a new UTC date — a supervised
-  // daemon runs for weeks, and a startup-only sweep would stop pruning after
-  // its first day.
-  let sweptDate: string | undefined;
-  const sweepOnRollover = () => {
-    if (options.sweep === undefined) return;
-    const today = now().toISOString().slice(0, 10);
-    if (today === sweptDate) return;
-    sweptDate = today;
-    options.sweep();
-  };
-  sweepOnRollover();
-  let tick: TickTrace | undefined;
-  let tickOpenedAt = 0;
-  let phase: PhaseTrace | undefined;
-  let phaseOpenedAt = 0;
-  let phaseErrorType: string | undefined;
-  let phaseSuppressed = false;
-  return {
-    beginTick(tickNumber) {
-      sweepOnRollover();
-      tick = { trace_id: newTraceId(), span_id: newSpanId(), tick_number: tickNumber };
-      tickOpenedAt = now().getTime();
-      correlation.trace_id = tick.trace_id;
-      correlation.span_id = tick.span_id;
-    },
-    beginPhase(name) {
-      if (tick === undefined) return;
-      phase = {
-        trace_id: tick.trace_id,
-        span_id: newSpanId(),
-        tick_number: tick.tick_number,
-        phase: name,
-        parent_span_id: tick.span_id,
-      };
-      phaseOpenedAt = now().getTime();
-      phaseErrorType = undefined;
-      phaseSuppressed = false;
-      correlation.span_id = phase.span_id;
-    },
-    maintenanceDecisions(result) {
-      if (phase === undefined) return;
-      for (const record of maintenanceDecisionEvents(result, phase, env, now().toISOString()))
-        writer.append(record);
-    },
-    landingDecisions(results) {
-      if (phase === undefined) return;
-      for (const record of landingDecisionEvents(results, phase, env, now().toISOString()))
-        writer.append(record);
-    },
-    repairDecisions(results) {
-      if (phase === undefined) return;
-      for (const record of repairDecisionEvents(results, phase, env, now().toISOString()))
-        writer.append(record);
-    },
-    phaseSuppressed() {
-      phaseSuppressed = true;
-    },
-    phaseFailed(error) {
-      // The exception's type only — messages are free text and stay in prose.
-      phaseErrorType = error instanceof Error ? error.name : "non-error";
-    },
-    endPhase() {
-      if (tick === undefined || phase === undefined) return;
-      const closedAt = now().getTime();
-      const outcome: PhaseOutcome = phaseSuppressed
-        ? "suppressed"
-        : phaseErrorType === undefined
-          ? "ok"
-          : "error";
-      writer.append(
-        phaseSpanRecord({
-          trace: phase,
-          env,
-          started_at: phaseOpenedAt,
-          ended_at: closedAt,
-          time: new Date(closedAt).toISOString(),
-          outcome,
-          ...(phaseErrorType !== undefined && { error_type: phaseErrorType }),
-        }),
-      );
-      correlation.span_id = tick.span_id;
-      phase = undefined;
-    },
-    endTick(passError) {
-      if (tick === undefined) return;
-      const closedAt = now().getTime();
-      const outcome: TickOutcome = passError === null ? "ok" : "error";
-      writer.append(
-        tickSpanRecord({
-          trace: tick,
-          env,
-          started_at: tickOpenedAt,
-          ended_at: closedAt,
-          time: new Date(closedAt).toISOString(),
-          outcome,
-        }),
-      );
-      correlation.trace_id = undefined;
-      correlation.span_id = undefined;
-      tick = undefined;
-    },
-  };
-}
-
 export async function runDaemon(args: readonly string[]): Promise<void> {
   const parsed = parseDaemonArguments(args);
   // Validate before ANY path is built from the key: logsDir/statusPath join it
@@ -1090,57 +877,69 @@ export async function runDaemonLoop(
         observations.startPass();
         for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
         telemetry?.beginTick(currentTick);
-
-        // D1 reconciliation runs before the phases of every pass, not only at
-        // startup (the first pass runs immediately, so this is the startup
-        // check too): a caught pushDefaultBranch failure strands a committed
-        // merge while the daemon lives, and landing must see the recovered
-        // checkout, never stage on top of the wedge. Unconditional, not
-        // managed-only: every mode that runs this loop lands merges on this
-        // checkout, so every mode owns the recovery of its own wedge.
-        // Transient git failures (a fetch blip, say) degrade to a warning
-        // like any phase error — but they also block landing this pass, and
-        // only failed post-reset verification may crash the daemon.
         try {
-          landingBlocked =
-            (await reconcileUnpushedLandingMerge(git, log, {
-              dryRun,
-              defaultBranch: runtime.defaultBranch,
-              repositoryOwner: runtime.repository.split("/")[0] as string,
-            })) === "blocked";
+          // D1 reconciliation runs before the phases of every pass, not only
+          // at startup (the first pass runs immediately, so this is the
+          // startup check too): a caught pushDefaultBranch failure strands a
+          // committed merge while the daemon lives, and landing must see the
+          // recovered checkout, never stage on top of the wedge.
+          // Unconditional, not managed-only: every mode that runs this loop
+          // lands merges on this checkout, so every mode owns the recovery of
+          // its own wedge. Transient git failures (a fetch blip, say)
+          // degrade to a warning like any phase error — but they also block
+          // landing this pass, and only failed post-reset verification may
+          // crash the daemon.
+          try {
+            landingBlocked =
+              (await reconcileUnpushedLandingMerge(git, log, {
+                dryRun,
+                defaultBranch: runtime.defaultBranch,
+                repositoryOwner: runtime.repository.split("/")[0] as string,
+              })) === "blocked";
+          } catch (error) {
+            if (error instanceof RecoveryVerificationError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            log.warn(`✗ reconciliation failed: ${message}`);
+            passError = `reconcile: ${message}`;
+            landingBlocked = true;
+          }
+
+          await daemon.runPass();
+
+          const elapsedMs = Date.now() - startedAt;
+          const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
+          log.lines([
+            {
+              level: changed > 0 ? "info" : "debug",
+              text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
+            },
+          ]);
+          // Phases are sequential by design; a pass longer than the tick just
+          // delays the next one. Say so instead of trying to catch up.
+          if (elapsedMs > tickIntervalMs) {
+            log.warn(
+              `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
+            );
+          }
+          await status?.write({
+            last_pass_completed_at: new Date().toISOString(),
+            last_error: passError,
+            last_gate_failure: lastGateFailure,
+          });
+          // Closed last, so the tick span's duration covers every phase span;
+          // passError mirrors status.json's last_error, nothing more.
+          telemetry?.endTick(passError);
         } catch (error) {
-          if (error instanceof RecoveryVerificationError) throw error;
+          // The pass exited through a fatal path — a failed post-reset
+          // verification, or a status write that could not land. The root
+          // span must still close (already-written phase spans would
+          // otherwise sit under no trace), and an exceptional exit is an
+          // error pass even when no phase reported one. endTick is a no-op
+          // when the normal tail already closed the tick.
           const message = error instanceof Error ? error.message : String(error);
-          log.warn(`✗ reconciliation failed: ${message}`);
-          passError = `reconcile: ${message}`;
-          landingBlocked = true;
+          telemetry?.endTick(passError ?? `fatal: ${message}`);
+          throw error;
         }
-
-        await daemon.runPass();
-
-        const elapsedMs = Date.now() - startedAt;
-        const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
-        log.lines([
-          {
-            level: changed > 0 ? "info" : "debug",
-            text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
-          },
-        ]);
-        // Phases are sequential by design; a pass longer than the tick just
-        // delays the next one. Say so instead of trying to catch up.
-        if (elapsedMs > tickIntervalMs) {
-          log.warn(
-            `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
-          );
-        }
-        await status?.write({
-          last_pass_completed_at: new Date().toISOString(),
-          last_error: passError,
-          last_gate_failure: lastGateFailure,
-        });
-        // Closed last, so the tick span's duration covers every phase span;
-        // passError mirrors status.json's last_error, nothing more.
-        telemetry?.endTick(passError);
       },
       parsed.once,
       tickIntervalMs,

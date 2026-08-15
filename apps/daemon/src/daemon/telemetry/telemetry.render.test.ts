@@ -113,6 +113,8 @@ test("a phase span record parents to the tick span and mirrors its outcome", () 
   });
 });
 
+const IDLE_CAPACITY = { active: 0, max: 2, heldBy: [], starved: false };
+
 test("cleanup decisions cover every merged-PR and stranded action with the right subject", () => {
   const result: MaintenanceTickResult = {
     cleanup: [
@@ -125,7 +127,7 @@ test("cleanup decisions cover every merged-PR and stranded action with the right
       { issueNumber: 7, action: "STRANDED_DIRTY", dryRun: false, message: "dirt" },
       { issueNumber: 8, action: "STRANDED_RESPAWNED", dryRun: false },
     ],
-    dispatch: { started: [], planned: [], blocked: [], failed: [] },
+    dispatch: { started: [], planned: [], blocked: [], failed: [], capacity: IDLE_CAPACITY },
   };
   const events = maintenanceDecisionEvents(result, phase("tick0"), ENV, TIME).map(decisionOf);
   expect(events).toEqual([
@@ -155,6 +157,7 @@ test("dispatch decisions cover started, planned, blocked (both reasons), and fai
         { issueNumber: 14, reasons: ["ALREADY_IN_FLIGHT", "DEPENDENCY_INCOMPLETE"] },
       ],
       failed: [{ issueNumber: 15, message: "git died" }],
+      capacity: { active: 0, max: 2, heldBy: [], starved: false },
     },
   };
   const events = maintenanceDecisionEvents(result, phase("tick0"), ENV, TIME).map(decisionOf);
@@ -232,7 +235,7 @@ test("decision events correlate to their phase span, which parents to the tick s
   const events = maintenanceDecisionEvents(
     {
       cleanup: [{ pullRequestNumber: 1, action: "CLEANED" }],
-      dispatch: { started: [], planned: [], blocked: [], failed: [] },
+      dispatch: { started: [], planned: [], blocked: [], failed: [], capacity: IDLE_CAPACITY },
     },
     trace,
     ENV,
@@ -258,7 +261,7 @@ test("decision events correlate to their phase span, which parents to the tick s
 test("every record carries the dry-run marker — dry-run output cannot aggregate as real mutations", () => {
   const maintenance: MaintenanceTickResult = {
     cleanup: [{ pullRequestNumber: 2, action: "PLANNED" }],
-    dispatch: { started: [], planned: [12], blocked: [], failed: [] },
+    dispatch: { started: [], planned: [12], blocked: [], failed: [], capacity: IDLE_CAPACITY },
   };
   const landing: LandingResult[] = [{ pullRequestNumber: 30, tag: "would-merge", note: "" }];
   const repair: RepairResult[] = [
