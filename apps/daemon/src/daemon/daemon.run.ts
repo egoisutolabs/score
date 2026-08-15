@@ -771,8 +771,11 @@ export async function runDaemonLoop(
         everyTicks: 1,
         run: async () => {
           const result = await maintenance.runMaintenanceTick(dryRun);
-          log.lines(renderMaintenanceTick(result));
+          // Structured evidence of completed actions is recorded before the
+          // fallible prose sink: a logger failure mid-render must not erase
+          // the decisions for mutations that already happened.
           telemetry?.maintenanceDecisions(result);
+          log.lines(renderMaintenanceTick(result));
           pass.cleaned += result.cleanup.filter(
             (cleanup) =>
               cleanup.action === "CLEANED" ||
@@ -798,8 +801,9 @@ export async function runDaemonLoop(
           const gateVerdict = gateFailureFrom(results);
           if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
           applyGateVerdicts(gateVerdicts, results);
-          log.lines(renderLandingTick(results));
+          // Same ordering as cleanup+dispatch: decisions precede prose.
           telemetry?.landingDecisions(results);
+          log.lines(renderLandingTick(results));
           pass.merged += results.filter(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
@@ -816,11 +820,12 @@ export async function runDaemonLoop(
           const acted = results.filter(
             (result) => result.action === "PINGED" || result.action === "SPAWNED",
           ).length;
+          // Same ordering as cleanup+dispatch: decisions precede prose.
+          telemetry?.repairDecisions(results);
           // renderRepairRun always prints a summary line; at one tick apiece that
           // is noise, so a tick with nothing to fix stays at debug.
           if (acted > 0) log.lines(renderRepairRun(results));
           else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
-          telemetry?.repairDecisions(results);
           pass.repaired += acted;
           pass.working += results.filter((result) => result.action === "WORKING").length;
         },

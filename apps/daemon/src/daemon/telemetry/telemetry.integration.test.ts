@@ -437,6 +437,71 @@ test("a telemetry-side failure disables recording without ever throwing into the
   await rm(dir, { recursive: true, force: true });
 });
 
+test("a throwing telemetry reporter never escapes into a phase or the pass loop", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
+  const writer = new TelemetryLogService(dir, { project: "demo" });
+  const telemetry = new TickTelemetryService(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    {
+      // Both the sweep and its reporter fail; neither may throw outward.
+      sweep: () => {
+        throw new Error("permission denied");
+      },
+      now: () => {
+        throw new Error("entropy exhausted");
+      },
+      onError: () => {
+        throw new Error("reporter writes to the same dead disk");
+      },
+    },
+  );
+
+  expect(() => telemetry.beginTick(0)).not.toThrow();
+  expect(() => telemetry.beginPhase("repair")).not.toThrow();
+  expect(() => telemetry.repairDecisions([])).not.toThrow();
+  expect(() => telemetry.endPhase()).not.toThrow();
+  expect(() => telemetry.endTick(null)).not.toThrow();
+  // Nothing recorded — the recorder disabled itself on the first failure.
+  expect((await readdir(dir)).length).toBe(0);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("decisions are recorded before the fallible prose sink", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const runner = new FakeRunner(managedResponsesSeeded(repo));
+    // The prose logger throws on the FIRST phase-render — after that phase's
+    // external work completed — then recovers, so the rest of the pass runs
+    // and the loop settles normally.
+    const log = new CaptureLogger();
+    const realLines = log.lines.bind(log);
+    let broken = true;
+    log.lines = (lines) => {
+      if (broken) {
+        broken = false;
+        throw new Error("prose log disk full");
+      }
+      realLines(lines);
+    };
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+  });
+
+  // The structured decision for the planned issue survived the prose failure
+  // — the log-path error erased no evidence of the phase's actions.
+  const records = await readTelemetry(home);
+  const decisions = records.filter((record) => record.name === "score.dispatch.decision");
+  expect(decisions.map((decision) => decision.attributes?.["score.action"])).toContain("planned");
+}, 20_000);
+
 test("unmanaged discovery mode records nothing — no project key to segment under", async () => {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
   const saved = process.env.SCORE_HOME;

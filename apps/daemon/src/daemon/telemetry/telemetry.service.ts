@@ -247,6 +247,20 @@ export class TickTelemetryService implements TickTelemetry {
     return this.#now().toISOString();
   }
 
+  /**
+   * The reporter typically writes to the same failing disk that broke the
+   * sweep — a throwing reporter is swallowed, exactly like
+   * TelemetryLogService.fail() swallows its own onError. Telemetry must not
+   * abort a pass through its reporting path any more than through its work.
+   */
+  #report(message: string): void {
+    try {
+      this.#onError?.(message);
+    } catch {
+      // Nowhere left to say so; the failure counters stay the trace.
+    }
+  }
+
   #sweepOnRollover(): void {
     if (this.#sweep === undefined) return;
     const today = this.#now().toISOString().slice(0, 10);
@@ -265,7 +279,7 @@ export class TickTelemetryService implements TickTelemetry {
       // until it heals, and per-tick warns would bury the signal.
       if (today === this.#sweepWarnDate) return;
       this.#sweepWarnDate = today;
-      this.#onError?.(
+      this.#report(
         `telemetry retention sweep failed (retried next tick): ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -286,7 +300,7 @@ export class TickTelemetryService implements TickTelemetry {
       this.#disabled = true;
       this.#correlation.trace_id = undefined;
       this.#correlation.span_id = undefined;
-      this.#onError?.(
+      this.#report(
         `telemetry disabled after a failure: ${
           error instanceof Error ? error.message : String(error)
         }`,
@@ -308,9 +322,9 @@ export function projectTelemetry(
   correlation: SpanCorrelation,
 ): TickTelemetry {
   const resource: TelemetryResource = { project, daemon_pid: process.pid };
-  // The writer's failure report is the one new prose line; stamp it with the
-  // active span when it fires mid-pass. A throwing reporter stays the
-  // writer's problem (it swallows that itself) — never a phase's.
+  // The failure report is the one new prose line; stamped with the active
+  // span when it fires mid-pass. A reporter that itself throws is swallowed
+  // by both this service and the writer — never a phase's problem.
   const report = (message: string) =>
     log.warn(
       correlation.trace_id === undefined
