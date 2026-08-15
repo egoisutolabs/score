@@ -139,6 +139,336 @@ const changes: ChangeHost = {
   },
 };
 
+test("a zero-slot tick with eligible candidates reports the capacity decision instead of exiting silently (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-21-stale-holder", branch: "issue-21-stale-holder", locked: false },
+    { path: "/worktrees/issue-34-live-holder", branch: "issue-34-live-holder", locked: false },
+  );
+  const agents = new FakeAgents();
+  const service = new DispatchService(options, new FakeWorkSource(), changes, workspace, agents, {
+    async write(): Promise<void> {
+      throw new Error("a zero-slot tick must not write TASK.md");
+    },
+  });
+
+  const result = await service.run();
+
+  expect(result.started).toEqual([]);
+  expect(result.planned).toEqual([]);
+  expect(result.blocked).toEqual([]);
+  expect(result.failed).toEqual([]);
+  expect(result.capacity).toEqual({
+    active: 2,
+    max: 2,
+    heldBy: ["issue-21-stale-holder", "issue-34-live-holder"],
+    starved: true,
+  });
+  expect(workspace.created).toEqual([]);
+  expect(agents.started).toEqual([]);
+});
+
+test("a zero-slot tick with no eligible candidates reports capacity without starving (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-stale-holder",
+    branch: "issue-21-stale-holder",
+    locked: false,
+  });
+  const heldIssuesOnly: WorkSource = {
+    async observeIssues() {
+      // Eligibility filtering happens before any in-flight check, so these
+      // never count as waiting candidates.
+      return [{ ...issue(7), labels: [{ name: "hold" }] }];
+    },
+    async observeIssue() {
+      return issue(7);
+    },
+    async observeDependency() {
+      return issue(7);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    heldIssuesOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-stale-holder"],
+    starved: false,
+  });
+});
+
+test("at capacity with only in-flight candidates is a healthy tick, not starvation (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-21-live-holder", branch: "issue-21-live-holder", locked: false },
+    { path: "/worktrees/issue-34-live-holder", branch: "issue-34-live-holder", locked: false },
+  );
+  // The slot holders themselves are open, labeled issues — observeIssues()
+  // still returns them, but #alreadyInFlight would block every one.
+  const holdersOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(34), issue(21)];
+    },
+    async observeIssue(issueNumber: number) {
+      return issue(issueNumber);
+    },
+    async observeDependency(issueNumber: number) {
+      return issue(issueNumber);
+    },
+  };
+  const service = new DispatchService(options, holdersOnly, changes, workspace, new FakeAgents(), {
+    async write(): Promise<void> {},
+  });
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 2,
+    max: 2,
+    heldBy: ["issue-21-live-holder", "issue-34-live-holder"],
+    starved: false,
+  });
+});
+
+test("at capacity with only dependency-incomplete candidates is not starvation (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-live-holder",
+    branch: "issue-21-live-holder",
+    locked: false,
+  });
+  const waitingOnAnOpenDependency: WorkSource = {
+    async observeIssues() {
+      return [{ ...issue(9), body: "## Dependencies\n- #1\n" }];
+    },
+    async observeIssue() {
+      return { ...issue(9), body: "## Dependencies\n- #1\n" };
+    },
+    async observeDependency() {
+      // Issue 1 is OPEN — dependency incomplete, so a free slot would not
+      // start this candidate either.
+      return issue(1);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    waitingOnAnOpenDependency,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-live-holder"],
+    starved: false,
+  });
+});
+
+test("the detached holder's own issue is not a waiting candidate (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  // The holder's issue stays open and labeled while its agent runs; only the
+  // worktree-identity fallback can recognize it as the slot's own issue.
+  const holderOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(21)];
+    },
+    async observeIssue() {
+      return issue(21);
+    },
+    async observeDependency() {
+      return issue(21);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    holderOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-detached-slug"],
+    starved: false,
+  });
+});
+
+test("a detached-HEAD worktree still marks its own issue in flight for a slotted run (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  const holderOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(21)];
+    },
+    async observeIssue() {
+      return issue(21);
+    },
+    async observeDependency() {
+      return issue(21);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 2 },
+    holderOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.blocked).toEqual([{ issueNumber: 21, reasons: ["ALREADY_IN_FLIGHT"] }]);
+  expect(result.started).toEqual([]);
+  expect(workspace.created).toEqual([]);
+});
+
+test("the starvation scan observes global in-flight state once per tick, not per candidate (#65)", async () => {
+  let worktreeObservations = 0;
+  let changeHeadCalls = 0;
+  let sessionProbes = 0;
+  class CountingWorkspace extends FakeWorkspace {
+    override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
+      worktreeObservations += 1;
+      return super.observeWorktrees();
+    }
+  }
+  class CountingAgents extends FakeAgents {
+    override async sessionExists(sessionName: string): Promise<boolean> {
+      sessionProbes += 1;
+      return super.sessionExists(sessionName);
+    }
+  }
+  const workspace = new CountingWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-1-live", branch: "issue-1-live", locked: false },
+    { path: "/worktrees/issue-2-live", branch: "issue-2-live", locked: false },
+  );
+  const agents = new CountingAgents();
+  agents.sessions = ["issue-5"];
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(3), issue(4), issue(5)];
+    },
+    async observeIssue(issueNumber: number) {
+      return issue(issueNumber);
+    },
+    async observeDependency(issueNumber: number) {
+      return issue(issueNumber);
+    },
+  };
+  const countingChanges: ChangeHost = {
+    ...changes,
+    async observeOpenChangeHeads() {
+      changeHeadCalls += 1;
+      return [
+        { number: 103, headRefName: "issue-3-pr-branch" },
+        { number: 104, headRefName: "issue-4-pr-branch" },
+      ];
+    },
+  };
+  const service = new DispatchService(options, source, countingChanges, workspace, agents, {
+    async write(): Promise<void> {},
+  });
+
+  const result = await service.run();
+
+  expect(result.capacity.starved).toBe(false);
+  // One observation of each global witness set per tick — not one per candidate.
+  expect(worktreeObservations).toBe(1);
+  expect(changeHeadCalls).toBe(1);
+  // Sessions stay targeted per-candidate probes (listSessions is lossy for
+  // un-namespaced opencode and swallows tmux failures); only candidates the
+  // snapshots cannot witness reach the probe.
+  expect(sessionProbes).toBe(1);
+});
+
+test("a detached-HEAD slot holder is named by its worktree identity, not an empty branch (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    new FakeWorkSource(),
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity.heldBy).toEqual(["issue-21-detached-slug"]);
+  expect(result.capacity.starved).toBe(true);
+});
+
+test("capacity reports the tick's entry observation, not post-run state (#65)", async () => {
+  // FakeWorkspace's base injects a create failure for issue 1; this run must
+  // start cleanly to isolate the capacity semantics.
+  class PlainWorkspace extends FakeWorkspace {
+    override async createWorktree(identity: WorkIdentity): Promise<void> {
+      this.created.push(identity.issueNumber);
+      this.worktrees.push({ path: identity.worktreePath, branch: identity.branch, locked: false });
+    }
+  }
+  const workspace = new PlainWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-5-already-running",
+    branch: "issue-5-already-running",
+    locked: false,
+  });
+  const service = new DispatchService(
+    options,
+    new FakeWorkSource(),
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.started).toEqual([1]);
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 2,
+    heldBy: ["issue-5-already-running"],
+    starved: false,
+  });
+});
+
 test("a failed task preparation does not suppress the next deterministic candidate", async () => {
   const workspace = new FakeWorkspace();
   const agents = new FakeAgents();
