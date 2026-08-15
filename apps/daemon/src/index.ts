@@ -3,7 +3,7 @@ import { runConfigInit } from "@score/shared/config/template";
 import { runDaemon } from "./daemon/daemon.run";
 import { runRepair } from "./repair/repair.run";
 import { runDoctor } from "./supervisor/doctor";
-import { runDown, runUp } from "./supervisor/supervisor.run";
+import { runDown, runRestart, runUp } from "./supervisor/supervisor.run";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -13,6 +13,7 @@ try {
   if (command === "repair") await runRepair(args);
   else if (command === "up") await runUp(args);
   else if (command === "down") await runDown(args);
+  else if (command === "restart") await runRestart(args);
   else if (command === "doctor") await runDoctor();
   // Dynamic import keeps OpenTUI out of the daemon/supervisor code paths.
   else if (command === "tui") await (await import("@score/tui/app")).runTui(args);
