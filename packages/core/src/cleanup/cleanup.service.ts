@@ -1,4 +1,3 @@
-import type { GitService } from "@score/core/adapters/git.service";
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import {
   cleanupStatusIsSafe,
@@ -11,7 +10,8 @@ import type {
   StrandedCleanupResult,
 } from "@score/core/cleanup/cleanup-result.interface";
 import { issueNumberFromBranch, sessionNameForIssue } from "@score/core/dispatch/dispatch.identity";
-import { isOwnedIssueWorktree } from "@score/core/dispatch/dispatch.policy";
+import { isOwnedIssueWorktree, worktreeBranchIdentity } from "@score/core/dispatch/dispatch.policy";
+import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestIdentity } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
@@ -41,11 +41,8 @@ export class CleanupService {
     private readonly changes: ChangeHost,
     // Worktree authority plus the one landing-side verb cleanup legitimately
     // performs (autoPullMain); no merge or push method is visible here (#19).
-    // isAncestor is read-only evidence for the stranded ladder: proof a
-    // branch has no commits of its own before its worktree may be reclaimed.
     private readonly workspace: WorktreeProvisioner &
-      Pick<LandingWorkspace, "fastForwardDefaultBranch"> &
-      Pick<GitService, "isAncestor">,
+      Pick<LandingWorkspace, "fastForwardDefaultBranch">,
     private readonly agents: AgentRuntime,
   ) {}
 
@@ -125,8 +122,12 @@ export class CleanupService {
       isOwnedIssueWorktree(worktree, this.options.workspaceRoot),
     );
     for (const worktree of worktrees) {
-      if (branchesWithChanges.has(worktree.branch)) continue;
-      const issueNumber = issueNumberFromBranch(worktree.branch);
+      // Branch-or-basename, like the ownership predicate above: a
+      // detached-HEAD worktree still holds a slot and must not silently
+      // leave the stranded universe (or slip past the PR exclusion).
+      const branch = worktreeBranchIdentity(worktree);
+      if (branchesWithChanges.has(branch)) continue;
+      const issueNumber = issueNumberFromBranch(branch);
       if (issueNumber === null) continue;
       seen.add(issueNumber);
 
@@ -151,14 +152,9 @@ export class CleanupService {
         continue;
       }
 
-      const status = await this.workspace.status(worktree.path);
-      // An unknown headSha fails the ahead-of-base proof closed.
-      const dirty = !cleanupStatusIsSafe(status, this.options.harnessOwnedPaths)
-        ? "worktree contains changes outside the harness allowlist"
-        : worktree.headSha === undefined ||
-            !(await this.workspace.isAncestor(worktree.headSha, this.options.defaultBranch))
-          ? "branch has commits not on the base branch"
-          : undefined;
+      // Pre-check before quiescing: a worktree that already holds work must
+      // never cost a still-live agent its session.
+      const dirty = await this.#strandedDirt(worktree);
       if (dirty !== undefined) {
         results.push({ issueNumber, action: "STRANDED_DIRTY", dryRun, message: dirty });
         continue;
@@ -169,8 +165,23 @@ export class CleanupService {
         // session reclaims immediately); after removeWorktree the surviving
         // branch is the same benign leftover redispatch reattaches to.
         await this.agents.stop(sessionName);
-        await this.workspace.removeWorktree(worktree);
-        await this.workspace.deleteBranch(worktree.branch);
+        // A live agent can write or commit between any check and the forced
+        // removal, so only a re-observation after the session is gone counts:
+        // last-second work surfaces as STRANDED_DIRTY (loud, preserved, and
+        // re-judged next tick on the session-missing path) instead of being
+        // erased by `worktree remove --force`.
+        const fresh = (await this.workspace.observeWorktrees()).find(
+          (candidate) => candidate.path === worktree.path,
+        );
+        const freshDirt = fresh === undefined ? undefined : await this.#strandedDirt(fresh);
+        if (freshDirt !== undefined) {
+          results.push({ issueNumber, action: "STRANDED_DIRTY", dryRun, message: freshDirt });
+          continue;
+        }
+        if (fresh !== undefined) {
+          await this.workspace.removeWorktree(fresh);
+          await this.workspace.deleteBranch(branch);
+        }
         this.#stranded.delete(issueNumber);
       }
       results.push({ issueNumber, action: "STRANDED_RECLAIMED", dryRun });
@@ -181,5 +192,21 @@ export class CleanupService {
       if (!seen.has(issueNumber)) this.#stranded.delete(issueNumber);
     }
     return results;
+  }
+
+  /** Undefined when the worktree holds nothing of value; else the loud reason. */
+  async #strandedDirt(worktree: WorktreeObservation): Promise<string | undefined> {
+    const status = await this.workspace.status(worktree.path);
+    if (!cleanupStatusIsSafe(status, this.options.harnessOwnedPaths)) {
+      return "worktree contains changes outside the harness allowlist";
+    }
+    // An unknown headSha fails the ahead-of-base proof closed.
+    if (
+      worktree.headSha === undefined ||
+      !(await this.workspace.isAncestor(worktree.headSha, this.options.defaultBranch))
+    ) {
+      return "branch has commits not on the base branch";
+    }
+    return undefined;
   }
 }

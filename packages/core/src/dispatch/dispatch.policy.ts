@@ -46,6 +46,17 @@ export function sortIssuesForDispatch(
   return [...issues].sort((left, right) => left.number - right.number);
 }
 
+/**
+ * Branch identity of a worktree observation. A detached-HEAD worktree reports
+ * an empty branch, but our worktree paths are minted as workspaceRoot/branch
+ * (createWorkIdentity), so the basename carries the same identity — every
+ * consumer of a worktree's branch must fall back to it or a detached worktree
+ * silently leaves that consumer's universe while still holding a slot.
+ */
+export function worktreeBranchIdentity(worktree: WorktreeObservation): string {
+  return worktree.branch || basename(worktree.path);
+}
+
 /** Legacy ownership accepts the issue pattern from either branch or detached-worktree basename. */
 export function isOwnedIssueWorktree(
   worktree: WorktreeObservation,
@@ -56,6 +67,6 @@ export function isOwnedIssueWorktree(
     path !== "" &&
     !path.startsWith("..") &&
     !path.startsWith("/") &&
-    isIssueBranch(worktree.branch || basename(worktree.path))
+    isIssueBranch(worktreeBranchIdentity(worktree))
   );
 }

@@ -77,6 +77,10 @@ class FakeWorkspace implements WorktreeProvisioner {
     this.worktrees.push({ path: identity.worktreePath, branch: identity.branch, locked: false });
   }
 
+  async isAncestor(): Promise<boolean> {
+    return true;
+  }
+
   async status(): Promise<string> {
     return "";
   }

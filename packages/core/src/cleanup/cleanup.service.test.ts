@@ -1,84 +1,18 @@
-import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { CleanupService } from "@score/core/cleanup/cleanup.service";
-import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
-import type { PullRequestObservation } from "@score/core/landing/change.interface";
+import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import { expect, test } from "vitest";
-
-const worktree = { path: "/wt/issue-1-done", branch: "issue-1-done", locked: false };
-const merged: PullRequestObservation = {
-  number: 4,
-  title: "Done",
-  headRefName: worktree.branch,
-  isDraft: false,
-  mergeable: "MERGEABLE",
-  reviewDecision: null,
-  labels: [],
-  files: [],
-  statusCheckRollup: [],
-};
-
-class CleanupWorkspace
-  implements WorktreeProvisioner, Pick<LandingWorkspace, "fastForwardDefaultBranch">
-{
-  fastForwards = 0;
-  deleted = 0;
-  async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
-    return [worktree];
-  }
-  async createWorktree(_identity: WorkIdentity) {}
-  async status() {
-    return "?? TASK.md\n";
-  }
-  async removeWorktree(_worktree: WorktreeObservation) {}
-  async deleteBranch(_branch: string) {
-    this.deleted += 1;
-    return false;
-  }
-  async fastForwardDefaultBranch() {
-    this.fastForwards += 1;
-    return true;
-  }
-  async isAncestor() {
-    return true;
-  }
-}
-
-const host: ChangeHost = {
-  async observeOpenChanges() {
-    return [];
-  },
-  async observeMergedOwnedChanges() {
-    return [merged];
-  },
-  async observeOpenChangeHeads() {
-    return [];
-  },
-  async observeRepairChanges() {
-    return [];
-  },
-  async unresolvedThreadCount() {
-    return 0;
-  },
-};
-function makeAgents(): AgentRuntime & { stopped: string[] } {
-  return {
-    stopped: [],
-    async sessionExists() {
-      return false;
-    },
-    async listSessions() {
-      return [];
-    },
-    async startImplementation() {},
-    async ping() {},
-    async startRepair() {},
-    async stop(sessionName: string) {
-      this.stopped.push(sessionName);
-    },
-  };
-}
+import {
+  CleanupWorkspace,
+  emptyHost,
+  makeAgents,
+  makeStrandedAgents,
+  makeStrandedService,
+  mergedHost,
+  mergedWorktree,
+  StrandedFixtureWorkspace,
+  strandedWorktree,
+} from "./fixtures";
 
 test("dry-run safe cleanup still plans the legacy pull-main observation", async () => {
   const workspace = new CleanupWorkspace();
@@ -89,7 +23,7 @@ test("dry-run safe cleanup still plans the legacy pull-main observation", async 
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: true,
     },
-    host,
+    mergedHost,
     workspace,
     makeAgents(),
   ).run(true);
@@ -107,7 +41,7 @@ test("local branch deletion failure remains nonfatal after worktree removal", as
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: true,
     },
-    host,
+    mergedHost,
     workspace,
     agents,
   ).run(false);
@@ -122,7 +56,7 @@ test("local branch deletion failure remains nonfatal after worktree removal", as
 // `false`, never a throw). The leftover local branch must be benign.
 test("cleanup: deleteBranch fails after removeWorktree — next pass reports NOT_FOUND, no retry loop (BENIGN-LEFTOVER)", async () => {
   class StrandedWorkspace extends CleanupWorkspace {
-    live: WorktreeObservation[] = [worktree];
+    live: WorktreeObservation[] = [mergedWorktree];
     override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
       return this.live;
     }
@@ -138,7 +72,7 @@ test("cleanup: deleteBranch fails after removeWorktree — next pass reports NOT
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: false,
     },
-    host,
+    mergedHost,
     workspace,
     makeAgents(),
   );
@@ -160,100 +94,6 @@ test("cleanup: deleteBranch fails after removeWorktree — next pass reports NOT
 // A worktree whose branch has no PR at all: ping after a silent window,
 // reclaim after a second one (immediately when the session is gone), and
 // never destroy real work.
-
-const strandedWorktree: WorktreeObservation = {
-  path: "/wt/issue-21-fix",
-  branch: "issue-21-fix",
-  headSha: "base-sha",
-  locked: false,
-};
-
-/** No PRs anywhere: the stranded scan is the only observer left. */
-const emptyHost: ChangeHost = {
-  async observeOpenChanges() {
-    return [];
-  },
-  async observeMergedOwnedChanges() {
-    return [];
-  },
-  async observeOpenChangeHeads() {
-    return [];
-  },
-  async observeRepairChanges() {
-    return [];
-  },
-  async unresolvedThreadCount() {
-    return 0;
-  },
-};
-
-class StrandedFixtureWorkspace extends CleanupWorkspace {
-  live: WorktreeObservation[] = [strandedWorktree];
-  removed: string[] = [];
-  deletedBranches: string[] = [];
-  worktreeStatus = "?? TASK.md\n";
-  ancestor = true;
-  override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
-    return this.live;
-  }
-  override async status() {
-    return this.worktreeStatus;
-  }
-  override async removeWorktree(worktree: WorktreeObservation): Promise<void> {
-    this.removed.push(worktree.path);
-    this.live = this.live.filter((candidate) => candidate.path !== worktree.path);
-  }
-  override async deleteBranch(branch: string) {
-    this.deletedBranches.push(branch);
-    return true;
-  }
-  override async isAncestor() {
-    return this.ancestor;
-  }
-}
-
-function makeStrandedAgents(sessions: string[]): AgentRuntime & {
-  stopped: string[];
-  pinged: { session: string; message: string }[];
-} {
-  return {
-    stopped: [],
-    pinged: [],
-    async sessionExists(sessionName: string) {
-      return sessions.includes(sessionName);
-    },
-    async listSessions() {
-      return sessions;
-    },
-    async startImplementation() {},
-    async ping(session: string, message: string) {
-      this.pinged.push({ session, message });
-    },
-    async startRepair() {},
-    async stop(sessionName: string) {
-      this.stopped.push(sessionName);
-    },
-  };
-}
-
-function makeStrandedService(
-  workspace: StrandedFixtureWorkspace,
-  agents: AgentRuntime,
-  host: ChangeHost = emptyHost,
-) {
-  return new CleanupService(
-    {
-      defaultBranch: "main",
-      workspaceRoot: "/wt",
-      harnessOwnedPaths: ["TASK.md", ".claude/"],
-      autoPullMain: false,
-      staleTicks: 1,
-    },
-    host,
-    workspace,
-    agents,
-  );
-}
 
 // #21's exact shape: worktree present, tmux session alive, zero commits, no
 // PR — the state that leaked a slot for two days.
@@ -293,6 +133,20 @@ test("stranded (#64): missing session reclaims immediately, without a ping", asy
   expect(result).toEqual([{ issueNumber: 21, action: "STRANDED_RECLAIMED", dryRun: false }]);
   expect(agents.pinged).toEqual([]);
   expect(workspace.removed).toEqual(["/wt/issue-21-fix"]);
+});
+
+test("stranded (#64): a detached-HEAD worktree is still reclaimed via its basename identity", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  // parseWorktreePorcelain reports a detached worktree with an empty branch;
+  // ownership (and therefore capacity) still counts it by basename, so the
+  // stranded scan must too or it leaks its slot forever.
+  workspace.live = [{ ...strandedWorktree, branch: "" }];
+  const service = makeStrandedService(workspace, makeStrandedAgents([]));
+
+  const result = await service.run(false);
+  expect(result).toEqual([{ issueNumber: 21, action: "STRANDED_RECLAIMED", dryRun: false }]);
+  expect(workspace.removed).toEqual(["/wt/issue-21-fix"]);
+  expect(workspace.deletedBranches).toEqual(["issue-21-fix"]);
 });
 
 test("stranded (#64): uncommitted work is never removed — STRANDED_DIRTY every tick", async () => {
@@ -387,6 +241,67 @@ test("stranded (#64): dry-run plans the ping and the reclaim, mutates nothing", 
   expect(deadWorkspace.deletedBranches).toEqual([]);
 });
 
+// A live agent can write between any observation and the forced removal;
+// only the post-quiesce re-observation makes the clean-worktree proof real.
+test("stranded (#64): a write racing the reclaim is caught after quiesce — nothing removed", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  const agents = makeStrandedAgents(["issue-21"]);
+  // The agent's last write lands while stop() is in flight, after the
+  // pre-check already saw a clean worktree.
+  agents.stop = async (sessionName: string) => {
+    agents.stopped.push(sessionName);
+    workspace.worktreeStatus = " M src/app.ts\n";
+  };
+  const service = makeStrandedService(workspace, agents);
+
+  await service.run(false); // tick 0: window opens
+  await service.run(false); // tick 1: ping
+  const result = await service.run(false); // tick 2: reclaim attempt
+  expect(result).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_DIRTY",
+      dryRun: false,
+      message: "worktree contains changes outside the harness allowlist",
+    },
+  ]);
+  expect(workspace.removed).toEqual([]);
+  // The work survives, loudly: the next tick's pre-check sees the dirt
+  // before any verb runs and stays STRANDED_DIRTY.
+  expect(await service.run(false)).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_DIRTY",
+      dryRun: false,
+      message: "worktree contains changes outside the harness allowlist",
+    },
+  ]);
+  expect(workspace.removed).toEqual([]);
+});
+
+test("stranded (#64): a commit racing the reclaim is caught after quiesce — nothing removed", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  const agents = makeStrandedAgents(["issue-21"]);
+  agents.stop = async (sessionName: string) => {
+    agents.stopped.push(sessionName);
+    workspace.live = [{ ...strandedWorktree, headSha: "race-commit" }];
+  };
+  const service = makeStrandedService(workspace, agents);
+
+  await service.run(false); // tick 0: window opens
+  await service.run(false); // tick 1: ping
+  const result = await service.run(false); // tick 2: reclaim attempt
+  expect(result).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_DIRTY",
+      dryRun: false,
+      message: "branch has commits not on the base branch",
+    },
+  ]);
+  expect(workspace.removed).toEqual([]);
+});
+
 // Boundary audit (INVARIANTS Rule 1): a death after each reclaim step
 // converges on the next tick.
 test("stranded (#64): death after stop, before removeWorktree — next tick re-reclaims (RETRIED)", async () => {
@@ -450,7 +365,7 @@ test("namespaced cleanup stops the exact session its dispatch created", async ()
       autoPullMain: false,
       namespace: "demo",
     },
-    host,
+    mergedHost,
     new CleanupWorkspace(),
     agents,
   ).run(false);

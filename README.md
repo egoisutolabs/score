@@ -46,13 +46,20 @@ still working on it — session alive, nothing pushed, defects unchanged, and
 fewer than `REPAIR_STALE_TICKS` ticks since the ping. The manual subcommand has
 no such ledger and always acts.
 
+Cleanup runs the same clock over issue worktrees with no PR at all: after
+`REPAIR_STALE_TICKS` ticks with no new commits the agent is pinged, and after a
+second silent window — or immediately once its session is gone — a worktree
+that is clean and has no commits ahead of base is reclaimed so the issue
+redispatches. A worktree holding real work is never removed; it is reported
+loudly every tick instead.
+
 ## Environment
 
 | Variable | Default | What it does |
 |---|---|---|
 | `TICK_INTERVAL_MS` | `60000` | The daemon's only clock; phases declare tick multiples. |
 | `SOAK_TICKS` | `2` | Consecutive green landing ticks before a merge. |
-| `REPAIR_STALE_TICKS` | `10` | Ticks before a silent agent is re-pinged. |
+| `REPAIR_STALE_TICKS` | `10` | Ticks before a silent agent is re-pinged; also each window of cleanup's stranded ladder (ping, then reclaim a clean no-PR worktree). |
 | `MAX_PARALLEL` | `1` | Issues in flight at once. |
 | `MAX_MERGES` | `5` | Merges per landing tick. |
 | `SKIP_LABELS` | `hold,wip,do-not-merge` | Labels landing refuses to merge. |
