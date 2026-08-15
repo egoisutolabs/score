@@ -572,18 +572,59 @@ function projectTelemetry(
         : `${message} (trace_id=${correlation.trace_id} span_id=${correlation.span_id})`,
     );
   });
-  // Telemetry keeps the prose log's retention window — no knob of its own.
-  if (logRetentionDays !== undefined) writer.sweepRetention(logRetentionDays);
-  return tickTelemetry(writer, resource, dryRun, correlation);
+  return tickTelemetry(writer, resource, dryRun, correlation, {
+    // Telemetry keeps the prose log's retention window — no knob of its own.
+    // The sweep itself is wrapped so its failure warns like every other
+    // telemetry failure instead of throwing into a tick (locked decision 9).
+    ...(logRetentionDays !== undefined && {
+      sweep: () => {
+        try {
+          writer.sweepRetention(logRetentionDays);
+        } catch (error) {
+          log.warn(
+            `telemetry retention sweep failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
+    }),
+  });
 }
 
-function tickTelemetry(
+export interface TickTelemetryOptions {
+  /**
+   * Performs the retention sweep. Provided as a callback so projectTelemetry
+   * can wrap its failures into warnings; the recorder itself only decides
+   * when to call it.
+   */
+  readonly sweep?: () => void;
+  /** Tick clock; overridable so tests can drive a UTC rollover. */
+  readonly now?: () => Date;
+}
+
+export function tickTelemetry(
   writer: TelemetryLogService,
   resource: TelemetryResource,
   dryRun: boolean,
   correlation: SpanCorrelation,
+  options: TickTelemetryOptions = {},
 ): TickTelemetry {
   const env: TelemetryEnv = { resource, dry_run: dryRun };
+  const now = options.now ?? (() => new Date());
+  // Retention mirrors the prose log's rule (file-log.ts): sweep at startup
+  // and again whenever a later tick observes a new UTC date — a supervised
+  // daemon runs for weeks, and a startup-only sweep would stop pruning after
+  // its first day.
+  let sweptDate: string | undefined;
+  const sweepOnRollover = () => {
+    if (options.sweep === undefined) return;
+    const today = now().toISOString().slice(0, 10);
+    if (today === sweptDate) return;
+    sweptDate = today;
+    options.sweep();
+  };
+  sweepOnRollover();
   let tick: TickTrace | undefined;
   let tickOpenedAt = 0;
   let phase: PhaseTrace | undefined;
@@ -592,8 +633,9 @@ function tickTelemetry(
   let phaseSuppressed = false;
   return {
     beginTick(tickNumber) {
+      sweepOnRollover();
       tick = { trace_id: newTraceId(), span_id: newSpanId(), tick_number: tickNumber };
-      tickOpenedAt = Date.now();
+      tickOpenedAt = now().getTime();
       correlation.trace_id = tick.trace_id;
       correlation.span_id = tick.span_id;
     },
@@ -606,24 +648,24 @@ function tickTelemetry(
         phase: name,
         parent_span_id: tick.span_id,
       };
-      phaseOpenedAt = Date.now();
+      phaseOpenedAt = now().getTime();
       phaseErrorType = undefined;
       phaseSuppressed = false;
       correlation.span_id = phase.span_id;
     },
     maintenanceDecisions(result) {
       if (phase === undefined) return;
-      for (const record of maintenanceDecisionEvents(result, phase, env, new Date().toISOString()))
+      for (const record of maintenanceDecisionEvents(result, phase, env, now().toISOString()))
         writer.append(record);
     },
     landingDecisions(results) {
       if (phase === undefined) return;
-      for (const record of landingDecisionEvents(results, phase, env, new Date().toISOString()))
+      for (const record of landingDecisionEvents(results, phase, env, now().toISOString()))
         writer.append(record);
     },
     repairDecisions(results) {
       if (phase === undefined) return;
-      for (const record of repairDecisionEvents(results, phase, env, new Date().toISOString()))
+      for (const record of repairDecisionEvents(results, phase, env, now().toISOString()))
         writer.append(record);
     },
     phaseSuppressed() {
@@ -635,7 +677,7 @@ function tickTelemetry(
     },
     endPhase() {
       if (tick === undefined || phase === undefined) return;
-      const closedAt = Date.now();
+      const closedAt = now().getTime();
       const outcome: PhaseOutcome = phaseSuppressed
         ? "suppressed"
         : phaseErrorType === undefined
@@ -657,7 +699,7 @@ function tickTelemetry(
     },
     endTick(passError) {
       if (tick === undefined) return;
-      const closedAt = Date.now();
+      const closedAt = now().getTime();
       const outcome: TickOutcome = passError === null ? "ok" : "error";
       writer.append(
         tickSpanRecord({
@@ -1000,14 +1042,19 @@ export async function runDaemonLoop(
 
     // One correlated telemetry trace per pass (#54): phase-run bodies call the
     // decision mappers above; this wrapper opens/closes each phase's span
-    // around them. A phase that throws is reported by DaemonService and the
-    // pass continues — endPhase in the finally keeps every span closed there.
+    // around them. The failure must be recorded in the wrapper's own catch —
+    // DaemonService reports phase errors only after this wrapper's finally has
+    // already closed the span, so an error recorded there would always read as
+    // a clean phase. Rethrown, the pass continues exactly as before.
     const instrumentedPhases: readonly DaemonPhase[] = phases.map((phase) => ({
       ...phase,
       run: async () => {
         telemetry?.beginPhase(phase.name);
         try {
           await phase.run();
+        } catch (error) {
+          telemetry?.phaseFailed(error);
+          throw error;
         } finally {
           telemetry?.endPhase();
         }
@@ -1021,7 +1068,6 @@ export async function runDaemonLoop(
         log.warn(`✗ phase ${name} failed: ${message}`);
         if (error instanceof Error && error.stack) log.debug(error.stack);
         passError = `${name}: ${message}`;
-        telemetry?.phaseFailed(error);
       },
       () => stopping,
     );

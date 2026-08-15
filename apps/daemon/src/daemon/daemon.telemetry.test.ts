@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StatusWriter } from "@score/core/daemon/status.service";
 import type { TelemetryRecord, TelemetrySpan } from "@score/core/telemetry/telemetry.interface";
+import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
@@ -10,7 +12,7 @@ import { resolveProjects } from "@score/shared/config/resolve";
 import { createFileLogger } from "@score/shared/file-log";
 import type { Logger, LogLine } from "@score/shared/log";
 import { expect, test } from "vitest";
-import { parseDaemonArguments, runDaemonLoop } from "./daemon.run";
+import { parseDaemonArguments, runDaemonLoop, tickTelemetry } from "./daemon.run";
 
 class FakeRunner implements CommandRunner {
   readonly calls: string[][] = [];
@@ -119,7 +121,7 @@ interface LoopRun {
   readonly commands: readonly string[][];
 }
 
-async function withHomeEnv(home: string, body: () => Promise<LoopRun>): Promise<LoopRun> {
+async function withHomeEnv<T>(home: string, body: () => Promise<T>): Promise<T> {
   const saved = process.env.SCORE_HOME;
   process.env.SCORE_HOME = home;
   try {
@@ -241,6 +243,104 @@ test("a JSONL append failure changes no phase result, render output, or phase or
   const stats = await stat(join(home, "projects", "demo", "telemetry"));
   expect(stats.isFile()).toBe(true);
 }, 20_000);
+
+test("a failing phase records its span as error with error.type, and the remaining phases still run", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedHome(repo);
+  await withHomeEnv(home, async () => {
+    // Malformed `gh issue list` JSON makes observeIssues throw inside the
+    // cleanup+dispatch phase — the exact mid-phase failure path whose span
+    // must carry the outcome.
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && command[1] === "issue" && command[2] === "list") {
+        return { stdout: "{not json\n" };
+      }
+      return responses(repo)(command);
+    });
+    const log = new CaptureLogger();
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new StatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once", "--dry-run"]);
+
+    // The pass completes; the phase error is DaemonService's caught path.
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+    expect(
+      log.logged.some((line) => line.text.startsWith("✗ phase cleanup+dispatch failed:")),
+    ).toBe(true);
+  });
+
+  const spans = (await readTelemetry(home)).filter(
+    (record) => record.kind === "span",
+  ) as TelemetrySpan[];
+  const byPhase = new Map(
+    spans
+      .filter((span) => span.name === "score.phase")
+      .map((span) => [span.attributes?.["score.phase.name"], span]),
+  );
+
+  // The failed phase's span carries the error outcome and the error's type —
+  // recorded in the wrapper's catch, before its finally closes the span. (The
+  // throw surfaces as github.service's wrapped plain Error, not the raw
+  // SyntaxError; error.type mirrors whatever class actually reached the phase.)
+  const failed = byPhase.get("cleanup+dispatch");
+  expect(failed?.status).toBe("error");
+  expect(failed?.attributes?.["score.outcome"]).toBe("error");
+  expect(failed?.attributes?.["error.type"]).toBe("Error");
+  expect(JSON.stringify(failed)).not.toContain("invalid JSON");
+
+  // The remaining phases ran after the failure, recorded clean, and the tick
+  // root carries the pass error.
+  expect(byPhase.get("landing")?.attributes?.["score.outcome"]).toBe("ok");
+  expect(byPhase.get("repair")?.attributes?.["score.outcome"]).toBe("ok");
+  expect(spans.find((span) => span.name === "score.tick")?.attributes?.["score.outcome"]).toBe(
+    "error",
+  );
+}, 20_000);
+
+test("retention re-sweeps on UTC rollover at tick start — not only at daemon startup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
+  // Inside the 30-day window on Aug 15 (cutoff Jul 16); stale after Aug 20.
+  await writeFile(join(dir, "2026-07-20.jsonl"), "{}\n");
+  let clock = new Date("2026-08-15T12:00:00Z");
+  const writer = new TelemetryLogService(dir, { project: "demo" }, () => clock);
+  const telemetry = tickTelemetry(
+    writer,
+    { project: "demo" },
+    true,
+    {},
+    {
+      sweep: () => writer.sweepRetention(30),
+      now: () => clock,
+    },
+  );
+
+  // The startup sweep ran; the in-window segment survives it.
+  expect(existsSync(join(dir, "2026-07-20.jsonl"))).toBe(true);
+
+  telemetry.beginTick(0);
+  telemetry.beginPhase("repair");
+  telemetry.repairDecisions([]);
+  telemetry.endPhase();
+  telemetry.endTick(null);
+  // Same UTC day: no rollover, the segment stays, and the pass's records
+  // landed in that day's segment.
+  expect(existsSync(join(dir, "2026-07-20.jsonl"))).toBe(true);
+  expect(existsSync(join(dir, "2026-08-15.jsonl"))).toBe(true);
+
+  // Days pass while the daemon keeps running; the next tick observes the
+  // rollover and re-sweeps the now-stale segment without a restart.
+  clock = new Date("2026-08-21T00:00:30Z");
+  telemetry.beginTick(1);
+  expect(existsSync(join(dir, "2026-07-20.jsonl"))).toBe(false);
+  // And the running daemon keeps appending into the new day's segment.
+  telemetry.beginPhase("repair");
+  telemetry.repairDecisions([]);
+  telemetry.endPhase();
+  telemetry.endTick(null);
+  expect(existsSync(join(dir, "2026-08-21.jsonl"))).toBe(true);
+  await rm(dir, { recursive: true, force: true });
+});
 
 test("unmanaged discovery mode records nothing — no project key to segment under", async () => {
   const home = await mkdtemp(join(tmpdir(), "score-home-"));
