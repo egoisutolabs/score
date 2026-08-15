@@ -36,6 +36,11 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
         level: "warn",
         text: `⚠ stranded issue #${cleanup.issueNumber} not reclaimed: ${cleanup.message ?? "dirty worktree"}`,
       });
+    } else if (cleanup.action === "STRANDED_RESPAWNED") {
+      lines.push({
+        level: "warn",
+        text: `⚠ ${cleanup.dryRun ? "(dry-run) would respawn" : "respawned"} agent for stranded issue #${cleanup.issueNumber}: ${cleanup.message ?? "worktree holds unfinished work"}`,
+      });
     }
   }
   for (const issue of result.dispatch.started) {

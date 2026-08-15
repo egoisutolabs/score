@@ -138,25 +138,35 @@ export class StrandedFixtureWorkspace extends CleanupWorkspace {
 }
 
 export function makeStrandedAgents(sessions: string[]): AgentRuntime & {
+  sessions: string[];
   stopped: string[];
   pinged: { session: string; message: string }[];
+  started: WorkIdentity[];
 } {
   return {
+    sessions,
     stopped: [],
     pinged: [],
+    started: [],
     async sessionExists(sessionName: string) {
-      return sessions.includes(sessionName);
+      return this.sessions.includes(sessionName);
     },
     async listSessions() {
-      return sessions;
+      return this.sessions;
     },
-    async startImplementation() {},
+    // Respawns register as live sessions so convergence tests can observe
+    // the revived agent the way the next tick's sessionExists would.
+    async startImplementation(identity: WorkIdentity) {
+      this.started.push(identity);
+      this.sessions.push(identity.sessionName);
+    },
     async ping(session: string, message: string) {
       this.pinged.push({ session, message });
     },
     async startRepair() {},
     async stop(sessionName: string) {
       this.stopped.push(sessionName);
+      this.sessions = this.sessions.filter((candidate) => candidate !== sessionName);
     },
   };
 }
@@ -173,6 +183,7 @@ export function makeStrandedService(
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: false,
       staleTicks: 1,
+      agent: { harness: "claude" },
     },
     host,
     workspace,

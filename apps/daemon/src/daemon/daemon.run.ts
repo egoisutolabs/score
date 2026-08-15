@@ -678,6 +678,7 @@ export async function runDaemonLoop(
           // The stranded ladder (#64) shares repair's silence knob on
           // purpose: one notion of "agent gone quiet" for the whole daemon.
           staleTicks,
+          agent,
         },
         github,
         git,

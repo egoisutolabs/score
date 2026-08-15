@@ -50,8 +50,9 @@ Cleanup runs the same clock over issue worktrees with no PR at all: after
 `REPAIR_STALE_TICKS` ticks with no new commits the agent is pinged, and after a
 second silent window — or immediately once its session is gone — a worktree
 that is clean and has no commits ahead of base is reclaimed so the issue
-redispatches. A worktree holding real work is never removed; it is reported
-loudly every tick instead.
+redispatches. A worktree holding real work is never removed: while its agent
+is alive it is reported loudly every tick, and once the agent is gone a fresh
+agent is respawned in place to finish the preserved work.
 
 ## Environment
 

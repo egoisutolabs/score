@@ -10,7 +10,11 @@ export interface MergedCleanupResult {
  */
 export interface StrandedCleanupResult {
   readonly issueNumber: number;
-  readonly action: "STRANDED_PINGED" | "STRANDED_RECLAIMED" | "STRANDED_DIRTY";
+  readonly action:
+    | "STRANDED_PINGED"
+    | "STRANDED_RECLAIMED"
+    | "STRANDED_DIRTY"
+    | "STRANDED_RESPAWNED";
   readonly dryRun: boolean;
   readonly message?: string;
 }

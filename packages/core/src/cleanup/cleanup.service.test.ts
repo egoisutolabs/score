@@ -22,6 +22,7 @@ test("dry-run safe cleanup still plans the legacy pull-main observation", async 
       workspaceRoot: "/wt",
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: true,
+      agent: { harness: "claude" },
     },
     mergedHost,
     workspace,
@@ -40,6 +41,7 @@ test("local branch deletion failure remains nonfatal after worktree removal", as
       workspaceRoot: "/wt",
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: true,
+      agent: { harness: "claude" },
     },
     mergedHost,
     workspace,
@@ -71,6 +73,7 @@ test("cleanup: deleteBranch fails after removeWorktree — next pass reports NOT
       workspaceRoot: "/wt",
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: false,
+      agent: { harness: "claude" },
     },
     mergedHost,
     workspace,
@@ -149,12 +152,17 @@ test("stranded (#64): a detached-HEAD worktree is still reclaimed via its basena
   expect(workspace.deletedBranches).toEqual(["issue-21-fix"]);
 });
 
-test("stranded (#64): uncommitted work is never removed — STRANDED_DIRTY every tick", async () => {
+test("stranded (#64): uncommitted work under a live agent is never removed — STRANDED_DIRTY every tick", async () => {
   const workspace = new StrandedFixtureWorkspace();
   workspace.worktreeStatus = " M src/app.ts\n";
-  const service = makeStrandedService(workspace, makeStrandedAgents([]));
+  const agents = makeStrandedAgents(["issue-21"]);
+  const service = makeStrandedService(workspace, agents);
 
-  for (let tick = 0; tick < 2; tick++) {
+  await service.run(false); // tick 0: window opens
+  await service.run(false); // tick 1: ping
+  // Ticks 2+: reclaim window reached, but the live agent's dirty worktree
+  // stays loud and untouched — the pre-check never even stops the session.
+  for (let tick = 2; tick < 4; tick++) {
     const result = await service.run(false);
     expect(result).toEqual([
       {
@@ -165,16 +173,20 @@ test("stranded (#64): uncommitted work is never removed — STRANDED_DIRTY every
       },
     ]);
   }
+  expect(agents.stopped).toEqual([]);
   expect(workspace.removed).toEqual([]);
   expect(workspace.deletedBranches).toEqual([]);
 });
 
-test("stranded (#64): commits ahead of base are never removed — STRANDED_DIRTY every tick", async () => {
+test("stranded (#64): commits ahead of base under a live agent are never removed — STRANDED_DIRTY every tick", async () => {
   const workspace = new StrandedFixtureWorkspace();
   workspace.ancestor = false;
-  const service = makeStrandedService(workspace, makeStrandedAgents([]));
+  const agents = makeStrandedAgents(["issue-21"]);
+  const service = makeStrandedService(workspace, agents);
 
-  for (let tick = 0; tick < 2; tick++) {
+  await service.run(false); // tick 0: window opens
+  await service.run(false); // tick 1: ping
+  for (let tick = 2; tick < 4; tick++) {
     const result = await service.run(false);
     expect(result).toEqual([
       {
@@ -185,6 +197,86 @@ test("stranded (#64): commits ahead of base are never removed — STRANDED_DIRTY
       },
     ]);
   }
+  expect(agents.stopped).toEqual([]);
+  expect(workspace.removed).toEqual([]);
+});
+
+// The session is gone and the worktree holds real work: nobody would ever
+// finish it, so the reconcile is a respawn — never a removal, never a
+// permanent wedge.
+test("stranded (#64): a dead agent leaving real work is respawned in place, not stranded", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.worktreeStatus = " M src/app.ts\n";
+  const agents = makeStrandedAgents([]);
+  const service = makeStrandedService(workspace, agents);
+
+  const result = await service.run(false);
+  expect(result).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_RESPAWNED",
+      dryRun: false,
+      message: "worktree contains changes outside the harness allowlist",
+    },
+  ]);
+  expect(agents.started).toHaveLength(1);
+  expect(agents.started[0]?.sessionName).toBe("issue-21");
+  expect(agents.started[0]?.worktreePath).toBe("/wt/issue-21-fix");
+  expect(workspace.removed).toEqual([]);
+
+  // The revived agent is a live session with a restarted silence window: the
+  // ladder starts over from the bottom (with staleTicks=1 the window elapses
+  // by the next tick, so it pings) — it never re-reclaims or re-respawns.
+  expect(await service.run(false)).toEqual([
+    { issueNumber: 21, action: "STRANDED_PINGED", dryRun: false },
+  ]);
+  expect(agents.started).toHaveLength(1);
+  expect(workspace.removed).toEqual([]);
+});
+
+test("stranded (#64): dry-run plans the respawn and mutates nothing", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.worktreeStatus = " M src/app.ts\n";
+  const agents = makeStrandedAgents([]);
+  const service = makeStrandedService(workspace, agents);
+
+  const result = await service.run(true);
+  expect(result).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_RESPAWNED",
+      dryRun: true,
+      message: "worktree contains changes outside the harness allowlist",
+    },
+  ]);
+  expect(agents.started).toEqual([]);
+  expect(workspace.removed).toEqual([]);
+});
+
+// Boundary audit (INVARIANTS Rule 1): a death between observing the dirt and
+// completing the respawn converges — the next tick observes the same
+// session-missing + dirty state and retries the respawn.
+test("stranded (#64): death before the respawn completes — next tick respawns (RETRIED)", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  workspace.worktreeStatus = " M src/app.ts\n";
+  const agents = makeStrandedAgents([]);
+  let dieOnce = true;
+  const realStart = agents.startImplementation.bind(agents);
+  agents.startImplementation = async (identity, prompt, agent) => {
+    if (dieOnce) {
+      dieOnce = false;
+      throw new Error("killed before the respawn completed");
+    }
+    await realStart(identity, prompt, agent);
+  };
+  const service = makeStrandedService(workspace, agents);
+
+  await expect(service.run(false)).rejects.toThrow("killed before the respawn");
+  expect(workspace.removed).toEqual([]);
+
+  const result = await service.run(false);
+  expect(result[0]?.action).toBe("STRANDED_RESPAWNED");
+  expect(agents.started).toHaveLength(1);
   expect(workspace.removed).toEqual([]);
 });
 
@@ -242,8 +334,10 @@ test("stranded (#64): dry-run plans the ping and the reclaim, mutates nothing", 
 });
 
 // A live agent can write between any observation and the forced removal;
-// only the post-quiesce re-observation makes the clean-worktree proof real.
-test("stranded (#64): a write racing the reclaim is caught after quiesce — nothing removed", async () => {
+// only the post-quiesce re-observation makes the clean-worktree proof real —
+// and since our own stop orphaned that last-second work, the agent is
+// respawned rather than left dead beside a preserved worktree.
+test("stranded (#64): a write racing the reclaim is caught after quiesce — nothing removed, agent respawned", async () => {
   const workspace = new StrandedFixtureWorkspace();
   const agents = makeStrandedAgents(["issue-21"]);
   // The agent's last write lands while stop() is in flight, after the
@@ -260,26 +354,23 @@ test("stranded (#64): a write racing the reclaim is caught after quiesce — not
   expect(result).toEqual([
     {
       issueNumber: 21,
-      action: "STRANDED_DIRTY",
+      action: "STRANDED_RESPAWNED",
       dryRun: false,
       message: "worktree contains changes outside the harness allowlist",
     },
   ]);
   expect(workspace.removed).toEqual([]);
-  // The work survives, loudly: the next tick's pre-check sees the dirt
-  // before any verb runs and stays STRANDED_DIRTY.
+  expect(agents.started).toHaveLength(1);
+  // The revived agent holds a live session and a restarted window: the
+  // ladder starts over (with staleTicks=1 the next tick already pings) —
+  // nothing is stopped or removed again.
   expect(await service.run(false)).toEqual([
-    {
-      issueNumber: 21,
-      action: "STRANDED_DIRTY",
-      dryRun: false,
-      message: "worktree contains changes outside the harness allowlist",
-    },
+    { issueNumber: 21, action: "STRANDED_PINGED", dryRun: false },
   ]);
   expect(workspace.removed).toEqual([]);
 });
 
-test("stranded (#64): a commit racing the reclaim is caught after quiesce — nothing removed", async () => {
+test("stranded (#64): a commit racing the reclaim is caught after quiesce — nothing removed, agent respawned", async () => {
   const workspace = new StrandedFixtureWorkspace();
   const agents = makeStrandedAgents(["issue-21"]);
   agents.stop = async (sessionName: string) => {
@@ -294,12 +385,13 @@ test("stranded (#64): a commit racing the reclaim is caught after quiesce — no
   expect(result).toEqual([
     {
       issueNumber: 21,
-      action: "STRANDED_DIRTY",
+      action: "STRANDED_RESPAWNED",
       dryRun: false,
       message: "branch has commits not on the base branch",
     },
   ]);
   expect(workspace.removed).toEqual([]);
+  expect(agents.started).toHaveLength(1);
 });
 
 // Boundary audit (INVARIANTS Rule 1): a death after each reclaim step
@@ -364,6 +456,7 @@ test("namespaced cleanup stops the exact session its dispatch created", async ()
       harnessOwnedPaths: ["TASK.md", ".claude/"],
       autoPullMain: false,
       namespace: "demo",
+      agent: { harness: "claude" },
     },
     mergedHost,
     new CleanupWorkspace(),

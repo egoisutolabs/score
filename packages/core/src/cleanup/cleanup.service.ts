@@ -4,6 +4,7 @@ import {
   decideStranded,
   type StrandedEntry,
   strandedPingMessage,
+  strandedRespawnPrompt,
 } from "@score/core/cleanup/cleanup.policy";
 import type {
   CleanupResult,
@@ -15,12 +16,15 @@ import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestIdentity } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 
 export interface CleanupServiceOptions {
   readonly defaultBranch: string;
   readonly workspaceRoot: string;
   readonly harnessOwnedPaths: readonly string[];
   readonly autoPullMain: boolean;
+  /** Harness config for the stranded ladder's respawn reconcile (#64). */
+  readonly agent: AgentConfig;
   /** Managed mode: project key; must match the namespace dispatch launched with. */
   readonly namespace?: string;
   /** Ticks of silence before the stranded ladder pings, and again before it reclaims. */
@@ -156,7 +160,13 @@ export class CleanupService {
       // never cost a still-live agent its session.
       const dirty = await this.#strandedDirt(worktree);
       if (dirty !== undefined) {
-        results.push({ issueNumber, action: "STRANDED_DIRTY", dryRun, message: dirty });
+        results.push(
+          await this.#preserveDirtyWorktree(
+            { worktree, branch, issueNumber, sessionName, sessionAlive, dirt: dirty },
+            dryRun,
+            tick,
+          ),
+        );
         continue;
       }
       if (!dryRun) {
@@ -174,8 +184,23 @@ export class CleanupService {
           (candidate) => candidate.path === worktree.path,
         );
         const freshDirt = fresh === undefined ? undefined : await this.#strandedDirt(fresh);
-        if (freshDirt !== undefined) {
-          results.push({ issueNumber, action: "STRANDED_DIRTY", dryRun, message: freshDirt });
+        if (fresh !== undefined && freshDirt !== undefined) {
+          // The stop raced a last-second write or commit; the session is
+          // already gone, so this always takes the respawn arm below.
+          results.push(
+            await this.#preserveDirtyWorktree(
+              {
+                worktree: fresh,
+                branch,
+                issueNumber,
+                sessionName,
+                sessionAlive: false,
+                dirt: freshDirt,
+              },
+              dryRun,
+              tick,
+            ),
+          );
           continue;
         }
         if (fresh !== undefined) {
@@ -192,6 +217,43 @@ export class CleanupService {
       if (!seen.has(issueNumber)) this.#stranded.delete(issueNumber);
     }
     return results;
+  }
+
+  /**
+   * Dirt at the reclaim window is never destroyed. With the agent still
+   * alive it stays loud and untouched — the agent may yet finish. With the
+   * session gone (a crash, or our own quiesce racing a last-second write)
+   * nobody would ever finish the preserved work, so the reconcile is to
+   * respawn an implementation agent in the same worktree, with the ledger
+   * window restarted so the revived agent gets full silence windows again.
+   * Convergent across a death before the respawn: the next tick re-enters
+   * this exact arm (session missing, dirt observed) and retries it.
+   */
+  async #preserveDirtyWorktree(
+    stranded: {
+      worktree: WorktreeObservation;
+      branch: string;
+      issueNumber: number;
+      sessionName: string;
+      sessionAlive: boolean;
+      dirt: string;
+    },
+    dryRun: boolean,
+    tick: number,
+  ): Promise<StrandedCleanupResult> {
+    const { worktree, branch, issueNumber, sessionName, sessionAlive, dirt } = stranded;
+    if (sessionAlive) {
+      return { issueNumber, action: "STRANDED_DIRTY", dryRun, message: dirt };
+    }
+    if (!dryRun) {
+      await this.agents.startImplementation(
+        { issueNumber, branch, worktreePath: worktree.path, sessionName },
+        strandedRespawnPrompt(issueNumber),
+        this.options.agent,
+      );
+      this.#stranded.set(issueNumber, { sinceTick: tick, headSha: worktree.headSha });
+    }
+    return { issueNumber, action: "STRANDED_RESPAWNED", dryRun, message: dirt };
   }
 
   /** Undefined when the worktree holds nothing of value; else the loud reason. */

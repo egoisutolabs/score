@@ -43,3 +43,7 @@ export function decideStranded(
 export function strandedPingMessage(issueNumber: number): string {
   return `score: no PR observed for issue #${issueNumber}. Commit your work and open a PR now, or this workspace will be reclaimed.`;
 }
+
+export function strandedRespawnPrompt(issueNumber: number): string {
+  return `score: this workspace for issue #${issueNumber} holds unfinished work and its previous agent session ended. Read TASK.md, review the existing changes, finish the work, and open a PR with Fixes in the body.`;
+}
