@@ -340,10 +340,11 @@ test("stranded (#64): dry-run plans the ping and the reclaim, mutates nothing", 
 test("stranded (#64): a write racing the reclaim is caught after quiesce — nothing removed, agent respawned", async () => {
   const workspace = new StrandedFixtureWorkspace();
   const agents = makeStrandedAgents(["issue-21"]);
-  // The agent's last write lands while stop() is in flight, after the
-  // pre-check already saw a clean worktree.
+  // The kill succeeds, but the agent's last write landed while stop() was
+  // in flight — after the pre-check already saw a clean worktree.
   agents.stop = async (sessionName: string) => {
     agents.stopped.push(sessionName);
+    agents.sessions = agents.sessions.filter((candidate) => candidate !== sessionName);
     workspace.worktreeStatus = " M src/app.ts\n";
   };
   const service = makeStrandedService(workspace, agents);
@@ -375,6 +376,7 @@ test("stranded (#64): a commit racing the reclaim is caught after quiesce — no
   const agents = makeStrandedAgents(["issue-21"]);
   agents.stop = async (sessionName: string) => {
     agents.stopped.push(sessionName);
+    agents.sessions = agents.sessions.filter((candidate) => candidate !== sessionName);
     workspace.live = [{ ...strandedWorktree, headSha: "race-commit" }];
   };
   const service = makeStrandedService(workspace, agents);
@@ -392,6 +394,39 @@ test("stranded (#64): a commit racing the reclaim is caught after quiesce — no
   ]);
   expect(workspace.removed).toEqual([]);
   expect(agents.started).toHaveLength(1);
+});
+
+// TmuxService.stop swallows kill-session failures, so awaiting it proves
+// nothing: only an observed-absent session may be reclaimed over.
+test("stranded (#64): a session that survives stop blocks the reclaim — nothing removed, retried next tick", async () => {
+  const workspace = new StrandedFixtureWorkspace();
+  const agents = makeStrandedAgents(["issue-21"]);
+  let killWorks = false;
+  agents.stop = async (sessionName: string) => {
+    agents.stopped.push(sessionName);
+    if (killWorks) {
+      agents.sessions = agents.sessions.filter((candidate) => candidate !== sessionName);
+    }
+  };
+  const service = makeStrandedService(workspace, agents);
+
+  await service.run(false); // tick 0: window opens
+  await service.run(false); // tick 1: ping
+  const blocked = await service.run(false); // tick 2: kill silently fails
+  expect(blocked).toEqual([
+    {
+      issueNumber: 21,
+      action: "STRANDED_DIRTY",
+      dryRun: false,
+      message: "agent session survived stop; leaving the worktree untouched",
+    },
+  ]);
+  expect(workspace.removed).toEqual([]);
+
+  killWorks = true;
+  const reclaimed = await service.run(false); // tick 3: kill lands, reclaim completes
+  expect(reclaimed).toEqual([{ issueNumber: 21, action: "STRANDED_RECLAIMED", dryRun: false }]);
+  expect(workspace.removed).toEqual(["/wt/issue-21-fix"]);
 });
 
 // Boundary audit (INVARIANTS Rule 1): a death after each reclaim step

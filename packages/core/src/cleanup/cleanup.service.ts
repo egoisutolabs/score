@@ -175,6 +175,20 @@ export class CleanupService {
         // session reclaims immediately); after removeWorktree the surviving
         // branch is the same benign leftover redispatch reattaches to.
         await this.agents.stop(sessionName);
+        // stop() tolerates a missing session, so its return proves nothing —
+        // TmuxService swallows kill-session failures. Only an observed-absent
+        // session is quiescence; a survivor could keep writing after the
+        // snapshot below, so the reclaim defers loudly and the still-elapsed
+        // window retries it next tick.
+        if (await this.agents.sessionExists(sessionName)) {
+          results.push({
+            issueNumber,
+            action: "STRANDED_DIRTY",
+            dryRun,
+            message: "agent session survived stop; leaving the worktree untouched",
+          });
+          continue;
+        }
         // A live agent can write or commit between any check and the forced
         // removal, so only a re-observation after the session is gone counts:
         // last-second work surfaces as STRANDED_DIRTY (loud, preserved, and
