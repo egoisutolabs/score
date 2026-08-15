@@ -75,6 +75,9 @@ function host(change = pullRequest()): ChangeHost {
     async observeMergedOwnedChanges() {
       return [];
     },
+    async observeClosedOwnedChanges() {
+      return [];
+    },
     async observeOpenChangeHeads() {
       return [];
     },
@@ -231,6 +234,9 @@ test("dirty main skips the PR before host checks or merge effects", async () => 
     async observeMergedOwnedChanges() {
       return [];
     },
+    async observeClosedOwnedChanges() {
+      return [];
+    },
     async observeOpenChangeHeads() {
       return [];
     },
@@ -271,6 +277,9 @@ test("a cheap conflict blocker wins before the review-thread query", async () =>
       return [conflicting];
     },
     async observeMergedOwnedChanges() {
+      return [];
+    },
+    async observeClosedOwnedChanges() {
       return [];
     },
     async observeOpenChangeHeads() {

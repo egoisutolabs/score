@@ -19,6 +19,9 @@ function countingHost() {
     async observeMergedOwnedChanges() {
       return [];
     },
+    async observeClosedOwnedChanges() {
+      return [];
+    },
     async unresolvedThreadCount() {
       return 0;
     },

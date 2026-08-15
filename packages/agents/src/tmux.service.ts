@@ -31,6 +31,18 @@ interface TmuxServiceOptions {
   readonly birthGraceMs?: number;
 }
 
+/**
+ * tmux's confirmed-absence answers across versions: a missing session
+ * ("can't find session" / "session not found") or no server at all ("no
+ * server running", or connecting failed because the socket is gone or
+ * nothing listens on it) — a server that isn't running has no sessions by
+ * definition. Connection failures that do NOT prove the server gone
+ * (e.g. "Permission denied") deliberately stay outside this set: the
+ * server and its agents may be alive and merely unreachable from here.
+ */
+const CONFIRMED_SESSION_ABSENT =
+  /can't find session|session not found|no server running|error connecting to .*\((No such file or directory|Connection refused)\)/;
+
 /** Durable local process adapter using argv-safe tmux commands. */
 export class TmuxService implements AgentRuntime {
   readonly #executable: string;
@@ -52,7 +64,19 @@ export class TmuxService implements AgentRuntime {
 
   async sessionExists(sessionName: string): Promise<boolean> {
     const result = await this.#run(["has-session", "-t", sessionName]);
-    return result.exitCode === 0;
+    if (result.exitCode === 0) return true;
+    // Fail closed (#64): callers treat `false` as license to redispatch over
+    // — or reclaim — this session's worktree, so only tmux's own
+    // confirmed-absence answers may say it (a nonexistent session, or no
+    // server at all, which has no sessions by definition). A timeout or any
+    // unrecognized failure is not evidence of absence and must not read as
+    // "gone" while the agent may still be alive and writing.
+    if (!result.timedOut && CONFIRMED_SESSION_ABSENT.test(result.stderr)) return false;
+    throw new Error(
+      `tmux has-session did not confirm '${sessionName}' absent (exit ${result.exitCode}${
+        result.timedOut ? ", timed out" : ""
+      }): ${result.stderr.trim()}`,
+    );
   }
 
   async listSessions(): Promise<readonly string[]> {

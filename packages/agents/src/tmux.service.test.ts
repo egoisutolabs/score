@@ -52,6 +52,10 @@ const REMAIN_ON_EXIT = (session: string) => [
 /** list-panes says alive; capture-pane empty; set-option off succeeds; recheck alive. */
 const ALIVE_BIRTH = [{ stdout: "0\n" }, { stdout: "" }, 0, { stdout: "0\n" }];
 
+/** What a real tmux prints for a missing session — sessionExists requires
+ * this confirmation (or a no-server answer) to report absence (#64). */
+const HAS_SESSION_NONE = { exitCode: 1, stderr: "can't find session: missing" };
+
 async function workIdentity(createDirectory: boolean): Promise<WorkIdentity> {
   const root = await mkdtemp(join(tmpdir(), "score-tmux-test-"));
   sandboxes.push(root);
@@ -94,7 +98,7 @@ test("implementation launch refuses to clobber an existing issue session", async
 
 test("implementation launch starts the restored interactive Claude command", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0, ...ALIVE_BIRTH];
+  runner.responses = [HAS_SESSION_NONE, 0, ...ALIVE_BIRTH];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
@@ -137,7 +141,7 @@ test("implementation launch starts the restored interactive Claude command", asy
 test("an agent that dies at birth fails the launch with its dying output", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "1\n" }, // list-panes: pane dead
     { stdout: "claude: There's an issue with the selected model (fable-5)\n\n" },
@@ -164,7 +168,7 @@ test("an agent that dies at birth fails the launch with its dying output", async
 test("a dead session that survives the kill is named in the error, not silently ignored", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "1\n" }, // list-panes: pane dead
     { stdout: "crashed\n" },
@@ -189,7 +193,7 @@ test("a dead session that survives the kill is named in the error, not silently 
 
 test("a session that vanished entirely at birth still fails the launch", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0, { exitCode: 1 }, { exitCode: 1 }, 0];
+  runner.responses = [HAS_SESSION_NONE, 0, { exitCode: 1 }, { exitCode: 1 }, 0];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
@@ -207,7 +211,7 @@ test("a session that vanished entirely at birth still fails the launch", async (
 test("an EXIT-looking line in a live implementation pane is not a death signal", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "0\n" }, // list-panes: pane alive
     { stdout: "EXIT:1\nsome TUI content\n" }, // coincidental pane content
@@ -232,7 +236,7 @@ test("an EXIT-looking line in a live implementation pane is not a death signal",
 test("a death between the liveness sample and the option restore is still caught", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "0\n" }, // list-panes: alive at sample time
     { stdout: "" }, // capture-pane
@@ -258,7 +262,7 @@ test("a death between the liveness sample and the option restore is still caught
 test("a spawn whose chained remain-on-exit set fails reclaims any created session", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     { exitCode: 1 }, // new-session ; set-option — aggregate failure
     0, // kill-session
   ];
@@ -282,7 +286,7 @@ test("a spawn whose chained remain-on-exit set fails reclaims any created sessio
 test("a timed-out liveness probe fails open instead of killing a possibly-live agent", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { exitCode: -1, timedOut: true }, // list-panes: server unresponsive
     { stdout: "" },
@@ -312,7 +316,7 @@ test("a timed-out liveness probe fails open instead of killing a possibly-live a
 test("a capture timeout cannot overturn a confirmed death", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "1\n" }, // list-panes: confirmed dead
     { exitCode: -1, timedOut: true }, // capture-pane times out independently
@@ -338,7 +342,7 @@ test("a capture timeout cannot overturn a confirmed death", async () => {
 test("a live agent whose option restore fails is reclaimed before the throw", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "0\n" }, // list-panes: pane alive
     { stdout: "" },
@@ -365,7 +369,7 @@ test("a live agent whose option restore fails is reclaimed before the throw", as
 test("a restore failure whose reclaim also fails names the surviving session", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     0, // new-session
     { stdout: "0\n" }, // list-panes: pane alive
     { stdout: "" }, // capture-pane
@@ -394,7 +398,7 @@ test("a restore failure whose reclaim also fails names the surviving session", a
 test("a partial spawn failure whose reclaim also fails names the surviving session", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none
+    HAS_SESSION_NONE, // has-session: none
     { exitCode: 1, stderr: "set-option failed" }, // new-session ok, chained set-option fails
     { exitCode: 1 }, // kill-session fails too
     0, // has-session: the partially-created session survives
@@ -418,7 +422,7 @@ test("a partial spawn failure whose reclaim also fails names the surviving sessi
 test("a spawn losing a name race does not kill the session it collided with", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    1, // has-session: none at check time
+    HAS_SESSION_NONE, // has-session: none at check time
     // Another actor claimed the name between the check and new-session:
     // nothing was created, so there is nothing of ours to reclaim.
     { exitCode: 1, stderr: "duplicate session: issue-7" },
@@ -440,7 +444,7 @@ test("a spawn losing a name race does not kill the session it collided with", as
 
 test("dry-run spawns no session and runs no birth check", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1];
+  runner.responses = [HAS_SESSION_NONE];
   const work = await workIdentity(true);
   const service = new TmuxService(runner, {
     repositoryPath: "/repo",
@@ -457,7 +461,7 @@ test("dry-run spawns no session and runs no birth check", async () => {
 
 test("implementation launch pins the configured model through agentArgv", async () => {
   const runner = new RecordingRunner();
-  runner.responses = [1, 0, ...ALIVE_BIRTH];
+  runner.responses = [HAS_SESSION_NONE, 0, ...ALIVE_BIRTH];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
@@ -523,7 +527,7 @@ test("repair spawn writes the prompt under promptsDir and namespaces the session
 test("startRepair: kill-session finds nothing after a death before spawn — tolerated, spawn proceeds (SELF-HEALED)", async () => {
   const runner = new RecordingRunner();
   // kill-session: no such session; new-session ok; then an alive birth check.
-  runner.responses = [1, 0, ...ALIVE_BIRTH];
+  runner.responses = [HAS_SESSION_NONE, 0, ...ALIVE_BIRTH];
   const work = await workIdentity(true);
   const trustConfigPath = join(work.worktreePath, "..", "claude.json");
   await writeFile(trustConfigPath, JSON.stringify({ projects: {} }));
@@ -577,7 +581,7 @@ test("startRepair: child dies at new-session — next pass overwrites the prompt
   ]);
 
   // nothing to kill (spawn never happened), then spawn ok and an alive birth check
-  runner.responses = [1, 0, ...ALIVE_BIRTH];
+  runner.responses = [HAS_SESSION_NONE, 0, ...ALIVE_BIRTH];
   await service.startRepair(12, work.worktreePath, "second brief", { harness: "claude" });
 
   // Overwritten, not duplicated: exactly the new brief, delivered via $(cat).
@@ -639,4 +643,45 @@ test("a repair agent that exits inside the grace window fails the spawn with its
     service.startRepair(12, work.worktreePath, "fix PR #12", { harness: "claude" }),
   ).rejects.toThrow("agent died at birth in tmux session 'shepherd-pr-12'");
   expect(runner.commands.at(-1)).toEqual(["tmux", "kill-session", "-t", "shepherd-pr-12"]);
+});
+
+// sessionExists answers gate reclaim/redispatch over a worktree, so absence
+// must be tmux-confirmed: a timeout or an unrecognized failure fails closed.
+test("sessionExists: confirmed-missing and no-server answers read as absent", async () => {
+  for (const stderr of [
+    "can't find session: issue-7",
+    "session not found: issue-7",
+    "no server running on /tmp/tmux-501/default",
+    "error connecting to /tmp/tmux-501/default (No such file or directory)",
+  ]) {
+    const runner = new RecordingRunner();
+    runner.responses = [{ exitCode: 1, stderr }];
+    const service = new TmuxService(runner, { repositoryPath: "/repo" });
+    expect(await service.sessionExists("issue-7")).toBe(false);
+  }
+});
+
+test("sessionExists: a timed-out probe fails closed instead of reading as absent", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [{ exitCode: 1, stderr: "can't find session: issue-7", timedOut: true }];
+  const service = new TmuxService(runner, { repositoryPath: "/repo" });
+  await expect(service.sessionExists("issue-7")).rejects.toThrow("did not confirm");
+});
+
+test("sessionExists: an unrecognized tmux failure fails closed instead of reading as absent", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [{ exitCode: 1, stderr: "server exited unexpectedly" }];
+  const service = new TmuxService(runner, { repositoryPath: "/repo" });
+  await expect(service.sessionExists("issue-7")).rejects.toThrow("did not confirm");
+});
+
+// "error connecting" only proves absence when the socket itself is gone or
+// dead; a live-but-unreachable server (wrong permissions) must fail closed.
+test("sessionExists: a connection failure that does not prove the server gone fails closed", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    { exitCode: 1, stderr: "error connecting to /tmp/tmux-501/default (Permission denied)" },
+  ];
+  const service = new TmuxService(runner, { repositoryPath: "/repo" });
+  await expect(service.sessionExists("issue-7")).rejects.toThrow("did not confirm");
 });

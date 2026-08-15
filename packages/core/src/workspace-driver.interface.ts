@@ -14,6 +14,12 @@ export interface WorktreeProvisioner {
   observeWorktrees(): Promise<readonly WorktreeObservation[]>;
   createWorktree(identity: WorkIdentity): Promise<void>;
   status(worktreePath: string): Promise<string>;
+  /**
+   * True when `ancestor` is an ancestor of (or equal to) `descendant`.
+   * Read-only evidence for cleanup's stranded ladder (#64): a head that is
+   * an ancestor of base proves the branch holds no commits of its own.
+   */
+  isAncestor(ancestor: string, descendant: string): Promise<boolean>;
   removeWorktree(worktree: WorktreeObservation): Promise<void>;
   deleteBranch(branch: string): Promise<boolean>;
 }
