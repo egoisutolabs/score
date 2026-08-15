@@ -230,6 +230,42 @@ test("repair decisions cover every repair action", () => {
   expect(serialized).not.toContain("score-demo-issue-1");
 });
 
+test("a starved dispatch capacity emits one bounded starvation decision; healthy capacity emits none", () => {
+  const starved: MaintenanceTickResult = {
+    cleanup: [],
+    dispatch: {
+      started: [],
+      planned: [],
+      blocked: [],
+      failed: [],
+      capacity: { active: 2, max: 2, heldBy: ["issue-1-a", "issue-2-b"], starved: true },
+    },
+  };
+  const starvedEvents = maintenanceDecisionEvents(starved, phase("tick0"), ENV, TIME);
+  expect(starvedEvents).toHaveLength(1);
+  expect(starvedEvents[0]?.name).toBe("score.dispatch.decision");
+  expect(starvedEvents[0]?.subject).toEqual({});
+  expect(starvedEvents[0]?.attributes).toMatchObject({
+    "score.action": "starved",
+    "score.capacity.active": 2,
+    "score.capacity.max": 2,
+  });
+  // Holder branch identities never enter the record — prose keeps them.
+  expect(JSON.stringify(starvedEvents)).not.toContain("issue-1-a");
+
+  const idle: MaintenanceTickResult = {
+    cleanup: [],
+    dispatch: {
+      started: [],
+      planned: [],
+      blocked: [],
+      failed: [],
+      capacity: { active: 1, max: 2, heldBy: ["issue-1-a"], starved: false },
+    },
+  };
+  expect(maintenanceDecisionEvents(idle, phase("tick0"), ENV, TIME)).toEqual([]);
+});
+
 test("decision events correlate to their phase span, which parents to the tick span", () => {
   const trace = phase("tick0");
   const events = maintenanceDecisionEvents(

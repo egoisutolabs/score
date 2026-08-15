@@ -93,6 +93,7 @@ export class TickTelemetryService implements TickTelemetry {
   // daemon runs for weeks, and a startup-only sweep would stop pruning after
   // its first day. The date is recorded only after a successful sweep.
   #sweptDate: string | undefined;
+  #sweepWarnDate: string | undefined;
   #disabled = false;
   #tick: TickTrace | undefined;
   #tickOpenedAt = 0;
@@ -238,10 +239,26 @@ export class TickTelemetryService implements TickTelemetry {
     if (this.#sweep === undefined) return;
     const today = this.#now().toISOString().slice(0, 10);
     if (today === this.#sweptDate) return;
-    // Only a successful sweep marks the day — a failure reports and leaves
-    // the day unswept so the next tick retries it.
-    this.#sweep();
-    this.#sweptDate = today;
+    try {
+      // The failure is contained here, on purpose: a retention hiccup
+      // (ENOENT from a racing external cleanup, a transient EACCES) must
+      // never reach #guarded's kill-switch — that would silence the whole
+      // correlated trace over a sweep that has nothing to do with recording.
+      this.#sweep();
+      // Only a successful sweep marks the day — a failure leaves it unswept
+      // so the next tick retries.
+      this.#sweptDate = today;
+    } catch (error) {
+      // Reported at most once per UTC day: a broken sweep retries every tick
+      // until it heals, and per-tick warns would bury the signal.
+      if (today === this.#sweepWarnDate) return;
+      this.#sweepWarnDate = today;
+      this.#onError?.(
+        `telemetry retention sweep failed (retried next tick): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**

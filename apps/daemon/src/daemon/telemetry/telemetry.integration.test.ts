@@ -279,9 +279,10 @@ test("retention re-sweeps on UTC rollover at tick start — not only at daemon s
   await rm(dir, { recursive: true, force: true });
 });
 
-test("a failed sweep leaves the day unswept — the next tick retries it", async () => {
+test("a failed sweep is retried by the next tick without disabling recording", async () => {
   const dir = await mkdtemp(join(tmpdir(), "score-telemetry-"));
-  const clock = new Date("2026-08-15T12:00:00Z");
+  await writeFile(join(dir, "2026-07-20.jsonl"), "{}\n"); // stale at 30 days
+  const clock = new Date("2026-08-21T12:00:00Z");
   const writer = new TelemetryLogService(dir, { project: "demo" }, () => clock);
   const reported: string[] = [];
   let failSweep = true;
@@ -296,32 +297,28 @@ test("a failed sweep leaves the day unswept — the next tick retries it", async
         writer.sweepRetention(30);
       },
       now: () => clock,
+      mono: () => 0,
       onError: (message) => reported.push(message),
     },
   );
 
-  // The startup sweep failed and reported; the day stays unswept.
+  // The startup sweep failed and warned — but recording stayed live.
   expect(reported).toHaveLength(1);
-  expect(reported[0]).toContain("telemetry disabled after a failure");
-  // Recording is disabled for the process — not retried into another warn.
+  expect(reported[0]).toContain("telemetry retention sweep failed");
   telemetry.beginTick(0);
-  expect(reported).toHaveLength(1);
+  telemetry.beginPhase("repair");
+  telemetry.repairDecisions([]);
+  telemetry.endPhase();
+  telemetry.endTick(null);
+  const mid = new TelemetryLogService(dir, { project: "demo" }, () => clock);
+  expect(mid.read(mid.startCursor()).records.length).toBeGreaterThan(0);
 
-  // A fresh recorder (next process) with the failure cleared sweeps at boot:
-  // the operator fixed the permissions without any restart-dependency in the
-  // sweep itself — the retry comes from the day never being marked swept.
+  // The transient failure heals (operator restored permissions); the SAME
+  // process's next tick retries the unswept day and the stale segment goes.
   failSweep = false;
-  const restarted = new TickTelemetryService(
-    writer,
-    { project: "demo" },
-    true,
-    {},
-    {
-      sweep: () => writer.sweepRetention(30),
-      now: () => clock,
-    },
-  );
-  restarted.beginTick(0);
+  telemetry.beginTick(1);
+  expect(existsSync(join(dir, "2026-07-20.jsonl"))).toBe(false);
+  // And exactly one warn for the whole episode — not one per retrying tick.
   expect(reported).toHaveLength(1);
   await rm(dir, { recursive: true, force: true });
 });

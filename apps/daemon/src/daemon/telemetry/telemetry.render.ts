@@ -215,6 +215,26 @@ export function maintenanceDecisionEvents(
       ),
     );
   }
+  // #65's capacity decision: a starved tick has no per-issue event at all,
+  // which would make starvation indistinguishable from an idle backlog.
+  // Emitted only when starved, mirroring renderMaintenanceTick's warn line;
+  // holder branch names stay in prose — identity never enters attributes.
+  if (result.dispatch.capacity.starved) {
+    events.push(
+      event(
+        "score.dispatch.decision",
+        time,
+        env,
+        {},
+        {
+          ...base,
+          "score.action": "starved",
+          "score.capacity.active": result.dispatch.capacity.active,
+          "score.capacity.max": result.dispatch.capacity.max,
+        },
+      ),
+    );
+  }
   return events;
 }
 
