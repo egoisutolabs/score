@@ -23,6 +23,10 @@ export class MaintenanceTickFailedError extends Error {
     this.name = cause instanceof Error ? cause.name : "Error";
     this.cause = cause;
     this.cleanup = cleanup;
+    // The wrapper's own stack would point here, burying the dispatch
+    // operation that actually failed under the debug log's error.stack —
+    // carry the cause's stack so diagnosis still lands at the origin.
+    if (cause instanceof Error && cause.stack) this.stack = cause.stack;
   }
 }
 
