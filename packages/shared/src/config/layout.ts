@@ -32,10 +32,6 @@ export function logsDir(key: string): string {
   return join(projectDir(key), "logs");
 }
 
-export function telemetryDir(key: string): string {
-  return join(projectDir(key), "telemetry");
-}
-
 export function promptsDir(key: string): string {
   return join(projectDir(key), "prompts");
 }
