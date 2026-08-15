@@ -1,7 +1,11 @@
 import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
 import type { IssueObservation } from "@score/core/dispatch/issue.interface";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 import { expect, test } from "vitest";
+
+const claude: AgentConfig = { harness: "claude", model: "claude-fable-5" };
+const opencode: AgentConfig = { harness: "opencode", model: "provider/model" };
 
 function issue(): IssueObservation {
   return {
@@ -17,7 +21,7 @@ function issue(): IssueObservation {
 
 test("briefing carries the issue, prior comments, and the portable policy contract", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService().render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
 
   expect(markdown).toContain("# Issue #9: Port the legacy task");
   expect(markdown).toContain("## Notes from Prior Work");
@@ -28,7 +32,7 @@ test("briefing carries the issue, prior comments, and the portable policy contra
 
 test("briefing is project-agnostic: configured verification, repo facts delegated", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService().render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
 
   // Verification is exactly what the project configured — nothing invented.
   expect(markdown).toContain("make verify");
@@ -42,7 +46,7 @@ test("briefing is project-agnostic: configured verification, repo facts delegate
 
 test("self-review is ordered after verification and before commit", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService().render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
   const instructions = markdown.slice(markdown.indexOf("## Completion Instructions"));
 
   const verify = instructions.indexOf("Run required verification.");
@@ -64,9 +68,47 @@ test("self-review is ordered after verification and before commit", () => {
   );
 });
 
+test("claude briefings carry the ordered workflow; tool steps are capability-conditional", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
+  const workflow = markdown.slice(
+    markdown.indexOf("## Workflow"),
+    markdown.indexOf("## Required Verification"),
+  );
+
+  const explore = workflow.indexOf("Explore before writing.");
+  const implement = workflow.indexOf("Implement this TASK.md end-to-end.");
+  const review = workflow.indexOf("Review until clean.");
+  const finish = workflow.indexOf("Finish via Completion Instructions");
+  expect(explore).toBeGreaterThan(-1);
+  expect(implement).toBeGreaterThan(explore);
+  expect(review).toBeGreaterThan(implement);
+  expect(finish).toBeGreaterThan(review);
+
+  // Tools are offered, never assumed — and their absence cannot waive review.
+  expect(workflow).toContain("If the graphify skill is available");
+  expect(workflow).toContain("If the codex review skill is available");
+  const unwrapped = workflow.replace(/\s+/g, " ");
+  expect(unwrapped).toContain(
+    "An unavailable tool skips that tool only — the self-review in Completion Instructions is never skipped.",
+  );
+});
+
+test("non-claude briefings carry no workflow section", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity, opencode);
+
+  expect(markdown).not.toContain("## Workflow");
+  expect(markdown).not.toContain("graphify");
+  expect(markdown).not.toContain("codex");
+  // The rest of the contract is unchanged for other harnesses.
+  expect(markdown).toContain("## Completion Instructions");
+  expect(markdown).toContain("Self-review the full diff");
+});
+
 test("briefing forbids opening a PR while required verification fails", () => {
   const identity = createWorkIdentity("/worktrees", issue());
-  const markdown = new TaskBriefingService().render(issue(), identity);
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
   // Collapse the template's hard line wraps so prose can be matched as written.
   const unwrapped = markdown.replace(/\s+/g, " ");
 
