@@ -199,7 +199,10 @@ function isCursorMap(value: unknown): value is Record<string, unknown> {
       string(cursor.project) &&
       (cursor.source === "telemetry" || cursor.source === "log") &&
       string(cursor.segment) &&
-      typeof cursor.byte_offset === "number",
+      // Offsets index into a byte buffer at line boundaries — negative or
+      // fractional values would misalign a resumed read.
+      Number.isInteger(cursor.byte_offset) &&
+      (cursor.byte_offset as number) >= 0,
   );
 }
 

@@ -268,6 +268,16 @@ test.each([
     "score.stream.caught_up",
     '{"through":{"k":{"project":"score","source":"otlp","segment":"2026-08-15","byte_offset":0}},"follow":true}',
   ],
+  [
+    "caught-up cursor with a negative byte_offset",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-08-15","byte_offset":-1}},"follow":true}',
+  ],
+  [
+    "caught-up cursor with a fractional byte_offset",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-08-15","byte_offset":1.5}},"follow":true}',
+  ],
   ["reserved metric name with no payload vocabulary", "score.telemetry.metric", "{}"],
   ["reserved log name with no payload vocabulary", "score.telemetry.log", "{}"],
 ])("malformed frame: %s", (_name, event, data) => {

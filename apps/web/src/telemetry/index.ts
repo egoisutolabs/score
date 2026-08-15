@@ -8,5 +8,5 @@
  */
 export * from "./envelope.interface";
 export * from "./envelope.render";
-export * from "./readiness.service";
+export * from "./readiness";
 export * from "./stream-id.render";

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { resolveProjects } from "@score/shared/config/resolve";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { assessReadiness } from "./readiness.service";
+import { assessReadiness } from "./readiness";
 
 /**
  * Every case builds a throwaway SCORE_HOME so the probe is exercised

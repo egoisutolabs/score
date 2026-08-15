@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
@@ -36,8 +35,10 @@ test("no live reference to the deleted server stub survives", async () => {
   const offenders: string[] = [];
   for (const path of paths) {
     // The tracked path itself first: a resurrected stub-app file (whatever
-    // its contents say) proves the app is back.
-    const text = await readFile(`${root}${path}`, "utf8").catch(() => "");
+    // its contents say) proves the app is back. Contents come from the git
+    // blob, not the filesystem: a tracked symlink's resolved target (a
+    // dangling link, a directory) is not what git versioned.
+    const text = blobText(root, path);
     for (const pattern of patterns) {
       if (pattern.test(path)) offenders.push(path);
       if (pattern.test(text)) offenders.push(path);
@@ -45,6 +46,19 @@ test("no live reference to the deleted server stub survives", async () => {
   }
   expect(offenders).toEqual([]);
 });
+
+/** `HEAD:<path>` — the versioned bytes. Untracked-in-HEAD paths read empty. */
+function blobText(root: string, path: string): string {
+  try {
+    return execFileSync("git", ["show", `HEAD:${path}`], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    return ""; // staged but not committed — the path-name check still covers it
+  }
+}
 
 test("the brace pattern matches the stub at any member position", () => {
   // Sample strings are fragment-assembled like the needle, so this file

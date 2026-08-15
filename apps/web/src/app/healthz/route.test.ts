@@ -27,11 +27,14 @@ test("GET /healthz answers 200 without reading any Score state", async () => {
   expect(assessReadiness).not.toHaveBeenCalled();
 });
 
-// SCORE_HOME points at a home that does not exist: even the paths are absent,
-// so any attempted read would have been recorded by the spies above.
-test("GET /healthz stays 200 with an absent SCORE_HOME", async () => {
+// SCORE_HOME points at a home that does not exist: the env is configured, so
+// a regression that reads state only when set (then swallows the ENOENT)
+// still trips the spies — the configured-path case is where such a read hides.
+test("GET /healthz stays 200 with an absent SCORE_HOME, still reading nothing", async () => {
   vi.stubEnv("SCORE_HOME", join(await mkdtemp(join(tmpdir(), "score-healthz-")), "absent"));
   const response = await GET();
   expect(response.status).toBe(200);
+  expect(vi.mocked(readFile)).not.toHaveBeenCalled();
+  expect(assessReadiness).not.toHaveBeenCalled();
   vi.unstubAllEnvs();
 });
