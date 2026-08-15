@@ -37,6 +37,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .turbo
 .scratchpad/
 
+# next.js
+.next
+next-env.d.ts
+
 #graphify
 graphify-out/
 

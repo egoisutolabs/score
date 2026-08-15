@@ -160,8 +160,8 @@ enforced.
 
 ## Layout
 
-Bun workspaces + Turborepo. `apps/{daemon,tui,server}` are entry points (the
-`score` CLI is `apps/daemon`; `server` is a future-HTTP stub);
+Bun workspaces + Turborepo. `apps/{daemon,tui,web}` are entry points (the
+`score` CLI is `apps/daemon`; `web` is the API-only Next.js telemetry host);
 `packages/{shared,core,agents,tracker}` are libraries — ports live in `core`,
 implementations in `agents`/`tracker`. Files are named `<noun>.<role>.ts`
 (`.service`, `.policy`, `.render`, `.interface`, `.run`); see `AGENTS.md`.

@@ -1,0 +1,23 @@
+{
+  "name": "@score/web",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "bun --bun next dev --hostname 127.0.0.1",
+    "start": "bun --bun next start --hostname 127.0.0.1",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@score/core": "workspace:*",
+    "@score/shared": "workspace:*",
+    "next": "16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "typescript": "^7.0.2"
+  }
+}
