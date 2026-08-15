@@ -29,9 +29,10 @@ export interface SessionV2Info {
 /** GET /api/session — data and cursor are both always present. */
 export interface SessionListResponse {
   readonly data: readonly SessionV2Info[];
+  /** 1.18.15 sends explicit nulls at exhaustion: {"previous":null,"next":null}. */
   readonly cursor: {
-    readonly previous?: string;
-    readonly next?: string;
+    readonly previous?: string | null;
+    readonly next?: string | null;
   };
 }
 
