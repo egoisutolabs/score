@@ -28,10 +28,47 @@ export type StreamEventName =
 export type StreamSequence = Readonly<Record<string, number>>;
 
 /** One SSE frame: an event name, its JSON payload, and an optional resume id. */
-export interface StreamEnvelope<out T = StreamEventData> {
-  readonly event: StreamEventName;
-  readonly data: T;
+interface EnvelopeBase {
   readonly sequence?: StreamSequence;
+}
+
+/**
+ * A discriminated union on `event`: every event name admits exactly its own
+ * payload shape, so a mismatched pair (an error name over snapshot data, a
+ * reserved metric/log name over any payload — v1 has no vocabulary for
+ * either) is a compile-time error, not a frame renderEnvelope would emit
+ * and parseEnvelope would reject.
+ */
+export type StreamEnvelope =
+  | SnapshotEnvelope
+  | SpanEnvelope
+  | EventEnvelope
+  | CaughtUpEnvelope
+  | ErrorEnvelope;
+
+export interface SnapshotEnvelope extends EnvelopeBase {
+  readonly event: "score.snapshot.project";
+  readonly data: SnapshotProjectData;
+}
+
+export interface SpanEnvelope extends EnvelopeBase {
+  readonly event: "score.telemetry.span";
+  readonly data: TelemetryRecordData<"span">;
+}
+
+export interface EventEnvelope extends EnvelopeBase {
+  readonly event: "score.telemetry.event";
+  readonly data: TelemetryRecordData<"event">;
+}
+
+export interface CaughtUpEnvelope extends EnvelopeBase {
+  readonly event: "score.stream.caught_up";
+  readonly data: CaughtUpData;
+}
+
+export interface ErrorEnvelope extends EnvelopeBase {
+  readonly event: "score.stream.error";
+  readonly data: StreamErrorData;
 }
 
 /** Snapshot of one project's observed health — the first thing a client sees. */
@@ -41,10 +78,16 @@ export interface SnapshotProjectData {
   readonly observed_at: string;
 }
 
-/** A replayed or live record, tagged with the source it was read from. */
-export interface TelemetryRecordData {
+/**
+ * A replayed or live record, tagged with the source it was read from. The
+ * kind parameter couples a record to its event name — a span frame carries
+ * a TelemetrySpan, an event frame a TelemetryEvent, at the type level too.
+ */
+export interface TelemetryRecordData<
+  Kind extends TelemetryRecord["kind"] = TelemetryRecord["kind"],
+> {
   readonly source: TelemetrySource;
-  readonly record: TelemetryRecord;
+  readonly record: Extract<TelemetryRecord, { readonly kind: Kind }>;
 }
 
 /** Emitted once replay ends; `through` is the fleet cursor follow resumes from. */

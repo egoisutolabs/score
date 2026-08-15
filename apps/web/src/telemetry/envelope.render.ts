@@ -1,7 +1,7 @@
 import type {
+  ErrorEnvelope,
   StreamEnvelope,
-  StreamErrorData,
-  StreamEventData,
+  StreamErrorCode,
   StreamEventName,
 } from "./envelope.interface";
 import { parseStreamId, renderStreamId } from "./stream-id.render";
@@ -60,11 +60,13 @@ export function parseEnvelope(block: string): StreamEnvelope | undefined {
     return undefined;
   }
   if (!payloadMatches(event as StreamEventName, payload)) return undefined;
+  // The guards above are the runtime proof of the discriminated union the
+  // interface declares; the cast only re-joins what the two already agreed.
   return {
     event: event as StreamEventName,
-    data: payload as StreamEventData,
+    data: payload,
     ...(sequence && { sequence }),
-  };
+  } as StreamEnvelope;
 }
 
 /**
@@ -203,8 +205,6 @@ function string(value: unknown): value is string {
  * set. Paths, messages, and stack traces stay server-side — an operator
  * debugging an error frame goes to the daemon's own logs, not the wire.
  */
-export function streamErrorEnvelope(
-  reasonCode: StreamErrorData["reason_code"],
-): StreamEnvelope<StreamErrorData> {
+export function streamErrorEnvelope(reasonCode: StreamErrorCode): ErrorEnvelope {
   return { event: "score.stream.error", data: { reason_code: reasonCode } };
 }

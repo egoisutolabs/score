@@ -2,6 +2,37 @@ import { expect, test } from "vitest";
 import type { StreamEnvelope } from "./envelope.interface";
 import { parseEnvelope, renderEnvelope, streamErrorEnvelope } from "./envelope.render";
 
+// The discriminated union is the compile-time proof: each expect-error says
+// "this mismatched envelope must not typecheck". If the union ever loosens,
+// tsc fails here on the unused directive — the guard cannot silently rot.
+const snapshotData = {
+  project: "score",
+  health: "running",
+  observed_at: "2026-08-15T00:00:00.000Z",
+};
+// @ts-expect-error — an error name must not carry snapshot data
+const mismatched: StreamEnvelope = { event: "score.stream.error", data: snapshotData };
+// @ts-expect-error — a reserved metric name has no v1 payload at all
+const metric: StreamEnvelope = { event: "score.telemetry.metric", data: snapshotData };
+// @ts-expect-error — a span name must carry a span record, not an event record
+const wrongKind: StreamEnvelope = {
+  event: "score.telemetry.span",
+  data: {
+    source: "telemetry",
+    record: {
+      version: 1,
+      kind: "event",
+      time: "2026-08-15T00:00:00.000Z",
+      name: "score.x.y",
+      resource: { project: "score" },
+    },
+  },
+};
+
+test("mismatched envelopes are compile-time errors, never rendered", () => {
+  expect([mismatched, metric, wrongKind]).toHaveLength(3); // referenced so tsc keeps them
+});
+
 test("an envelope round-trips through the SSE wire block", () => {
   const envelope: StreamEnvelope = {
     event: "score.snapshot.project",
