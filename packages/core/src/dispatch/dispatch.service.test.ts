@@ -412,6 +412,80 @@ test("the starvation scan observes global in-flight state once per tick, not per
   expect(sessionProbes).toBe(1);
 });
 
+test("the starvation scan never queries PR heads when no candidate escapes the held worktrees (#65)", async () => {
+  let changeHeadCalls = 0;
+  const countingChanges: ChangeHost = {
+    ...changes,
+    async observeOpenChangeHeads() {
+      changeHeadCalls += 1;
+      throw new Error("a fully-held tick must not depend on the PR-head query");
+    },
+  };
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-21-live-holder", branch: "issue-21-live-holder", locked: false },
+    { path: "/worktrees/issue-34-live-holder", branch: "issue-34-live-holder", locked: false },
+  );
+  const holdersOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(34), issue(21)];
+    },
+    async observeIssue(issueNumber: number) {
+      return issue(issueNumber);
+    },
+    async observeDependency(issueNumber: number) {
+      return issue(issueNumber);
+    },
+  };
+  const service = new DispatchService(
+    options,
+    holdersOnly,
+    countingChanges,
+    workspace,
+    new FakeAgents(),
+    {
+      async write(): Promise<void> {},
+    },
+  );
+
+  // The throwing host proves both deferral and resilience: the tick must
+  // resolve with starved false without ever observing change heads.
+  const result = await service.run();
+
+  expect(result.capacity.starved).toBe(false);
+  expect(changeHeadCalls).toBe(0);
+});
+
+test("an undispatchable harness is not starvation — a freed slot would only fail dispatch (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-live-holder",
+    branch: "issue-21-live-holder",
+    locked: false,
+  });
+  const service = new DispatchService(
+    {
+      ...options,
+      maxParallelIssues: 1,
+      agent: { harness: "opencode", model: "openai/gpt-5" },
+    },
+    new FakeWorkSource(),
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-live-holder"],
+    starved: false,
+  });
+});
+
 test("a detached-HEAD slot holder is named by its worktree identity, not an empty branch (#65)", async () => {
   const workspace = new FakeWorkspace();
   workspace.worktrees.push({

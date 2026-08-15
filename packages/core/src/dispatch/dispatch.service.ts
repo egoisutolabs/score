@@ -113,22 +113,36 @@ export class DispatchService {
 
   /**
    * A candidate that would start if a slot were free — the work starvation
-   * means (#65). Worktrees and open change heads are observed once for the
-   * whole scan: per-candidate re-observation would re-run `git worktree list`
-   * and a full paginated `gh pr list` for every labeled issue on an
-   * at-capacity tick. Sessions stay per-candidate targeted probes —
-   * listSessions is lossy here (opencode filters to the score-<ns>- prefix,
-   * tmux's list swallows probe failures that sessionExists fails closed on).
+   * means (#65). Worktrees are observed once for the whole scan (the identity
+   * list capacity already computed); PR heads are fetched lazily, only once
+   * the first candidate escapes the held-worktree check — an empty or
+   * fully-held list must neither pay for the paginated `gh pr list` nor fail
+   * the tick on its transient errors when local state already proves nothing
+   * waits. Sessions stay per-candidate targeted probes — listSessions is
+   * lossy here (opencode filters to the score-<ns>- prefix, tmux's list
+   * swallows probe failures that sessionExists fails closed on).
    */
   async #hasWaitingCandidate(
     candidates: readonly IssueObservation[],
     heldBranches: readonly string[],
   ): Promise<boolean> {
-    const changeHeads = await this.changeHost.observeOpenChangeHeads();
+    // A slotted run reaches assertKnownHarness inside #startIssue and fails
+    // without starting work; a freed slot that can only produce dispatch
+    // failures is not waiting work, so the gate stays false.
+    try {
+      assertKnownHarness(this.options.agent, this.options.dispatchableHarnesses);
+    } catch {
+      return false;
+    }
+    let changeHeads: Awaited<ReturnType<ChangeHost["observeOpenChangeHeads"]>> | undefined;
+    const openChangeHeads = async () =>
+      (changeHeads ??= await this.changeHost.observeOpenChangeHeads());
     for (const candidate of candidates) {
       const prefix = issueBranchPrefix(candidate.number);
       if (heldBranches.some((branch) => branch.startsWith(prefix))) continue;
-      if (changeHeads.some((change) => change.headRefName.startsWith(prefix))) continue;
+      if ((await openChangeHeads()).some((change) => change.headRefName.startsWith(prefix))) {
+        continue;
+      }
       if (
         await this.agents.sessionExists(
           sessionNameForIssue(this.options.namespace, candidate.number),
