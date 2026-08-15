@@ -298,6 +298,26 @@ test.each([
     "score.stream.caught_up",
     '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-00-15","byte_offset":0}},"follow":true}',
   ],
+  [
+    "caught-up cursor with a future segment stamp",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"9999-12-31","byte_offset":0}},"follow":true}',
+  ],
+  [
+    "record payload with an exponent-overflow attribute",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"},"attributes":{"n":1e400}}}',
+  ],
+  [
+    "span payload with an exponent-overflow duration",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"},"span_id":"a1","duration_ms":1e400}}',
+  ],
+  [
+    "error frame carrying a smuggled stack next to reason_code",
+    "score.stream.error",
+    '{"reason_code":"internal","stack":"at secret.ts:1:1"}',
+  ],
   ["reserved metric name with no payload vocabulary", "score.telemetry.metric", "{}"],
   ["reserved log name with no payload vocabulary", "score.telemetry.log", "{}"],
 ])("malformed frame: %s", (_name, event, data) => {

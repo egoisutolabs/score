@@ -8,6 +8,17 @@ import type { StreamSequence } from "./envelope.interface";
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export function renderStreamId(sequence: StreamSequence): string {
+  for (const value of Object.values(sequence)) {
+    // An unrenderable counter (negative, fractional, infinite, above the
+    // safe-integer range) would emit an ID the parser rejects — an echoed
+    // Last-Event-ID like that silently downgrades a reconnect to a fresh
+    // sequence and replays data. Refuse at the source, where the bug lives.
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(
+        `stream sequence counter is not a safe nonnegative integer: ${String(value)}`,
+      );
+    }
+  }
   return Buffer.from(JSON.stringify(sequence), "utf8").toString("base64");
 }
 
@@ -27,7 +38,9 @@ export function parseStreamId(id: string): StreamSequence | undefined {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
   const sequence: Record<string, number> = {};
   for (const [scope, value] of Object.entries(parsed)) {
-    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return undefined;
+    // Safe integers only: above MAX_SAFE_INTEGER, incrementing the counter
+    // returns the same number, so resume positions stall or reuse IDs.
+    if (!Number.isSafeInteger(value) || value < 0) return undefined;
     sequence[scope] = value;
   }
   return sequence;

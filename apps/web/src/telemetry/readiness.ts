@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { lstat, open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { configPath, resolvedPath, telemetryDir } from "@score/shared/config/layout";
@@ -128,10 +129,14 @@ async function telemetryReadable(key: string): Promise<boolean> {
     try {
       // The open is the permission probe: metadata stays readable on a
       // mode-000 file, but TelemetryLogService.readSegment() could not open
-      // it — readiness must report what the reader can do.
-      const handle = await open(path, "r");
+      // it — readiness must report what the reader can do. Nonblocking
+      // closes the swap race: a FIFO replacing the file between stat and
+      // open would block a plain read-only open forever; opened
+      // nonblocking, the handle exists immediately and the fstat below
+      // exposes whatever the descriptor actually points at.
+      const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
       try {
-        // Handle-side re-stat covers an entry swapped between the calls.
+        // Handle-side stat covers an entry swapped between the calls.
         if (!(await handle.stat()).isFile()) return false;
         // Metadata is not readability: procfs-style regular files open and
         // fstat fine yet fail the read itself — prove the bytes come back.

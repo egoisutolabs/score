@@ -115,8 +115,13 @@ function payloadMatches(event: StreamEventName, payload: unknown): boolean {
     case "score.stream.caught_up":
       return isRecord(payload) && payload.follow === true && isCursorMap(payload.through);
     case "score.stream.error":
+      // Exactly the closed key set: a parser admitting extras (a stack, a
+      // path smuggled next to reason_code) would hand internals to any
+      // consumer that spreads envelope.data, breaking the safe-error
+      // contract the renderer already projects to.
       return (
         isRecord(payload) &&
+        Object.keys(payload).length === 1 &&
         (payload.reason_code === "cursor-expired" ||
           payload.reason_code === "not-ready" ||
           payload.reason_code === "internal")
@@ -164,15 +169,19 @@ function isSubject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-/** Attribute values are primitives only — the record contract's whole shape. */
+/** Attribute values are finite primitives only — the record contract's shape. */
 function isAttributes(value: unknown): value is Record<string, unknown> {
   return (
     isRecord(value) &&
     Object.values(value).every(
       (attribute) =>
         typeof attribute === "string" ||
-        typeof attribute === "number" ||
-        typeof attribute === "boolean",
+        typeof attribute === "boolean" ||
+        // JSON.parse materializes exponent overflow (1e400) as Infinity;
+        // core's append policy rejects non-finite numbers because rendering
+        // them turns the value into null — the parser must not admit what
+        // renderEnvelope could not round-trip.
+        (typeof attribute === "number" && Number.isFinite(attribute)),
     )
   );
 }
@@ -183,7 +192,9 @@ function optionalField<T>(value: unknown, check: (candidate: unknown) => candida
 }
 
 function isNumber(value: unknown): value is number {
-  return typeof value === "number";
+  // Finite only: JSON.parse turns 1e400 into Infinity, which JSON.stringify
+  // renders as null — no declared number field may carry it.
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isSpanStatus(value: unknown): value is "ok" | "error" {
@@ -192,6 +203,11 @@ function isSpanStatus(value: unknown): value is "ok" | "error" {
 
 /** Segments are dated files — the same stamp rule the store's sweeper trusts. */
 const SEGMENT_STAMP = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The newest stamp any writer can have produced: today's UTC day. */
+function utcTodayStamp(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /**
  * A real UTC calendar date, not just digit positions: an impossible stamp
@@ -224,6 +240,10 @@ function isCursorMap(value: unknown): value is Record<string, unknown> {
       // reader in a gap it reports as ok — only real dates may resume.
       SEGMENT_STAMP.test(cursor.segment) &&
       isCalendarStamp(cursor.segment) &&
+      // The writer stamps a segment with the UTC day it writes on, so a
+      // stamp past today has never existed — it strands the cursor exactly
+      // like an impossible date, but with a plausible-looking calendar day.
+      cursor.segment <= utcTodayStamp() &&
       // Offsets index into a byte buffer at line boundaries — negative or
       // fractional values would misalign a resumed read.
       Number.isInteger(cursor.byte_offset) &&
