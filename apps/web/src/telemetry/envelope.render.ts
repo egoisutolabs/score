@@ -86,18 +86,18 @@ function payloadMatches(event: StreamEventName, payload: unknown): boolean {
         string(payload.observed_at)
       );
     case "score.telemetry.span":
-    case "score.telemetry.event":
       return (
         isRecord(payload) &&
-        (payload.source === "telemetry" || payload.source === "log") &&
-        isRecord(payload.record) &&
-        payload.record.kind === event.slice("score.telemetry.".length) &&
-        typeof payload.record.version === "number" &&
-        string(payload.record.time) &&
-        string(payload.record.name) &&
-        isRecord(payload.record.resource) &&
-        string(payload.record.resource.project)
+        isTelemetryRecordPayload(event, payload) &&
+        // TelemetrySpan.span_id is required — without it a consumer that
+        // narrows on kind === "span" reads undefined for a declared string.
+        string(payload.record.span_id) &&
+        optionalField(payload.record.parent_span_id, string) &&
+        optionalField(payload.record.duration_ms, isNumber) &&
+        optionalField(payload.record.status, isSpanStatus)
       );
+    case "score.telemetry.event":
+      return isRecord(payload) && isTelemetryRecordPayload(event, payload);
     case "score.telemetry.metric":
     case "score.telemetry.log":
       return false;
@@ -111,6 +111,37 @@ function payloadMatches(event: StreamEventName, payload: unknown): boolean {
           payload.reason_code === "internal")
       );
   }
+}
+
+/** Fields every record payload carries, whatever its kind. */
+function isTelemetryRecordPayload(
+  event: StreamEventName,
+  payload: Record<string, unknown>,
+): payload is { source: string; record: Record<string, unknown> } {
+  const record = payload.record;
+  return (
+    (payload.source === "telemetry" || payload.source === "log") &&
+    isRecord(record) &&
+    record.kind === event.slice("score.telemetry.".length) &&
+    typeof record.version === "number" &&
+    string(record.time) &&
+    string(record.name) &&
+    isRecord(record.resource) &&
+    string(record.resource.project)
+  );
+}
+
+/** Optional fields prove their type only when present; absent is valid. */
+function optionalField<T>(value: unknown, check: (candidate: unknown) => candidate is T): boolean {
+  return value === undefined || check(value);
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number";
+}
+
+function isSpanStatus(value: unknown): value is "ok" | "error" {
+  return value === "ok" || value === "error";
 }
 
 /** The fleet cursor is the resume token — every entry must be a real cursor. */

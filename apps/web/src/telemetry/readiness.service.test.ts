@@ -113,6 +113,23 @@ describe("assessReadiness", () => {
     });
   });
 
+  test("a directory named like a segment is not readable telemetry", async () => {
+    // Opening a directory succeeds on Linux, but the reader's readFileSync
+    // takes EISDIR — the probe must require a regular file, whatever uid.
+    const home = await scoreHome();
+    const dir = join(home, "projects", "demo", "telemetry");
+    await mkdir(dir, { recursive: true });
+    await mkdir(join(dir, "2026-08-15.jsonl"));
+    vi.stubEnv("SCORE_HOME", home);
+    const report = await assessReadiness();
+    expect(report.ready).toBe(false);
+    expect(report.checks).toContainEqual({
+      name: "telemetry:demo",
+      ready: false,
+      reason_code: "telemetry-unreadable",
+    });
+  });
+
   // Root ignores mode bits, so the open-probe proof only bites unprivileged.
   test.skipIf(!unprivileged)(
     "a traversable dir over an unopenable segment is not ready",

@@ -76,11 +76,17 @@ async function telemetryReadable(key: string): Promise<boolean> {
   for (const name of names) {
     if (!SEGMENT_FILE.test(name)) continue;
     try {
-      // Probe with a real open, not stat: metadata stays readable on a
-      // mode-000 file, but TelemetryLogService.readSegment() could not
-      // open it — readiness must report what the reader can do.
+      // Probe with a real open, not path stat: metadata stays readable on a
+      // mode-000 file, but TelemetryLogService.readSegment() could not open
+      // it — readiness must report what the reader can do. The handle's own
+      // stat then rejects a directory named like a segment: opening one
+      // succeeds on Linux, while the reader's readFileSync takes EISDIR.
       const handle = await open(join(dir, name), "r");
-      await handle.close();
+      try {
+        if (!(await handle.stat()).isFile()) return false;
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       // A segment vanishing mid-probe is retention doing its job — the
       // reader expires cursors past it, it does not flip readiness.

@@ -99,6 +99,28 @@ test("an event name outside the closed v1 set is not ours", () => {
   expect(parseEnvelope("event: other.system.event\ndata: {}\n")).toBeUndefined();
 });
 
+test("a span envelope round-trips with its required span_id", () => {
+  const envelope: StreamEnvelope = {
+    event: "score.telemetry.span",
+    data: {
+      source: "telemetry",
+      record: {
+        version: 1,
+        kind: "span",
+        time: "2026-08-15T00:00:01.000Z",
+        name: "score.tick",
+        resource: { project: "score" },
+        span_id: "4df7a1b2c3d4",
+        parent_span_id: "963a00000000",
+        duration_ms: 42,
+        status: "ok",
+      },
+    },
+    sequence: { score: 7 },
+  };
+  expect(parseEnvelope(renderEnvelope(envelope))).toEqual(envelope);
+});
+
 test.each([
   ["error frame with a null payload", "score.stream.error", "null"],
   ["error frame with an unknown reason code", "score.stream.error", '{"reason_code":"teapot"}'],
@@ -117,6 +139,31 @@ test.each([
     "span payload carrying an event record",
     "score.telemetry.span",
     '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"}}}',
+  ],
+  [
+    "span payload missing span_id",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"}}}',
+  ],
+  [
+    "span payload with a non-string span_id",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"},"span_id":7}}',
+  ],
+  [
+    "span payload with a non-string parent_span_id",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"},"span_id":"a1","parent_span_id":2}}',
+  ],
+  [
+    "span payload with a non-numeric duration_ms",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"},"span_id":"a1","duration_ms":"42"}}',
+  ],
+  [
+    "span payload with an unknown status",
+    "score.telemetry.span",
+    '{"source":"telemetry","record":{"version":1,"kind":"span","time":"2026-08-15T00:00:00.000Z","name":"score.tick","resource":{"project":"score"},"span_id":"a1","status":"teapot"}}',
   ],
   [
     "caught-up payload that does not follow",
