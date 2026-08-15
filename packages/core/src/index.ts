@@ -17,5 +17,6 @@ export * from "./landing/index";
 export * from "./maintenance/index";
 export * from "./repair/index";
 export * from "./supervisor/index";
+export * from "./telemetry/index";
 export * from "./verify";
 export * from "./workspace-driver.interface";
