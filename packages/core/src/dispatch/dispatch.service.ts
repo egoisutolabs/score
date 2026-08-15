@@ -156,7 +156,7 @@ export class DispatchService {
     if (dryRun) return true;
     await this.workspace.createWorktree(identity);
     try {
-      await this.briefings.write(issue, identity);
+      await this.briefings.write(issue, identity, this.options.agent);
       await this.agents.startImplementation(
         identity,
         "Read TASK.md and implement it end-to-end. Open a PR with Fixes in the body. Stop after reporting the PR URL.",

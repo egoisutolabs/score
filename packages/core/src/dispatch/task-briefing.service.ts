@@ -5,6 +5,7 @@ import type { IssueObservation } from "@score/core/dispatch/issue.interface";
 import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.interface";
 import type { WorkIdentity } from "@score/core/dispatch/work.interface";
 import { VERIFY_COMMAND } from "@score/core/verify";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 
 /**
  * Project-agnostic TASK.md briefing: the issue, the identity, and portable
@@ -14,10 +15,36 @@ import { VERIFY_COMMAND } from "@score/core/verify";
  * this service briefs agents for any project the fleet cranks, not just Score.
  */
 export class TaskBriefingService implements TaskBriefingWriter {
-  render(issue: IssueObservation, identity: WorkIdentity): string {
+  render(issue: IssueObservation, identity: WorkIdentity, agent: AgentConfig): string {
     const priorComments = issue.comments.length
       ? `\n## Notes from Prior Work\n\n${issue.comments.map((comment) => `**@${comment.author?.login ?? "unknown"}**: ${comment.body.trim()}`).join("\n\n---\n\n")}\n`
       : "";
+
+    // Claude sessions run on operator machines where the graphify and codex
+    // skills may be installed; other harnesses have no skill surface, so the
+    // workflow would be dead instructions there. Tool references stay
+    // capability-conditional — this section names no repository facts.
+    const workflow =
+      agent.harness === "claude"
+        ? `
+## Workflow
+
+Work in this order:
+
+1. **Explore before writing.** Map the code this task touches: similar
+   patterns, the owning feature folder, its tests. Prefer read-only
+   subagents for broad sweeps. If the graphify skill is available, query the
+   repository's existing graph first (\`graphify-out/\` at the root); if the
+   graph is missing or stale, index the repository again.
+2. **Implement this TASK.md end-to-end.**
+3. **Review until clean.** If the codex review skill is available, run it
+   over your diff and fix what it finds; repeat until it reports no new
+   issues. An unavailable tool skips that tool only — the self-review in
+   Completion Instructions is never skipped.
+4. **Finish via Completion Instructions** (verification, self-review,
+   commit, push, PR).
+`
+        : "";
 
     return `# Issue #${issue.number}: ${issue.title}
 
@@ -38,7 +65,7 @@ this repository's layout, conventions, and invariants. This briefing carries no
 repository facts on purpose.
 
 Keep PR scope limited to this issue. Add tests for behavioral changes.
-
+${workflow}
 ## Required Verification
 
 Run before committing, at the repository root:
@@ -89,7 +116,11 @@ Do not amend unrelated commits. Do not force-push unless explicitly asked.
 `;
   }
 
-  async write(issue: IssueObservation, identity: WorkIdentity): Promise<void> {
-    writeFileSync(join(identity.worktreePath, "TASK.md"), this.render(issue, identity), "utf8");
+  async write(issue: IssueObservation, identity: WorkIdentity, agent: AgentConfig): Promise<void> {
+    writeFileSync(
+      join(identity.worktreePath, "TASK.md"),
+      this.render(issue, identity, agent),
+      "utf8",
+    );
   }
 }
