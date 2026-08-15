@@ -61,6 +61,16 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
       text: `✗ failed to start #${failure.issueNumber}: ${failure.message}`,
     });
   }
+  // The zero-slot tick used to exit before producing a single line (#65). Warn,
+  // not debug: a slot holder that never clears is exactly the stale-worktree
+  // drift that stayed invisible for two days.
+  if (result.dispatch.capacity.starved) {
+    const { active, max, heldBy } = result.dispatch.capacity;
+    lines.push({
+      level: "warn",
+      text: `⚠ dispatch at capacity (${active}/${max}): no slot free for eligible issues — held by ${heldBy.join(", ")}`,
+    });
+  }
 
   // Quiet tick: nothing changed and nothing needs attention → no output at all.
   const cleaned = result.cleanup.filter(

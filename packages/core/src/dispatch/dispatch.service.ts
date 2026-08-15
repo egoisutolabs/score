@@ -11,6 +11,7 @@ import {
   isOwnedIssueWorktree,
   parseDependencies,
   sortIssuesForDispatch,
+  worktreeBranchIdentity,
 } from "@score/core/dispatch/dispatch.policy";
 import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.interface";
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
@@ -18,7 +19,7 @@ import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import { assertKnownHarness } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
-import type { DispatchResult } from "./dispatch-result.interface";
+import type { DispatchCapacity, DispatchResult } from "./dispatch-result.interface";
 import type { IssueObservation } from "./issue.interface";
 
 export interface DispatchServiceOptions {
@@ -56,15 +57,31 @@ export class DispatchService {
     const planned: number[] = [];
     const blocked: DispatchResult["blocked"][number][] = [];
     const failed: DispatchResult["failed"][number][] = [];
-    const active = (await this.#issueWorktrees()).length;
-    let slots = Math.max(0, this.options.maxParallelIssues - active);
-    if (slots === 0) return { started, planned, blocked, failed };
+    // Capacity reflects the tick's entry observation — the decision it made,
+    // not the post-run state. worktreeBranchIdentity keeps a detached-HEAD
+    // worktree (empty branch) nameable instead of silently holding a slot (#65).
+    const heldBy = (await this.#issueWorktrees()).map(worktreeBranchIdentity).sort();
+    const capacity: DispatchCapacity = {
+      active: heldBy.length,
+      max: this.options.maxParallelIssues,
+      heldBy,
+      starved: false,
+    };
+    let slots = Math.max(0, capacity.max - capacity.active);
+    if (slots === 0) {
+      // Read-only: observing candidates here cannot start anything, it only
+      // decides whether the full slots are reported as holding up work (#65).
+      const eligible = await this.#observeCandidates();
+      return {
+        started,
+        planned,
+        blocked,
+        failed,
+        capacity: { ...capacity, starved: eligible.length > 0 },
+      };
+    }
 
-    const candidates = sortIssuesForDispatch(
-      (await this.workSource.observeIssues()).filter((issue) =>
-        isOpenChildIssue(issue, this.options.issues),
-      ),
-    );
+    const candidates = await this.#observeCandidates();
 
     for (const candidate of candidates) {
       if (slots === 0) break;
@@ -89,7 +106,15 @@ export class DispatchService {
       }
     }
 
-    return { started, planned, blocked, failed };
+    return { started, planned, blocked, failed, capacity };
+  }
+
+  async #observeCandidates(): Promise<readonly IssueObservation[]> {
+    return sortIssuesForDispatch(
+      (await this.workSource.observeIssues()).filter((issue) =>
+        isOpenChildIssue(issue, this.options.issues),
+      ),
+    );
   }
 
   async #startIssue(issueNumber: number, dryRun: boolean): Promise<boolean> {

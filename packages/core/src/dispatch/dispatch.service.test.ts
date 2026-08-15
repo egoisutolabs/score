@@ -139,6 +139,131 @@ const changes: ChangeHost = {
   },
 };
 
+test("a zero-slot tick with eligible candidates reports the capacity decision instead of exiting silently (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-21-stale-holder", branch: "issue-21-stale-holder", locked: false },
+    { path: "/worktrees/issue-34-live-holder", branch: "issue-34-live-holder", locked: false },
+  );
+  const agents = new FakeAgents();
+  const service = new DispatchService(options, new FakeWorkSource(), changes, workspace, agents, {
+    async write(): Promise<void> {
+      throw new Error("a zero-slot tick must not write TASK.md");
+    },
+  });
+
+  const result = await service.run();
+
+  expect(result.started).toEqual([]);
+  expect(result.planned).toEqual([]);
+  expect(result.blocked).toEqual([]);
+  expect(result.failed).toEqual([]);
+  expect(result.capacity).toEqual({
+    active: 2,
+    max: 2,
+    heldBy: ["issue-21-stale-holder", "issue-34-live-holder"],
+    starved: true,
+  });
+  expect(workspace.created).toEqual([]);
+  expect(agents.started).toEqual([]);
+});
+
+test("a zero-slot tick with no eligible candidates reports capacity without starving (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-stale-holder",
+    branch: "issue-21-stale-holder",
+    locked: false,
+  });
+  const heldIssuesOnly: WorkSource = {
+    async observeIssues() {
+      // Eligibility filtering happens before any in-flight check, so these
+      // never count as waiting candidates.
+      return [{ ...issue(7), labels: [{ name: "hold" }] }];
+    },
+    async observeIssue() {
+      return issue(7);
+    },
+    async observeDependency() {
+      return issue(7);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    heldIssuesOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-stale-holder"],
+    starved: false,
+  });
+});
+
+test("a detached-HEAD slot holder is named by its worktree identity, not an empty branch (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    new FakeWorkSource(),
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity.heldBy).toEqual(["issue-21-detached-slug"]);
+  expect(result.capacity.starved).toBe(true);
+});
+
+test("capacity reports the tick's entry observation, not post-run state (#65)", async () => {
+  // FakeWorkspace's base injects a create failure for issue 1; this run must
+  // start cleanly to isolate the capacity semantics.
+  class PlainWorkspace extends FakeWorkspace {
+    override async createWorktree(identity: WorkIdentity): Promise<void> {
+      this.created.push(identity.issueNumber);
+      this.worktrees.push({ path: identity.worktreePath, branch: identity.branch, locked: false });
+    }
+  }
+  const workspace = new PlainWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-5-already-running",
+    branch: "issue-5-already-running",
+    locked: false,
+  });
+  const service = new DispatchService(
+    options,
+    new FakeWorkSource(),
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.started).toEqual([1]);
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 2,
+    heldBy: ["issue-5-already-running"],
+    starved: false,
+  });
+});
+
 test("a failed task preparation does not suppress the next deterministic candidate", async () => {
   const workspace = new FakeWorkspace();
   const agents = new FakeAgents();
