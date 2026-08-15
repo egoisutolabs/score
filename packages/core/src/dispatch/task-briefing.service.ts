@@ -47,9 +47,9 @@ Run before committing, at the repository root:
 ${VERIFY_COMMAND}
 \`\`\`
 
-The repository's Makefile owns what that target does. If it reports a
-pre-existing, unrelated failure, document it in the PR body and still run the
-rest.
+The repository's Makefile owns what that target does. Never open a PR while
+required verification fails: fix it, or — only for a pre-existing, unrelated
+failure — document that failure in the PR body and still run the rest.
 
 ## Test Integrity
 
@@ -72,11 +72,15 @@ cannot properly fix within this issue's scope:
 
 1. Implement the issue end-to-end.
 2. Run required verification.
-3. Commit with a concise message. Do not add Co-Authored-By or Claude-Session trailers.
-4. Push the branch.
-5. Open a PR with \`Fixes #${issue.number}\` in the body. Do not add a "Generated with Claude Code" footer or any session URLs.
-6. Report the PR URL.
-7. Stop after reporting the PR URL.
+3. Self-review the full diff hunk-by-hunk as if it were a stranger's PR,
+   against this repository's own review rules (\`AGENTS.md\` Code Review Rules
+   and \`INVARIANTS.md\` where present). Fix everything you would flag in
+   review before committing.
+4. Commit with a concise message. Do not add Co-Authored-By or Claude-Session trailers.
+5. Push the branch.
+6. Open a PR with \`Fixes #${issue.number}\` in the body. Do not add a "Generated with Claude Code" footer or any session URLs.
+7. Report the PR URL.
+8. Stop after reporting the PR URL.
 
 Do not run blocking PR watcher scripts from inside the implementation session. Review follow-up is handled by the operator or a separate continuation session.
 
