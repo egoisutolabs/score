@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 760" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+  <rect width="1120" height="760" fill="#f8fafc"/>
+  <text x="560" y="44" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="24" font-weight="700" fill="#0f172a">One work item, one correlated answer</text>
+  <text x="560" y="70" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="13.5" fill="#64748b">the useful artifact is a queryable timeline — not a hard-coded screen</text>
+
+  <rect x="54" y="108" width="1012" height="596" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/>
+  <rect x="54" y="108" width="1012" height="42" rx="12" fill="#1e293b"/>
+  <rect x="54" y="132" width="1012" height="18" fill="#1e293b"/>
+  <circle cx="82" cy="129" r="6" fill="#f87171"/>
+  <circle cx="104" cy="129" r="6" fill="#fbbf24"/>
+  <circle cx="126" cy="129" r="6" fill="#4ade80"/>
+  <text x="560" y="134" text-anchor="middle" font-size="12" fill="#94a3b8">curl --no-buffer · Score SSE telemetry stream</text>
+
+  <text x="82" y="184" font-size="12.5" fill="#93c5fd">$ curl -N 'http://127.0.0.1:3000/api/v1/stream?projects=score&amp;subject_kind=issue&amp;subject_id=22'</text>
+
+  <text x="82" y="226" font-size="12.5" fill="#94a3b8">id: eyJzY29yZSI6MTE5fQ</text>
+  <text x="82" y="248" font-size="12.5" fill="#cbd5e1">event: score.snapshot.project</text>
+  <text x="82" y="270" font-size="12.5" fill="#f8fafc">data: { "project": "score", "health": "running", "observed_at": "…" }</text>
+
+  <text x="82" y="298" font-size="11.8" fill="#94a3b8">id: eyJzY29yZSI6MTIwfQ</text>
+  <text x="82" y="318" font-size="11.8" fill="#cbd5e1">event: score.telemetry.event</text>
+
+  <text x="82" y="338" font-size="11.8" fill="#60a5fa">data: { "tick": 0, "name": "score.dispatch.decision", "action": "started",</text>
+  <text x="146" y="356" font-size="11.8" fill="#94a3b8">"reason_code": "capacity_available", "trace_id": "4df7…" }</text>
+
+  <text x="82" y="386" font-size="11.8" fill="#94a3b8">id: eyJzY29yZSI6MTIxfQ</text>
+  <text x="82" y="406" font-size="11.8" fill="#cbd5e1">event: score.telemetry.event</text>
+  <text x="82" y="426" font-size="11.8" fill="#f87171">data: { "tick": 4, "name": "score.landing.decision", "outcome": "checks_red",</text>
+  <text x="146" y="444" font-size="11.8" fill="#94a3b8">"subject": { "kind": "pull_request", "id": "26" }, "trace_id": "963a…" }</text>
+
+  <text x="82" y="474" font-size="11.8" fill="#94a3b8">id: eyJzY29yZSI6MTIyfQ</text>
+  <text x="82" y="494" font-size="11.8" fill="#cbd5e1">event: score.telemetry.event</text>
+  <text x="82" y="514" font-size="11.8" fill="#fbbf24">data: { "tick": 4, "name": "score.repair.decision", "action": "pinged",</text>
+  <text x="146" y="532" font-size="11.8" fill="#94a3b8">"reason_code": "defects_changed", "trace_id": "963a…" }</text>
+
+  <text x="82" y="562" font-size="11.8" fill="#94a3b8">id: eyJzY29yZSI6MTIzfQ</text>
+  <text x="82" y="582" font-size="11.8" fill="#cbd5e1">event: score.telemetry.event</text>
+  <text x="82" y="602" font-size="11.8" fill="#4ade80">data: { "tick": 10, "name": "score.landing.decision", "outcome": "merged",</text>
+  <text x="146" y="620" font-size="11.8" fill="#94a3b8">"vcs.revision": "9c9e196", "trace_id": "a4c1…" }</text>
+
+  <text x="82" y="650" font-size="11.8" fill="#94a3b8">id: eyJzY29yZSI6MTI0fQ</text>
+  <text x="82" y="670" font-size="11.8" fill="#cbd5e1">event: score.stream.caught_up</text>
+  <text x="82" y="690" font-size="11.8" fill="#f8fafc">data: { "through": "opaque-composite-cursor", "follow": true }</text>
+
+  <rect x="750" y="230" width="280" height="82" rx="9" fill="#172554" stroke="#3b82f6"/>
+  <text x="890" y="257" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="13.5" font-weight="700" fill="#bfdbfe">correlation is the feature</text>
+  <text x="890" y="280" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="12" fill="#dbeafe">tick → phase → decision → subject</text>
+  <text x="890" y="300" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="11" fill="#93c5fd">replay and follow share one protocol</text>
+
+  <text x="560" y="730" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="12.5" fill="#64748b">No page is required to answer “what happened to issue 22, and why?”</text>
+  <text x="560" y="752" text-anchor="middle" font-family="ui-sans-serif, sans-serif" font-size="11.5" fill="#94a3b8">illustrative values · SSE event and attribute names are the contract</text>
+</svg>

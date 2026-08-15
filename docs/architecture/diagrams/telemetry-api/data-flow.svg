@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 760" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
+    <marker id="green-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#16a34a"/>
+    </marker>
+  </defs>
+
+  <rect width="1320" height="760" fill="#f8fafc"/>
+  <text x="660" y="46" text-anchor="middle" font-size="25" font-weight="700" fill="#0f172a">Telemetry first: durable locally, standard at the edge</text>
+  <text x="660" y="72" text-anchor="middle" font-size="14" fill="#64748b">Next.js serves one read-only SSE stream — not a UI, collector, or authority surface</text>
+
+  <rect x="48" y="122" width="320" height="456" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2.5"/>
+  <text x="208" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#1e3a8a">score daemon · one per project</text>
+  <text x="208" y="178" text-anchor="middle" font-size="12.5" fill="#475569">authority stays exactly where it is</text>
+
+  <rect x="74" y="204" width="268" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="208" y="230" text-anchor="middle" font-size="13.5" font-weight="650" fill="#1e40af">runDaemonLoop()</text>
+  <text x="208" y="253" text-anchor="middle" font-size="12.5" fill="#334155">cleanup → dispatch → landing → repair</text>
+
+  <rect x="74" y="294" width="268" height="118" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+  <text x="208" y="321" text-anchor="middle" font-size="13.5" font-weight="650" fill="#1e40af">composition instrumentation</text>
+  <text x="208" y="345" text-anchor="middle" font-size="12.5" fill="#334155">score.tick root span</text>
+  <text x="208" y="366" text-anchor="middle" font-size="12.5" fill="#334155">score.phase child spans</text>
+  <text x="208" y="387" text-anchor="middle" font-size="12.5" fill="#334155">named decision events + bounded metrics</text>
+
+  <rect x="74" y="430" width="268" height="112" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.8"/>
+  <text x="208" y="457" text-anchor="middle" font-size="13.5" font-weight="700" fill="#92400e">one telemetry writer</text>
+  <text x="208" y="481" text-anchor="middle" font-size="12.5" fill="#78350f">JSONL append · always attempted</text>
+  <text x="208" y="503" text-anchor="middle" font-size="12.5" fill="#78350f">OTel-shaped records · export-ready later</text>
+  <text x="208" y="524" text-anchor="middle" font-size="11.5" fill="#92400e">failure cannot change a phase result</text>
+
+  <rect x="454" y="122" width="350" height="456" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2.5"/>
+  <text x="629" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#14532d">local files · no database</text>
+  <text x="629" y="178" text-anchor="middle" font-size="12.5" fill="#475569">evidence and current observations stay distinct</text>
+
+  <rect x="480" y="204" width="298" height="90" rx="8" fill="#ffffff" stroke="#86efac" stroke-width="1.5"/>
+  <text x="629" y="230" text-anchor="middle" font-size="13.5" font-weight="700" fill="#166534">telemetry/YYYY-MM-DD.jsonl · new</text>
+  <text x="629" y="253" text-anchor="middle" font-size="12.5" fill="#334155">one appender · complete lines · UTC rotation</text>
+  <text x="629" y="274" text-anchor="middle" font-size="12" fill="#64748b">source + segment + byte cursors · file retention</text>
+
+  <rect x="480" y="312" width="298" height="58" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="629" y="337" text-anchor="middle" font-size="13" fill="#334155">status.json + resolved.json</text>
+  <text x="629" y="357" text-anchor="middle" font-size="11.5" fill="#64748b">current state and configuration</text>
+
+  <rect x="480" y="388" width="298" height="58" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="629" y="413" text-anchor="middle" font-size="13" fill="#334155">logs/YYYY-MM-DD.log</text>
+  <text x="629" y="433" text-anchor="middle" font-size="11.5" fill="#64748b">human prose, correlated where available</text>
+
+  <rect x="480" y="464" width="298" height="78" rx="8" fill="#ecfdf5" stroke="#22c55e" stroke-dasharray="5 4"/>
+  <text x="629" y="490" text-anchor="middle" font-size="13" font-weight="650" fill="#166534">explicit gaps and freshness</text>
+  <text x="629" y="513" text-anchor="middle" font-size="12" fill="#334155">no silent truncation · no false green</text>
+  <text x="629" y="533" text-anchor="middle" font-size="11.5" fill="#64748b">never repaired into a current-state model</text>
+
+  <rect x="890" y="122" width="380" height="456" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2.5"/>
+  <text x="1080" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#4c1d95">apps/web · Next.js SSE only</text>
+  <text x="1080" y="178" text-anchor="middle" font-size="12.5" fill="#b91c1c" font-weight="650">127.0.0.1 · read-only · no pages</text>
+
+  <rect x="916" y="204" width="328" height="82" rx="8" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="1080" y="230" text-anchor="middle" font-size="13.5" font-weight="650" fill="#5b21b6">probes only</text>
+  <text x="1080" y="253" text-anchor="middle" font-size="12.5" fill="#334155">/healthz · /readyz</text>
+  <text x="1080" y="272" text-anchor="middle" font-size="11.5" fill="#64748b">the only ordinary HTTP responses</text>
+
+  <rect x="916" y="304" width="328" height="102" rx="8" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="1080" y="330" text-anchor="middle" font-size="13.5" font-weight="650" fill="#5b21b6">one SSE telemetry route</text>
+  <text x="1080" y="353" text-anchor="middle" font-size="12.5" fill="#334155">/api/v1/stream · text/event-stream</text>
+  <text x="1080" y="375" text-anchor="middle" font-size="12.5" fill="#334155">snapshot · span · event · metric · log</text>
+  <text x="1080" y="394" text-anchor="middle" font-size="11.5" fill="#64748b">replay → caught_up → live follow</text>
+
+  <rect x="916" y="424" width="328" height="118" rx="8" fill="#ffffff" stroke="#c4b5fd"/>
+  <text x="1080" y="450" text-anchor="middle" font-size="13.5" font-weight="650" fill="#5b21b6">durable stream semantics</text>
+  <text x="1080" y="474" text-anchor="middle" font-size="12.5" fill="#334155">project + source + segment + byte cursor</text>
+  <text x="1080" y="496" text-anchor="middle" font-size="12.5" fill="#334155">shared tailers · heartbeat · backpressure</text>
+  <text x="1080" y="520" text-anchor="middle" font-size="11.5" fill="#64748b">no polling · no JSON data endpoints</text>
+
+  <line x1="368" y1="350" x2="454" y2="350" stroke="#2563eb" stroke-width="2.2" marker-end="url(#blue-arrow)"/>
+  <text x="411" y="338" text-anchor="middle" font-size="12" font-weight="650" fill="#2563eb">persist</text>
+  <line x1="890" y1="350" x2="804" y2="350" stroke="#16a34a" stroke-width="2.2" marker-end="url(#green-arrow)"/>
+  <text x="847" y="338" text-anchor="middle" font-size="12" font-weight="650" fill="#15803d">read-only</text>
+
+  <rect x="48" y="630" width="320" height="74" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="6 4"/>
+  <text x="208" y="659" text-anchor="middle" font-size="13.5" font-weight="650" fill="#334155">operator lifecycle</text>
+  <text x="208" y="683" text-anchor="middle" font-size="12.5" fill="#475569">score up · score down · score restart</text>
+
+  <rect x="500" y="630" width="258" height="74" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="629" y="659" text-anchor="middle" font-size="13.5" font-weight="650" fill="#334155">local consumers</text>
+  <text x="629" y="683" text-anchor="middle" font-size="11.5" fill="#475569">EventSource · curl -N · agents · tunnel</text>
+
+  <rect x="890" y="630" width="380" height="74" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="6 4"/>
+  <text x="1080" y="659" text-anchor="middle" font-size="13.5" font-weight="650" fill="#94a3b8">deferred: OTLP export</text>
+  <text x="1080" y="683" text-anchor="middle" font-size="12.5" fill="#94a3b8">lands only when an operator runs a collector</text>
+
+  <line x1="500" y1="667" x2="368" y2="667" stroke="#64748b" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="434" y="655" text-anchor="middle" font-size="11.5" fill="#64748b">controls stay CLI</text>
+
+  <text x="660" y="738" text-anchor="middle" font-size="12" fill="#94a3b8">score · telemetry API epic · 2026-08-14</text>
+</svg>
