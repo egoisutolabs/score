@@ -793,10 +793,13 @@ export async function runDaemonLoop(
         everyTicks: 2,
         run: async () => {
           if (landingBlocked) {
+            // Same ordering as the other phases: the structured suppression
+            // outcome is recorded before the fallible prose sink, so a warn
+            // failure can't turn a deliberate guard into a phase error.
+            telemetry?.phaseSuppressed();
             log.warn(
               "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
             );
-            telemetry?.phaseSuppressed();
             return;
           }
           const results = await landing.runTick();

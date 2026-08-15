@@ -510,6 +510,47 @@ test("decisions are recorded before the fallible prose sink", async () => {
   expect(decisions.map((decision) => decision.attributes?.["score.action"])).toContain("planned");
 }, 20_000);
 
+test("a blocked landing phase records suppressed even when the warning sink throws", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home } = await managedFixture(repo);
+  await withHomeEnv(home, async () => {
+    const base = managedResponses(repo);
+    const runner = new FakeRunner((command) => {
+      if (command[0] === "gh" && (command[1] === "issue" || command[1] === "pr")) {
+        return { stdout: "[]\n" };
+      }
+      if (command[1] === "rev-parse" && command.includes("MERGE_HEAD")) return { exitCode: 1 };
+      // Every fetch fails → reconciliation degrades to a warning and blocks
+      // landing for the pass.
+      if (command[1] === "fetch") return { exitCode: 1 };
+      return base(command);
+    });
+    const log = new CaptureLogger();
+    const realWarn = log.warn.bind(log);
+    // The suppression warning itself dies mid-write — the structured outcome
+    // must already be on record by then.
+    log.warn = (text) => {
+      if (text.startsWith("landing suppressed this pass")) throw new Error("prose log disk full");
+      realWarn(text);
+    };
+    const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+    const fileLog = createFileLogger(join(runsDir, "logs"), false);
+    const status = new RealStatusWriter(join(runsDir, "status.json"));
+    const parsed = parseDaemonArguments(["--project", "demo", "--once"]);
+
+    await runDaemonLoop(parsed, log, { fileLog, status }, { runner });
+  });
+
+  const spans = (await readTelemetry(home)).filter(
+    (record) => record.kind === "span",
+  ) as TelemetrySpan[];
+  const landing = spans.find(
+    (span) => span.name === "score.phase" && span.attributes?.["score.phase.name"] === "landing",
+  );
+  // The deliberate guard, not the warn failure, is what the span reports.
+  expect(landing?.attributes?.["score.outcome"]).toBe("suppressed");
+}, 20_000);
+
 test("cleanup decisions survive a dispatch failure inside the maintenance phase", async () => {
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
   const { home } = await managedFixture(repo);
