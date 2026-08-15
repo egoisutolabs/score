@@ -279,6 +279,139 @@ test("at capacity with only dependency-incomplete candidates is not starvation (
   });
 });
 
+test("the detached holder's own issue is not a waiting candidate (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  // The holder's issue stays open and labeled while its agent runs; only the
+  // worktree-identity fallback can recognize it as the slot's own issue.
+  const holderOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(21)];
+    },
+    async observeIssue() {
+      return issue(21);
+    },
+    async observeDependency() {
+      return issue(21);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    holderOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-detached-slug"],
+    starved: false,
+  });
+});
+
+test("a detached-HEAD worktree still marks its own issue in flight for a slotted run (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-detached-slug",
+    branch: "",
+    locked: false,
+  });
+  const holderOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(21)];
+    },
+    async observeIssue() {
+      return issue(21);
+    },
+    async observeDependency() {
+      return issue(21);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 2 },
+    holderOnly,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.blocked).toEqual([{ issueNumber: 21, reasons: ["ALREADY_IN_FLIGHT"] }]);
+  expect(result.started).toEqual([]);
+  expect(workspace.created).toEqual([]);
+});
+
+test("the starvation scan observes global in-flight state once per tick, not per candidate (#65)", async () => {
+  let worktreeObservations = 0;
+  let changeHeadCalls = 0;
+  let sessionProbes = 0;
+  class CountingWorkspace extends FakeWorkspace {
+    override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
+      worktreeObservations += 1;
+      return super.observeWorktrees();
+    }
+  }
+  class CountingAgents extends FakeAgents {
+    override async sessionExists(sessionName: string): Promise<boolean> {
+      sessionProbes += 1;
+      return super.sessionExists(sessionName);
+    }
+  }
+  const workspace = new CountingWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-1-live", branch: "issue-1-live", locked: false },
+    { path: "/worktrees/issue-2-live", branch: "issue-2-live", locked: false },
+  );
+  const agents = new CountingAgents();
+  agents.sessions = ["issue-5"];
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(3), issue(4), issue(5)];
+    },
+    async observeIssue(issueNumber: number) {
+      return issue(issueNumber);
+    },
+    async observeDependency(issueNumber: number) {
+      return issue(issueNumber);
+    },
+  };
+  const countingChanges: ChangeHost = {
+    ...changes,
+    async observeOpenChangeHeads() {
+      changeHeadCalls += 1;
+      return [
+        { number: 103, headRefName: "issue-3-pr-branch" },
+        { number: 104, headRefName: "issue-4-pr-branch" },
+      ];
+    },
+  };
+  const service = new DispatchService(options, source, countingChanges, workspace, agents, {
+    async write(): Promise<void> {},
+  });
+
+  const result = await service.run();
+
+  expect(result.capacity.starved).toBe(false);
+  // One observation of each global witness set per tick — not one per candidate.
+  expect(worktreeObservations).toBe(1);
+  expect(changeHeadCalls).toBe(1);
+  // Sessions stay targeted per-candidate probes (listSessions is lossy for
+  // un-namespaced opencode and swallows tmux failures); only candidates the
+  // snapshots cannot witness reach the probe.
+  expect(sessionProbes).toBe(1);
+});
+
 test("a detached-HEAD slot holder is named by its worktree identity, not an empty branch (#65)", async () => {
   const workspace = new FakeWorkspace();
   workspace.worktrees.push({

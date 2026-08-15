@@ -70,11 +70,8 @@ export class DispatchService {
     let slots = Math.max(0, capacity.max - capacity.active);
     if (slots === 0) {
       // Read-only: nothing can start here; this only decides whether the full
-      // slots are genuinely holding up work (#65). A candidate waits only if it
-      // would survive the same gates a slotted run applies — the slot holders
-      // themselves are open, labeled issues that #alreadyInFlight would block,
-      // and counting them starved every healthy at-capacity tick.
-      const starved = await this.#hasWaitingCandidate(await this.#observeCandidates());
+      // slots are genuinely holding up work (#65).
+      const starved = await this.#hasWaitingCandidate(await this.#observeCandidates(), heldBy);
       return { started, planned, blocked, failed, capacity: { ...capacity, starved } };
     }
 
@@ -114,10 +111,31 @@ export class DispatchService {
     );
   }
 
-  /** A candidate that passes every pre-start gate — the work starvation means (#65). */
-  async #hasWaitingCandidate(candidates: readonly IssueObservation[]): Promise<boolean> {
+  /**
+   * A candidate that would start if a slot were free — the work starvation
+   * means (#65). Worktrees and open change heads are observed once for the
+   * whole scan: per-candidate re-observation would re-run `git worktree list`
+   * and a full paginated `gh pr list` for every labeled issue on an
+   * at-capacity tick. Sessions stay per-candidate targeted probes —
+   * listSessions is lossy here (opencode filters to the score-<ns>- prefix,
+   * tmux's list swallows probe failures that sessionExists fails closed on).
+   */
+  async #hasWaitingCandidate(
+    candidates: readonly IssueObservation[],
+    heldBranches: readonly string[],
+  ): Promise<boolean> {
+    const changeHeads = await this.changeHost.observeOpenChangeHeads();
     for (const candidate of candidates) {
-      if (await this.#alreadyInFlight(candidate.number)) continue;
+      const prefix = issueBranchPrefix(candidate.number);
+      if (heldBranches.some((branch) => branch.startsWith(prefix))) continue;
+      if (changeHeads.some((change) => change.headRefName.startsWith(prefix))) continue;
+      if (
+        await this.agents.sessionExists(
+          sessionNameForIssue(this.options.namespace, candidate.number),
+        )
+      ) {
+        continue;
+      }
       if (!(await this.#dependenciesSatisfied(candidate))) continue;
       return true;
     }
@@ -168,7 +186,14 @@ export class DispatchService {
 
   async #alreadyInFlight(issueNumber: number): Promise<boolean> {
     const prefix = issueBranchPrefix(issueNumber);
-    if ((await this.#issueWorktrees()).some((worktree) => worktree.branch.startsWith(prefix))) {
+    // worktreeBranchIdentity: a detached-HEAD worktree reports an empty branch
+    // yet still holds its issue's slot — the raw branch would miss the
+    // holder's own issue and read it as dispatchable (#65 review).
+    if (
+      (await this.#issueWorktrees()).some((worktree) =>
+        worktreeBranchIdentity(worktree).startsWith(prefix),
+      )
+    ) {
       return true;
     }
     if (await this.agents.sessionExists(sessionNameForIssue(this.options.namespace, issueNumber))) {
