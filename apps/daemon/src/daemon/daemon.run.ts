@@ -575,6 +575,7 @@ export async function runDaemonLoop(
     managed ? fallback : positiveEnvironment(name, fallback);
   const maxMerges = positiveTuning("MAX_MERGES", 5);
   const soakTicks = positiveTuning("SOAK_TICKS", 2);
+  const staleTicks = positiveTuning("REPAIR_STALE_TICKS", 10);
   const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
     .split(",")
     .map((label) => label.trim().toLowerCase())
@@ -674,6 +675,9 @@ export async function runDaemonLoop(
           harnessOwnedPaths: agent.harness === "opencode" ? ["TASK.md"] : ["TASK.md", ".claude/"],
           autoPullMain: tuning("AUTO_PULL_MAIN") !== "0",
           namespace,
+          // The stranded ladder (#64) shares repair's silence knob on
+          // purpose: one notion of "agent gone quiet" for the whole daemon.
+          staleTicks,
         },
         github,
         git,
@@ -717,7 +721,7 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    const ledger = new RepairLedger(positiveTuning("REPAIR_STALE_TICKS", 10), namespace);
+    const ledger = new RepairLedger(staleTicks, namespace);
     const repair = new RepairService(
       {
         agent,
@@ -757,7 +761,10 @@ export async function runDaemonLoop(
           const result = await maintenance.runMaintenanceTick(dryRun);
           log.lines(renderMaintenanceTick(result));
           pass.cleaned += result.cleanup.filter(
-            (cleanup) => cleanup.action === "CLEANED" || cleanup.action === "PLANNED",
+            (cleanup) =>
+              cleanup.action === "CLEANED" ||
+              cleanup.action === "PLANNED" ||
+              cleanup.action === "STRANDED_RECLAIMED",
           ).length;
           pass.started += result.dispatch.started.length + result.dispatch.planned.length;
         },

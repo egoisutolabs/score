@@ -16,10 +16,25 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
         level: "warn",
         text: `⚠ skipping cleanup for PR #${cleanup.pullRequestNumber}: ${cleanup.message ?? "dirty worktree"}`,
       });
-    } else {
+    } else if (cleanup.action === "NOT_FOUND") {
       lines.push({
         level: "debug",
         text: `merged PR #${cleanup.pullRequestNumber} has no local worktree; nothing to clean`,
+      });
+    } else if (cleanup.action === "STRANDED_PINGED") {
+      lines.push({
+        level: "warn",
+        text: `⚠ ${cleanup.dryRun ? "(dry-run) would ping" : "pinged"} stranded issue #${cleanup.issueNumber}: worktree has no PR and no new commits`,
+      });
+    } else if (cleanup.action === "STRANDED_RECLAIMED") {
+      lines.push({
+        level: "info",
+        text: `${cleanup.dryRun ? "· (dry-run) would reclaim" : "✓ reclaimed"} stranded issue #${cleanup.issueNumber} (no PR, no commits, agent silent)`,
+      });
+    } else if (cleanup.action === "STRANDED_DIRTY") {
+      lines.push({
+        level: "warn",
+        text: `⚠ stranded issue #${cleanup.issueNumber} not reclaimed: ${cleanup.message ?? "dirty worktree"}`,
       });
     }
   }
@@ -44,7 +59,10 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
 
   // Quiet tick: nothing changed and nothing needs attention → no output at all.
   const cleaned = result.cleanup.filter(
-    (cleanup) => cleanup.action === "CLEANED" || cleanup.action === "PLANNED",
+    (cleanup) =>
+      cleanup.action === "CLEANED" ||
+      cleanup.action === "PLANNED" ||
+      cleanup.action === "STRANDED_RECLAIMED",
   ).length;
   const started = result.dispatch.started.length + result.dispatch.planned.length;
   const failed = result.dispatch.failed.length;
