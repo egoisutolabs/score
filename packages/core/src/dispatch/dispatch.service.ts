@@ -69,16 +69,13 @@ export class DispatchService {
     };
     let slots = Math.max(0, capacity.max - capacity.active);
     if (slots === 0) {
-      // Read-only: observing candidates here cannot start anything, it only
-      // decides whether the full slots are reported as holding up work (#65).
-      const eligible = await this.#observeCandidates();
-      return {
-        started,
-        planned,
-        blocked,
-        failed,
-        capacity: { ...capacity, starved: eligible.length > 0 },
-      };
+      // Read-only: nothing can start here; this only decides whether the full
+      // slots are genuinely holding up work (#65). A candidate waits only if it
+      // would survive the same gates a slotted run applies — the slot holders
+      // themselves are open, labeled issues that #alreadyInFlight would block,
+      // and counting them starved every healthy at-capacity tick.
+      const starved = await this.#hasWaitingCandidate(await this.#observeCandidates());
+      return { started, planned, blocked, failed, capacity: { ...capacity, starved } };
     }
 
     const candidates = await this.#observeCandidates();
@@ -115,6 +112,16 @@ export class DispatchService {
         isOpenChildIssue(issue, this.options.issues),
       ),
     );
+  }
+
+  /** A candidate that passes every pre-start gate — the work starvation means (#65). */
+  async #hasWaitingCandidate(candidates: readonly IssueObservation[]): Promise<boolean> {
+    for (const candidate of candidates) {
+      if (await this.#alreadyInFlight(candidate.number)) continue;
+      if (!(await this.#dependenciesSatisfied(candidate))) continue;
+      return true;
+    }
+    return false;
   }
 
   async #startIssue(issueNumber: number, dryRun: boolean): Promise<boolean> {

@@ -207,6 +207,78 @@ test("a zero-slot tick with no eligible candidates reports capacity without star
   });
 });
 
+test("at capacity with only in-flight candidates is a healthy tick, not starvation (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push(
+    { path: "/worktrees/issue-21-live-holder", branch: "issue-21-live-holder", locked: false },
+    { path: "/worktrees/issue-34-live-holder", branch: "issue-34-live-holder", locked: false },
+  );
+  // The slot holders themselves are open, labeled issues — observeIssues()
+  // still returns them, but #alreadyInFlight would block every one.
+  const holdersOnly: WorkSource = {
+    async observeIssues() {
+      return [issue(34), issue(21)];
+    },
+    async observeIssue(issueNumber: number) {
+      return issue(issueNumber);
+    },
+    async observeDependency(issueNumber: number) {
+      return issue(issueNumber);
+    },
+  };
+  const service = new DispatchService(options, holdersOnly, changes, workspace, new FakeAgents(), {
+    async write(): Promise<void> {},
+  });
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 2,
+    max: 2,
+    heldBy: ["issue-21-live-holder", "issue-34-live-holder"],
+    starved: false,
+  });
+});
+
+test("at capacity with only dependency-incomplete candidates is not starvation (#65)", async () => {
+  const workspace = new FakeWorkspace();
+  workspace.worktrees.push({
+    path: "/worktrees/issue-21-live-holder",
+    branch: "issue-21-live-holder",
+    locked: false,
+  });
+  const waitingOnAnOpenDependency: WorkSource = {
+    async observeIssues() {
+      return [{ ...issue(9), body: "## Dependencies\n- #1\n" }];
+    },
+    async observeIssue() {
+      return { ...issue(9), body: "## Dependencies\n- #1\n" };
+    },
+    async observeDependency() {
+      // Issue 1 is OPEN — dependency incomplete, so a free slot would not
+      // start this candidate either.
+      return issue(1);
+    },
+  };
+  const service = new DispatchService(
+    { ...options, maxParallelIssues: 1 },
+    waitingOnAnOpenDependency,
+    changes,
+    workspace,
+    new FakeAgents(),
+    { async write(): Promise<void> {} },
+  );
+
+  const result = await service.run();
+
+  expect(result.capacity).toEqual({
+    active: 1,
+    max: 1,
+    heldBy: ["issue-21-live-holder"],
+    starved: false,
+  });
+});
+
 test("a detached-HEAD slot holder is named by its worktree identity, not an empty branch (#65)", async () => {
   const workspace = new FakeWorkspace();
   workspace.worktrees.push({
