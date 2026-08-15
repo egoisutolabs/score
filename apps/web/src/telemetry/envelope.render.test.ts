@@ -283,6 +283,21 @@ test.each([
     "score.stream.caught_up",
     '{"through":{"k":{"project":"score","source":"telemetry","segment":"zzzz","byte_offset":0}},"follow":true}',
   ],
+  [
+    "caught-up cursor with an impossible calendar stamp",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"9999-99-99","byte_offset":0}},"follow":true}',
+  ],
+  [
+    "caught-up cursor with a February 30 stamp",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-02-30","byte_offset":0}},"follow":true}',
+  ],
+  [
+    "caught-up cursor with a zero month",
+    "score.stream.caught_up",
+    '{"through":{"k":{"project":"score","source":"telemetry","segment":"2026-00-15","byte_offset":0}},"follow":true}',
+  ],
   ["reserved metric name with no payload vocabulary", "score.telemetry.metric", "{}"],
   ["reserved log name with no payload vocabulary", "score.telemetry.log", "{}"],
 ])("malformed frame: %s", (_name, event, data) => {

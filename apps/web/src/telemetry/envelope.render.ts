@@ -193,6 +193,22 @@ function isSpanStatus(value: unknown): value is "ok" | "error" {
 /** Segments are dated files — the same stamp rule the store's sweeper trusts. */
 const SEGMENT_STAMP = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * A real UTC calendar date, not just digit positions: an impossible stamp
+ * (`9999-99-99`, `2026-02-30`) normalizes into a different day when parsed,
+ * and would sort as a phantom segment the reader reports ok while skipping
+ * everything. Components must round-trip through Date.UTC unchanged.
+ */
+function isCalendarStamp(segment: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(segment);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  return utc.getUTCFullYear() === year && utc.getUTCMonth() === month - 1 && utc.getUTCDate() === day;
+}
+
 /** The fleet cursor is the resume token — every entry must be a real cursor. */
 function isCursorMap(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
@@ -203,8 +219,9 @@ function isCursorMap(value: unknown): value is Record<string, unknown> {
       (cursor.source === "telemetry" || cursor.source === "log") &&
       string(cursor.segment) &&
       // A non-dated stamp sorts after every real segment, stranding the
-      // reader in a gap it reports as ok — only date stamps may resume.
+      // reader in a gap it reports as ok — only real dates may resume.
       SEGMENT_STAMP.test(cursor.segment) &&
+      isCalendarStamp(cursor.segment) &&
       // Offsets index into a byte buffer at line boundaries — negative or
       // fractional values would misalign a resumed read.
       Number.isInteger(cursor.byte_offset) &&
