@@ -194,6 +194,11 @@ test.each([
     '{"project":"score","health":"running"}',
   ],
   [
+    "record payload with a version the reader skips",
+    "score.telemetry.event",
+    '{"source":"telemetry","record":{"version":2,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y","resource":{"project":"score"}}}',
+  ],
+  [
     "record payload without a resource",
     "score.telemetry.event",
     '{"source":"telemetry","record":{"version":1,"kind":"event","time":"2026-08-15T00:00:00.000Z","name":"score.x.y"}}',

@@ -1,3 +1,4 @@
+import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
 import type {
   ErrorEnvelope,
   StreamEnvelope,
@@ -133,7 +134,9 @@ function isTelemetryRecordPayload(
     (payload.source === "telemetry" || payload.source === "log") &&
     isRecord(record) &&
     record.kind === event.slice("score.telemetry.".length) &&
-    typeof record.version === "number" &&
+    // The authoritative reader skips every other version — an envelope
+    // admitting one would promise data the stream never surfaces.
+    record.version === TELEMETRY_VERSION &&
     string(record.time) &&
     string(record.name) &&
     isResource(record.resource) &&
