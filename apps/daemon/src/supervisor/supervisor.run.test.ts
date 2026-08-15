@@ -477,6 +477,49 @@ test("restart death after install: job registered, a retried restart converges",
   expect(logs).toContain("restarted 'alpha'");
 });
 
+test("restart racing a config-changing up: the next up sees the stale definition and repairs it", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+
+  // Interleave a config edit + full `up` between restart's definition read
+  // and its stop, so restart re-installs the stale bytes on top of the new
+  // job — the worst-case ordering.
+  const real = deps.adapter;
+  let raced = false;
+  const racing: typeof real = {
+    install: (key, definition) => real.install(key, definition),
+    uninstall: (key) => real.uninstall(key),
+    start: (key) => real.start(key),
+    status: () => real.status(),
+    stop: async (key) => {
+      if (!raced) {
+        raced = true;
+        await writeConfig([projectBlock("alpha", "/repos/alpha2", 5000)]);
+        await runUp([], deps);
+      }
+      await real.stop(key);
+    },
+  };
+  await runRestart(["alpha"], racing);
+  expect(await readFile(join(agentsDir, "dev.score.alpha.plist"), "utf8")).not.toContain(
+    "/repos/alpha2",
+  );
+
+  runner.calls.length = 0;
+  logs = [];
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score.alpha"],
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=0 restarted=1 unchanged=0 removed=0");
+  expect(await readFile(join(agentsDir, "dev.score.alpha.plist"), "utf8")).toContain(
+    "/repos/alpha2",
+  );
+});
+
 test("a deregistered job with its definition kept: `up` re-installs and starts (TUI start parity)", async () => {
   await writeConfig([
     projectBlock("alpha", "/repos/alpha", 5000),
@@ -514,12 +557,16 @@ test("no lifecycle HTTP route: web/server sources touching routes or fetch carry
       const path = join(entry.parentPath, entry.name);
       if (path.includes(`${sep}node_modules${sep}`)) continue;
       const source = await readFile(path, "utf8");
-      if (
+      // Import boundary first: a route can hide lifecycle calls behind a
+      // helper, but the helper still has to import the supervisor feature
+      // or the TUI actions from somewhere in the app.
+      const importsLifecycle =
+        /from\s+["'](@score\/core\/supervisor|@score\/tui|@egoisutolabs\/score)/.test(source) ||
+        /\bsupervisor-adapter|launchd\.service|systemd\.service|supervisor\.run\b/.test(source);
+      const routeWithVerbs =
         /route|fetch/i.test(source) &&
-        /\b(install|uninstall|start|stop|restart|kickstart|bootout|bootstrap)\b/i.test(source)
-      ) {
-        offenders.push(path);
-      }
+        /\b(install|uninstall|start|stop|restart|kickstart|bootout|bootstrap)\b/i.test(source);
+      if (importsLifecycle || routeWithVerbs) offenders.push(path);
     }
   }
   expect(offenders).toEqual([]);

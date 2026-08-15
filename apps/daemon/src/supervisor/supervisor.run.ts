@@ -232,6 +232,11 @@ export async function runRestart(
   // systemd installs with `enable --now`), and a retried restart converges.
   await adapter.stop(key);
   await adapter.install(key, definition);
+  // Keep the "what install() last wrote" record accurate. Normally a no-op
+  // (the bytes came from this file), but a restart that raced a
+  // config-changing `up` re-installs stale bytes — recording them makes the
+  // next `up`'s drift check see the mismatch and repair it.
+  await writeFile(installedDefinitionPath(key), definition, "utf8");
   await adapter.start(key);
   console.log(`restarted '${key}'`);
 }
