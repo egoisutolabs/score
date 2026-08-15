@@ -39,3 +39,40 @@ test("briefing is project-agnostic: configured verification, repo facts delegate
   expect(markdown).not.toContain("MongoDB");
   expect(markdown).not.toContain("Repo: `score`");
 });
+
+test("self-review is ordered after verification and before commit", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity);
+  const instructions = markdown.slice(markdown.indexOf("## Completion Instructions"));
+
+  const verify = instructions.indexOf("Run required verification.");
+  const selfReview = instructions.indexOf("Self-review the full diff");
+  const commit = instructions.indexOf("Commit with a concise message");
+
+  expect(verify).toBeGreaterThan(-1);
+  expect(selfReview).toBeGreaterThan(verify);
+  expect(commit).toBeGreaterThan(selfReview);
+
+  // The review standard is the target repo's own rules, not Score's.
+  expect(instructions).toContain("stranger's PR");
+  expect(instructions).toContain("`AGENTS.md` Code Review Rules");
+  expect(instructions).toContain("`INVARIANTS.md` where present");
+  // Review-driven fixes cannot land unverified: the step demands re-verification.
+  const unwrapped = instructions.replace(/\s+/g, " ");
+  expect(unwrapped).toContain(
+    "If the review changed anything, re-run required verification over the fixes before committing.",
+  );
+});
+
+test("briefing forbids opening a PR while required verification fails", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity);
+  // Collapse the template's hard line wraps so prose can be matched as written.
+  const unwrapped = markdown.replace(/\s+/g, " ");
+
+  // The full clause: the prohibition plus its sole, explicitly-scoped escape
+  // hatch — weakening either must fail this test.
+  expect(unwrapped).toContain(
+    "Never open a PR while required verification fails: fix it, or — only for a pre-existing, unrelated failure — document that failure in the PR body and still run the rest.",
+  );
+});
