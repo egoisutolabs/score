@@ -22,11 +22,7 @@ import {
   TODAY,
   testDeps,
 } from "./fixtures/stream.fixture";
-import {
-  FOLLOW_QUEUE_LIMIT,
-  HEARTBEAT_FRAME,
-  HEARTBEAT_INTERVAL_MS,
-} from "./follow.service";
+import { FOLLOW_QUEUE_LIMIT, HEARTBEAT_FRAME, HEARTBEAT_INTERVAL_MS } from "./follow.service";
 import type { StreamDeps } from "./stream.service";
 import { StreamService } from "./stream.service";
 import { TAILER_POLL_INTERVAL_MS, TailerRegistry } from "./tailer.service";
@@ -82,7 +78,10 @@ async function collect(
   return await drain(outcome.frames);
 }
 
-async function pullUntil(gen: AsyncGenerator<string>, event: string): Promise<readonly ParsedFrame[]> {
+async function pullUntil(
+  gen: AsyncGenerator<string>,
+  event: string,
+): Promise<readonly ParsedFrame[]> {
   const seen: ParsedFrame[] = [];
   for (;;) {
     const next = await gen.next();
@@ -159,16 +158,27 @@ test("live follow: appends after caught_up arrive with advancing, per-source-ind
 
   // Mid-follow resume: the first follow frame's cursor reconnects at
   // exactly the records after it — the log line and probe 2, nothing twice.
-  const resumed = await collect(deps, "projects=score&signals=event,log&follow=false", first.envelope.cursor ?? null);
+  const resumed = await collect(
+    deps,
+    "projects=score&signals=event,log&follow=false",
+    first.envelope.cursor ?? null,
+  );
   expect(probeNs(resumed)).toEqual([2]);
   expect(
-    resumed.filter((frame) => frame.event === "score.log.record").map((frame) => (frame.envelope.data as { body: string }).body),
+    resumed
+      .filter((frame) => frame.event === "score.log.record")
+      .map((frame) => (frame.envelope.data as { body: string }).body),
   ).toEqual(["after"]);
 });
 
 test("resume matrix: reconnecting at every replay boundary yields the rest exactly", async () => {
   const dir = newProjectsDir();
-  seedRecords(dir, "score", TODAY, [0, 1, 2, 3, 4].map((n) => probe(n)));
+  seedRecords(
+    dir,
+    "score",
+    TODAY,
+    [0, 1, 2, 3, 4].map((n) => probe(n)),
+  );
   const deps = testDeps(dir);
   const full = await collect(deps, "projects=score&signals=event&follow=false");
   const records = full.filter((frame) => frame.event === "score.telemetry.event");
@@ -304,9 +314,7 @@ test("the 1025th queued envelope disconnects; the last written cursor resumes ex
   // The client's last written cursor (caught_up) resumes with every flooded
   // record — no gap, no duplicate.
   const resumed = await collect(deps, "projects=score&signals=event&follow=false", caughtUp);
-  expect(probeNs(resumed)).toEqual(
-    Array.from({ length: FOLLOW_QUEUE_LIMIT + 1 }, (_, i) => i + 1),
-  );
+  expect(probeNs(resumed)).toEqual(Array.from({ length: FOLLOW_QUEUE_LIMIT + 1 }, (_, i) => i + 1));
 
   // Exactly at the ceiling nothing disconnects: the stream keeps serving.
   const gen2 = await subscribe(deps, "projects=score&signals=event");

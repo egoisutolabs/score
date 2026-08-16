@@ -87,7 +87,10 @@ export class FollowService {
     // scan in progress, and rotation order rides on replay's segment walk.
     const scan = (): void => {
       if (overflowed || closing) return;
-      const plan = planReplay(replayService.captureMarks(params.projects, params.sources), components);
+      const plan = planReplay(
+        replayService.captureMarks(params.projects, params.sources),
+        components,
+      );
       if (!plan.ok) {
         // Retention deleted a segment the cursor still names: the position
         // is unrecoverable — one warning, then a clean close. The client
