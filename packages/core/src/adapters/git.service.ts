@@ -186,19 +186,17 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     // "ignored by the staged tree" evidence must be captured first — and
     // persisted, so a death between the abort and the sweep converges on the
     // next startup sweep instead of leaving the primary wedged (#92).
+    // A capture failure must throw BEFORE the abort runs: aborting without
+    // the listing loses the staged ignore rules forever (nothing could ever
+    // identify the residue again), while a still-staged merge keeps its
+    // MERGE_HEAD, which startup's self-heal aborts with a fresh capture.
     if (this.options.dryRun !== true) {
-      try {
-        const snapshot = await this.#readStageSnapshot();
-        if (snapshot !== undefined) {
-          await this.#writeStageSnapshot({
-            ...snapshot,
-            stagedIgnored: statusPaths(await this.#statusWithIgnored(), "!!"),
-          });
-        }
-      } catch {
-        // Evidence capture must never block the abort itself; without the
-        // listing the sweep simply skips, leaving residue visible as dirt —
-        // the pre-#92 behavior, never worse.
+      const snapshot = await this.#readStageSnapshot();
+      if (snapshot !== undefined) {
+        await this.#writeStageSnapshot({
+          ...snapshot,
+          stagedIgnored: statusPaths(await this.#statusWithIgnored(), "!!"),
+        });
       }
     }
     await this.#run(["merge", "--abort"], true);
@@ -215,9 +213,15 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
    * leftovers were bare untracked dirt that silently wedged landing and
    * auto-pull for hours). Only paths meeting all three of: ignored by the
    * staged tree, absent from the pre-stage snapshot, and currently plain
-   * untracked dirt — so tracked files, operator files, and anything git still
-   * ignores (.env, .turbo) can never qualify. Idempotent and a no-op without
-   * a snapshot; startup calls it to finish a sweep a death interrupted.
+   * untracked dirt — so tracked files, pre-stage operator files, unignored
+   * mid-gate operator files, and anything git still ignores (.env, .turbo)
+   * can never qualify. The one accepted gap: a file an operator creates
+   * during the gate window under a path only the staged PR's new .gitignore
+   * covers is content-free indistinguishable from gate output and is swept —
+   * the primary is daemon-owned (#92), and sparing every newly-ignored path
+   * would deterministically re-create the #68 wedge. Idempotent and a no-op
+   * without a snapshot; startup and each landing tick call it to finish a
+   * sweep a death or error interrupted.
    */
   async sweepStageResidue(): Promise<readonly string[]> {
     if (this.options.dryRun === true) return [];
@@ -367,8 +371,16 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
   async #statusWithIgnored(): Promise<string> {
     // --ignored=matching: an ignored directory collapses to one "!! dir/"
     // entry, the unit the sweep deletes; -uall keeps plain dirt per-file.
+    // -z: NUL-delimited, unquoted paths — C-quoted names would otherwise
+    // drop out of the baseline and lose their protection from the sweep.
     return requireSuccess(
-      await this.#run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"]),
+      await this.#run([
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+      ]),
     ).stdout;
   }
 
@@ -424,18 +436,24 @@ async function isDirectory(path: string): Promise<boolean> {
 }
 
 /**
- * Paths from porcelain status lines, optionally only those with the given XY
- * code. Git C-quotes paths with special characters; those are skipped rather
- * than dequoted — a wrong literal must never reach rm, and build outputs
- * don't carry quotable names.
+ * Paths from NUL-delimited (`-z`) porcelain status output, optionally only
+ * those with the given XY code. -z carries paths verbatim — no C-quoting —
+ * so names with spaces or non-ASCII stay in the baseline and keep their
+ * protection from the sweep.
  */
 export function statusPaths(status: string, code?: string): readonly string[] {
-  return status
-    .split(/\r?\n/)
-    .filter((line) => line.trim() !== "")
-    .filter((line) => code === undefined || line.startsWith(`${code} `))
-    .map((line) => line.slice(3))
-    .filter((path) => !path.startsWith('"'));
+  const paths: string[] = [];
+  const tokens = status.split("\0");
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    // Shortest valid entry is "XY p": two-column code, space, path.
+    if (token === undefined || token.length < 4 || token[2] !== " ") continue;
+    const xy = token.slice(0, 2);
+    // Rename/copy entries carry the original path as an extra NUL field.
+    if (xy.includes("R") || xy.includes("C")) index += 1;
+    if (code === undefined || xy === code) paths.push(token.slice(3));
+  }
+  return paths;
 }
 
 /** Equal, or one inside the other (porcelain directory entries end in "/"). */

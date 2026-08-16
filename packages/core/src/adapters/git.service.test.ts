@@ -408,7 +408,7 @@ test("a failed abort keeps the snapshot so the eventual successful abort still s
         command,
         options,
         0,
-        staged ? "!! apps/web/.next/\n" : "?? apps/web/.next/chunk.js\n",
+        staged ? "!! apps/web/.next/\0" : "?? apps/web/.next/chunk.js\0",
       );
     }
     return result(command, options);
@@ -481,10 +481,53 @@ test("stageResidue: only staged-ignored entries that are new and now plain dirt 
   ).toEqual(["apps/web/.next"]);
 });
 
-test("statusPaths filters by code and refuses git's C-quoted paths", () => {
-  const status = '?? plain.md\n!! dir/\n?? "with space.md"\n';
-  expect(statusPaths(status)).toEqual(["plain.md", "dir/"]);
-  expect(statusPaths(status, "??")).toEqual(["plain.md"]);
+test("statusPaths parses -z entries, keeping quotable names and skipping rename origins", () => {
+  const status = "?? plain.md\0!! dir/\0?? with space.md\0R  renamed.md\0original.md\0";
+  expect(statusPaths(status)).toEqual(["plain.md", "dir/", "with space.md", "renamed.md"]);
+  expect(statusPaths(status, "??")).toEqual(["plain.md", "with space.md"]);
+});
+
+test("a pre-stage operator file with a quotable name keeps its directory out of the sweep (#92)", async () => {
+  const { repo, git, webBranchSha } = await residueFixture();
+  // Under the path the PR will ignore, named with a space — line-oriented
+  // porcelain would C-quote it out of the baseline; -z keeps it verbatim.
+  await mkdir(join(repo, "apps", "web", ".next"), { recursive: true });
+  await writeFile(join(repo, "apps", "web", ".next", "operator note.txt"), "keep\n");
+
+  expect(await git.stageMerge(webBranchSha)).toBe(true);
+  await writeFile(join(repo, "apps", "web", ".next", "chunk.js"), "built\n");
+  await git.abortMerge();
+
+  // The ignored entry overlaps a pre-stage path, so the whole directory is
+  // spared — the gate's chunk stays behind as loud dirt rather than risking
+  // the operator's file.
+  expect(existsSync(join(repo, "apps", "web", ".next", "operator note.txt"))).toBe(true);
+  expect(existsSync(join(repo, "apps", "web", ".next", "chunk.js"))).toBe(true);
+});
+
+test("a failed evidence capture blocks the abort so the staged merge stays recoverable (#92)", async () => {
+  const root = await sandbox();
+  const repositoryPath = join(root, "repo");
+  await mkdir(join(repositoryPath, ".git"), { recursive: true });
+  await writeFile(
+    join(repositoryPath, ".git", "score-stage-snapshot.json"),
+    JSON.stringify({ before: [] }),
+  );
+  const runner = new ScriptRunner((command, options) => {
+    const args = command.slice(1);
+    if (args[0] === "rev-parse" && args.includes("--absolute-git-dir")) {
+      return result(command, options, 0, `${join(repositoryPath, ".git")}\n`);
+    }
+    // The staged status query fails; aborting anyway would lose the staged
+    // ignore rules forever, so the abort must not run.
+    if (args[0] === "status") return result(command, options, 128);
+    return result(command, options);
+  });
+  const git = new GitService(runner, { repositoryPath, workspaceRoot: join(root, "wt") });
+
+  await expect(git.abortMerge()).rejects.toThrow();
+  expect(runner.commands.some((command) => command[1] === "merge")).toBe(false);
+  expect(existsSync(join(repositoryPath, ".git", "score-stage-snapshot.json"))).toBe(true);
 });
 
 test("seedClaudeDirectory: false leaves the worktree without a copied .claude", async () => {

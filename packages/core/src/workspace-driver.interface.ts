@@ -35,6 +35,12 @@ export interface LandingWorkspace {
   /** Stage a merge of the exact observed commit — callers pass a SHA, not a mutable ref. */
   stageMerge(commit: string): Promise<boolean>;
   abortMerge(): Promise<void>;
+  /**
+   * Finish a residue sweep an earlier abort left behind (#92) — idempotent,
+   * no-op without persisted evidence. Landing runs it each tick before the
+   * checkout-readiness check, or the very dirt it would remove blocks it.
+   */
+  sweepStageResidue(): Promise<readonly string[]>;
   commitMerge(message: string): Promise<void>;
   pushDefaultBranch(defaultBranch: string): Promise<void>;
   fastForwardDefaultBranch(defaultBranch: string): Promise<boolean>;
