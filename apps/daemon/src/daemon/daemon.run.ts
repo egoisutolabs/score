@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -27,13 +26,7 @@ import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.rende
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
-import type {
-  TelemetryAttributes,
-  TelemetryEvent,
-  TelemetryRecord,
-} from "@score/core/telemetry/telemetry.interface";
-import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
-import { GAP_RECORD_NAME, TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
+import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import {
   BunCommandRunner,
   LoggingCommandRunner,
@@ -58,12 +51,12 @@ import { createLogger } from "@score/shared/log";
 import { GitHubService } from "@score/tracker/github.service";
 import { renderRepairRun } from "../repair/repair.run";
 import { proveLandingAuthorship } from "./recovery.policy";
-import type { TelemetryRenderContext } from "./telemetry.render";
 import {
+  PassTelemetry,
   renderLandingTelemetry,
   renderMaintenanceTickTelemetry,
   renderRepairTelemetry,
-} from "./telemetry.render";
+} from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
@@ -519,153 +512,6 @@ interface DaemonLoopOverrides {
   readonly telemetrySink?: Pick<TelemetryLogService, "append">;
 }
 
-/** Correlation IDs are hex derived from crypto.randomUUID() — no OTel SDK, no traceparent. */
-const hexId = (): string => randomUUID().replaceAll("-", "");
-
-/**
- * The #79 wiring around the phases: one score.tick span per pass, one
- * score.phase child per phase run, decision events mapped at composition
- * (locked decision 10) — all appended through the append-only log. Locked
- * decision 9 makes failure visible but never authoritative: no method here
- * throws, phases never see this object, and a FAILED append costs one debug
- * line, at most one warn per pass, and a gap record counted on recovery.
- */
-class PassTelemetry {
-  /** Appends lost since the last APPENDED — the count the recovery gap reports. */
-  private lost = 0;
-  private warnedThisPass = false;
-  private traceId = "";
-  private tickSpanId = "";
-  private tickNumber = 0;
-  private tickStartedAt = 0;
-  private phaseSpanId = "";
-  private phaseStartedAt = 0;
-
-  constructor(
-    private readonly sink: Pick<TelemetryLogService, "append">,
-    private readonly project: string,
-    private readonly dryRun: boolean,
-    private readonly log: Logger,
-  ) {}
-
-  /** Opens the pass's root span; nothing is appended until closeTick. */
-  openTick(tick: number): void {
-    this.traceId = hexId();
-    this.tickSpanId = hexId();
-    this.tickNumber = tick;
-    this.tickStartedAt = Date.now();
-    this.warnedThisPass = false;
-  }
-
-  closeTick(status: "ok" | "error"): void {
-    this.appendSpan("score.tick", this.tickSpanId, undefined, this.tickStartedAt, status, {
-      trace_id: this.traceId,
-      tick: this.tickNumber,
-      dry_run: this.dryRun,
-    });
-  }
-
-  beginPhase(): void {
-    this.phaseSpanId = hexId();
-    this.phaseStartedAt = Date.now();
-  }
-
-  endPhase(name: string, status: "ok" | "error"): void {
-    this.appendSpan("score.phase", this.phaseSpanId, this.tickSpanId, this.phaseStartedAt, status, {
-      trace_id: this.traceId,
-      phase: name,
-      dry_run: this.dryRun,
-    });
-  }
-
-  /** Mapped decision records, correlated to the phase span currently open. */
-  decisions(render: (ctx: TelemetryRenderContext) => readonly TelemetryEvent[]): void {
-    const ctx: TelemetryRenderContext = {
-      project: this.project,
-      ts: new Date().toISOString(),
-      dryRun: this.dryRun,
-    };
-    let records: readonly TelemetryEvent[];
-    // The mapper is pure, but a throw here must degrade like a failed append
-    // (locked decision 9) — never bubble into the phase that just succeeded.
-    try {
-      records = render(ctx);
-    } catch {
-      this.recordFailure("decision mapping threw", this.phaseSpanId);
-      return;
-    }
-    for (const record of records) {
-      this.append(
-        {
-          ...record,
-          attributes: { ...record.attributes, trace_id: this.traceId, span_id: this.phaseSpanId },
-        },
-        this.phaseSpanId,
-      );
-    }
-  }
-
-  private appendSpan(
-    name: string,
-    spanId: string,
-    parentSpanId: string | undefined,
-    startedAt: number,
-    status: "ok" | "error",
-    attributes: TelemetryAttributes,
-  ): void {
-    this.append(
-      {
-        v: TELEMETRY_VERSION,
-        ts: new Date().toISOString(),
-        project: this.project,
-        signal: "span",
-        name,
-        span_id: spanId,
-        ...(parentSpanId === undefined ? {} : { parent_span_id: parentSpanId }),
-        duration_ms: Date.now() - startedAt,
-        status,
-        attributes,
-      },
-      spanId,
-    );
-  }
-
-  private append(record: TelemetryRecord, spanId: string): void {
-    if (this.sink.append(record) === "FAILED") {
-      this.recordFailure(`append FAILED: ${record.name}`, spanId);
-      return;
-    }
-    if (this.lost > 0) {
-      const lost = this.lost;
-      // Reset before the gap append: a FAILED gap re-enters recordFailure and
-      // is itself counted, so the next success reports it — bounded, no loop.
-      this.lost = 0;
-      this.append(
-        {
-          v: TELEMETRY_VERSION,
-          ts: new Date().toISOString(),
-          project: this.project,
-          signal: "event",
-          name: GAP_RECORD_NAME,
-          attributes: { lost, trace_id: this.traceId, dry_run: this.dryRun },
-        },
-        spanId,
-      );
-    }
-  }
-
-  private recordFailure(reason: string, spanId: string): void {
-    this.lost += 1;
-    this.log.debug(`telemetry ${reason} (trace_id=${this.traceId} span_id=${spanId})`);
-    if (!this.warnedThisPass) {
-      this.warnedThisPass = true;
-      this.log.warn(
-        `telemetry appends failing; records are lost until recovery (trace_id=${this.traceId} span_id=${spanId})`,
-      );
-    }
-  }
-}
-
 export async function runDaemon(args: readonly string[]): Promise<void> {
   const parsed = parseDaemonArguments(args);
   // Validate before ANY path is built from the key: logsDir/statusPath join it
@@ -733,16 +579,29 @@ export async function runDaemonLoop(
   }
   // #79: instrumentation is project-scoped — segments live under the project
   // dir, so unmanaged discovery mode (no key, out of scope) stays untraced.
-  const telemetry =
-    parsed.project === undefined
-      ? undefined
-      : new PassTelemetry(
-          overrides?.telemetrySink ??
-            new TelemetryLogService(telemetryDir(parsed.project), { project: parsed.project }),
-          parsed.project,
-          dryRun,
-          log,
-        );
+  let sweepTelemetryRetention: (() => void) | undefined;
+  const telemetry = (() => {
+    const project = parsed.project;
+    if (project === undefined) return undefined;
+    let sink = overrides?.telemetrySink;
+    if (sink === undefined) {
+      const telemetryLog = new TelemetryLogService(telemetryDir(project), { project });
+      if (logRetentionDays !== undefined) {
+        // Same boundary as file-log retention: segments strictly older than
+        // the configured days are swept, now and once per pass — one readdir
+        // instead of midnight bookkeeping. A sweep failure is telemetry's to
+        // eat, never the pass's (locked decision 9).
+        sweepTelemetryRetention = () => {
+          try {
+            telemetryLog.sweepRetention(logRetentionDays);
+          } catch {}
+        };
+        sweepTelemetryRetention();
+      }
+      sink = telemetryLog;
+    }
+    return new PassTelemetry(sink, project, dryRun, log);
+  })();
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
   const tuning = (name: string): string | undefined => (managed ? undefined : process.env[name]);
@@ -1044,55 +903,64 @@ export async function runDaemonLoop(
         observations.startPass();
         for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
         telemetry?.openTick(currentTick);
-
-        // D1 reconciliation runs before the phases of every pass, not only at
-        // startup (the first pass runs immediately, so this is the startup
-        // check too): a caught pushDefaultBranch failure strands a committed
-        // merge while the daemon lives, and landing must see the recovered
-        // checkout, never stage on top of the wedge. Unconditional, not
-        // managed-only: every mode that runs this loop lands merges on this
-        // checkout, so every mode owns the recovery of its own wedge.
-        // Transient git failures (a fetch blip, say) degrade to a warning
-        // like any phase error — but they also block landing this pass, and
-        // only failed post-reset verification may crash the daemon.
+        sweepTelemetryRetention?.();
         try {
-          landingBlocked =
-            (await reconcileUnpushedLandingMerge(git, log, {
-              dryRun,
-              defaultBranch: runtime.defaultBranch,
-              repositoryOwner: runtime.repository.split("/")[0] as string,
-            })) === "blocked";
+          // D1 reconciliation runs before the phases of every pass, not only at
+          // startup (the first pass runs immediately, so this is the startup
+          // check too): a caught pushDefaultBranch failure strands a committed
+          // merge while the daemon lives, and landing must see the recovered
+          // checkout, never stage on top of the wedge. Unconditional, not
+          // managed-only: every mode that runs this loop lands merges on this
+          // checkout, so every mode owns the recovery of its own wedge.
+          // Transient git failures (a fetch blip, say) degrade to a warning
+          // like any phase error — but they also block landing this pass, and
+          // only failed post-reset verification may crash the daemon.
+          try {
+            landingBlocked =
+              (await reconcileUnpushedLandingMerge(git, log, {
+                dryRun,
+                defaultBranch: runtime.defaultBranch,
+                repositoryOwner: runtime.repository.split("/")[0] as string,
+              })) === "blocked";
+          } catch (error) {
+            if (error instanceof RecoveryVerificationError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            log.warn(`✗ reconciliation failed: ${message}`);
+            passError = `reconcile: ${message}`;
+            landingBlocked = true;
+          }
+
+          await daemon.runPass();
+
+          const elapsedMs = Date.now() - startedAt;
+          const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
+          log.lines([
+            {
+              level: changed > 0 ? "info" : "debug",
+              text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
+            },
+          ]);
+          // Phases are sequential by design; a pass longer than the tick just
+          // delays the next one. Say so instead of trying to catch up.
+          if (elapsedMs > tickIntervalMs) {
+            log.warn(
+              `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
+            );
+          }
+          await status?.write({
+            last_pass_completed_at: new Date().toISOString(),
+            last_error: passError,
+            last_gate_failure: lastGateFailure,
+          });
+          telemetry?.closeTick(passError === null ? "ok" : "error");
         } catch (error) {
-          if (error instanceof RecoveryVerificationError) throw error;
-          const message = error instanceof Error ? error.message : String(error);
-          log.warn(`✗ reconciliation failed: ${message}`);
-          passError = `reconcile: ${message}`;
-          landingBlocked = true;
+          // A fatal pass exit (RecoveryVerificationError, a rejecting status
+          // write) must still close the root span: phase records already
+          // appended would otherwise be orphans, and a pass that died before
+          // any phase would be invisible in the trace stream.
+          telemetry?.closeTick("error");
+          throw error;
         }
-
-        await daemon.runPass();
-
-        const elapsedMs = Date.now() - startedAt;
-        const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
-        log.lines([
-          {
-            level: changed > 0 ? "info" : "debug",
-            text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
-          },
-        ]);
-        // Phases are sequential by design; a pass longer than the tick just
-        // delays the next one. Say so instead of trying to catch up.
-        if (elapsedMs > tickIntervalMs) {
-          log.warn(
-            `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
-          );
-        }
-        await status?.write({
-          last_pass_completed_at: new Date().toISOString(),
-          last_error: passError,
-          last_gate_failure: lastGateFailure,
-        });
-        telemetry?.closeTick(passError === null ? "ok" : "error");
       },
       parsed.once,
       tickIntervalMs,

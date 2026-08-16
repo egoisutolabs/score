@@ -1641,12 +1641,18 @@ function readStoredTelemetry(home: string): TelemetryRecord[] {
 async function runTracedLoop(
   fixture: TracedFixture,
   dryRun: boolean,
-  telemetrySink?: Pick<TelemetryLogService, "append">,
+  overrides: {
+    telemetrySink?: Pick<TelemetryLogService, "append">;
+    log?: CaptureLogger;
+    status?: (path: string) => StatusWriter;
+  } = {},
 ): Promise<{
   requests: { method: string; path: string }[];
   records: TelemetryRecord[];
   logged: LogLine[];
   status: Record<string, unknown>;
+  /** The loop's rejection, if any — fatal-exit tests assert on it. */
+  error: unknown;
 }> {
   let result!: Awaited<ReturnType<typeof runTracedLoop>>;
   await withEnv({ SCORE_HOME: fixture.home }, async () => {
@@ -1661,29 +1667,37 @@ async function runTracedLoop(
       const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
       const fileLog = createFileLogger(join(runsDir, "logs"), false);
       const statusFile = join(runsDir, "status.json");
-      const status = new StatusWriter(statusFile);
+      const status = (overrides.status ?? ((path) => new StatusWriter(path)))(statusFile);
       const runner = new FakeRunner(managedResponsesOpencode(fixture.repo));
-      const log = new CaptureLogger();
+      const log = overrides.log ?? new CaptureLogger();
       const parsed = parseDaemonArguments(
         dryRun ? ["--project", "demo", "--once", "--dry-run"] : ["--project", "demo", "--once"],
       );
 
-      await runDaemonLoop(
-        parsed,
-        log,
-        { fileLog, status },
-        {
-          createOpencodeServer,
-          runner,
-          ...(telemetrySink === undefined ? {} : { telemetrySink }),
-        },
-      );
+      let error: unknown;
+      try {
+        await runDaemonLoop(
+          parsed,
+          log,
+          { fileLog, status },
+          {
+            createOpencodeServer,
+            runner,
+            ...(overrides.telemetrySink === undefined
+              ? {}
+              : { telemetrySink: overrides.telemetrySink }),
+          },
+        );
+      } catch (caught) {
+        error = caught;
+      }
 
       result = {
         requests: stub.requests,
         records: readStoredTelemetry(fixture.home),
         logged: log.logged,
         status: JSON.parse(await readFile(statusFile, "utf8")),
+        error,
       };
     } finally {
       stub.close();
@@ -1742,9 +1756,14 @@ test("failure isolation: a pass with every append failing matches the control pa
   const fixture = await tracedFixture();
   // Failing run first: the control run writes real segments into the shared
   // home, and this order proves the failing pass stored nothing at all.
-  const failing = await runTracedLoop(fixture, false, { append: () => "FAILED" });
+  const failing = await runTracedLoop(fixture, false, {
+    telemetrySink: { append: () => "FAILED" },
+  });
   expect(failing.records).toEqual([]);
   const control = await runTracedLoop(fixture, false);
+  // Identical exit behavior: both passes resolve, neither dies.
+  expect(failing.error).toBeUndefined();
+  expect(control.error).toBeUndefined();
 
   // Telemetry's own prose is the only permitted difference between the runs.
   // The summary's wall-clock suffix is measurement, not behavior — normalized
@@ -1785,7 +1804,7 @@ test("the first append after failures records one gap counting the loss", async 
       return "APPENDED";
     },
   };
-  const { logged } = await runTracedLoop(await tracedFixture(), false, sink);
+  const { logged } = await runTracedLoop(await tracedFixture(), false, { telemetrySink: sink });
 
   const gaps = stored.filter((record) => record.name === "score.telemetry.gap");
   expect(gaps).toHaveLength(1);
@@ -1795,6 +1814,60 @@ test("the first append after failures records one gap counting the loss", async 
   const telemetryLines = logged.filter((line) => line.text.startsWith("telemetry"));
   expect(telemetryLines.filter((line) => line.level === "warn")).toHaveLength(1);
   expect(telemetryLines.filter((line) => line.level === "debug")).toHaveLength(2);
+}, 20_000);
+
+test("a fatal pass exit still closes the tick span as error", async () => {
+  // A rejecting final status write is the cheapest deterministic fatal exit
+  // after phases ran; RecoveryVerificationError leaves through the same path.
+  class ExplodingStatusWriter extends StatusWriter {
+    override write(patch: Parameters<StatusWriter["write"]>[0]): Promise<void> {
+      if ("last_pass_completed_at" in patch) return Promise.reject(new Error("status disk full"));
+      return super.write(patch);
+    }
+  }
+  const { records, error } = await runTracedLoop(await tracedFixture(), false, {
+    status: (path) => new ExplodingStatusWriter(path),
+  });
+  expect((error as Error).message).toBe("status disk full");
+  const ticks = records.filter((record): record is TelemetrySpan => record.name === "score.tick");
+  expect(ticks).toHaveLength(1);
+  expect(ticks[0]?.status).toBe("error");
+  // The phase children appended before the fatal write keep their root span.
+  expect(records.filter((record) => record.name === "score.phase")).toHaveLength(3);
+}, 20_000);
+
+test("a throwing logger during telemetry failure still cannot fail the pass", async () => {
+  // The logger can share the failing disk with the sink; loss reporting must
+  // die inside telemetry, never surface as a phase or pass error.
+  class ExplodingLogger extends CaptureLogger {
+    override warn(text: string): void {
+      if (text.startsWith("telemetry")) throw new Error("log disk full");
+      super.warn(text);
+    }
+    override debug(text: string): void {
+      if (text.startsWith("telemetry")) throw new Error("log disk full");
+      super.debug(text);
+    }
+  }
+  const { status, error } = await runTracedLoop(await tracedFixture(), false, {
+    telemetrySink: { append: () => "FAILED" },
+    log: new ExplodingLogger(),
+  });
+  expect(error).toBeUndefined();
+  expect(status.last_error).toBeNull();
+}, 20_000);
+
+test("configured retention sweeps old telemetry segments", async () => {
+  const fixture = await tracedFixture();
+  const dir = join(fixture.home, "projects", "demo", "telemetry");
+  await mkdir(dir, { recursive: true });
+  // Ancient segment, far past the resolved default retention window.
+  await writeFile(join(dir, "2000-01-01.jsonl"), "");
+  const { records, error } = await runTracedLoop(fixture, false);
+  expect(error).toBeUndefined();
+  expect(existsSync(join(dir, "2000-01-01.jsonl"))).toBe(false);
+  // The sweep removed history, not the pass's own fresh segment.
+  expect(records.some((record) => record.name === "score.tick")).toBe(true);
 }, 20_000);
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
