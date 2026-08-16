@@ -17,7 +17,7 @@ function landing(pr: number, tag: string, ts: string, dryRun = false): DecisionE
     ts,
     name: "score.landing.decision",
     subject: { pull_request_number: pr },
-    attributes: { tag, ...(dryRun && { dry_run: true }) },
+    attributes: { tag, dry_run: dryRun },
   };
 }
 
@@ -27,7 +27,7 @@ function repair(pr: number, action: string, ts: string, dryRun = false): Decisio
     ts,
     name: "score.repair.decision",
     subject: { pull_request_number: pr },
-    attributes: { action, ...(dryRun && { dry_run: true }) },
+    attributes: { action, dry_run: dryRun },
   };
 }
 
@@ -45,7 +45,7 @@ function dispatch(
     attributes: {
       decision,
       ...(opts.reason !== undefined && { reason: opts.reason }),
-      ...(opts.dryRun === true && { dry_run: true }),
+      dry_run: opts.dryRun === true,
     },
   };
 }
@@ -53,14 +53,16 @@ function dispatch(
 function cleanup(
   ts: string,
   action: string,
-  opts: { session?: string; body?: string } = {},
+  opts: { issue?: number; body?: string } = {},
 ): DecisionEvent {
+  // Stranded cleanups are keyed by issue — the emitter never produces a
+  // session subject for them (renderCleanupTelemetry).
   return {
     project: PROJECT,
     ts,
     name: "score.cleanup.decision",
-    ...(opts.session !== undefined && { subject: { session: opts.session } }),
-    attributes: { action },
+    ...(opts.issue !== undefined && { subject: { issue_number: opts.issue } }),
+    attributes: { action, dry_run: false },
     ...(opts.body !== undefined && { body: opts.body }),
   };
 }
@@ -229,7 +231,7 @@ test("feedRows renders each phase's terse line, newest first, capped at limit", 
     landing(218, "soaking", "2026-08-16T10:00:02Z"),
     repair(221, "PINGED", "2026-08-16T10:00:03Z"),
     cleanup("2026-08-16T10:00:04Z", "STRANDED_RECLAIMED", {
-      session: "wt-42",
+      issue: 42,
       body: "worktree reclaimed after ping timeout",
     }),
     dispatch(9, "started", "2026-08-16T10:00:05Z"),
@@ -239,7 +241,7 @@ test("feedRows renders each phase's terse line, newest first, capped at limit", 
     {
       ts: "2026-08-16T10:00:04Z",
       kind: "cleanup",
-      text: "wt-42 reclaimed — worktree reclaimed after ping timeout",
+      text: "issue 42 reclaimed — worktree reclaimed after ping timeout",
     },
     { ts: "2026-08-16T10:00:03Z", kind: "repair", text: "#221 pinged" },
     { ts: "2026-08-16T10:00:02Z", kind: "soaking", text: "#218 soaking" },

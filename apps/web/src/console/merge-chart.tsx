@@ -83,8 +83,11 @@ export function MergeChart({
     <div className="w-full">
       <div role="img" aria-label={summary}>
         {/* The border-b is the 1px recessive baseline; bars anchor onto it,
-            and it stays visible as an empty track when there are no buckets. */}
-        <div className="relative h-24 w-full border-b border-border">
+            and it stays visible as an empty track when there are no buckets.
+            Height is literal px, NOT rem: the label offsets below are CSS px
+            derived from viewBox units, so a font-relative height would shear
+            labels off their bars under browser font scaling. */}
+        <div className="relative w-full border-b border-border" style={{ height: PLOT_H }}>
           {count > 0 && (
             // aria-hidden: the role="img" wrapper carries the accessible name;
             // per-bar <title>s exist for hover tooltips, not for AT.
@@ -114,7 +117,9 @@ export function MergeChart({
           {[...labeled].map((index) => (
             <span
               key={buckets[index].day}
-              className="pointer-events-none absolute -translate-x-1/2 text-[10px] text-muted-foreground tabular-nums"
+              // leading-none keeps the tallest bar's label line box inside
+              // MAX_BAR_H's headroom instead of inheriting line-height 1.5.
+              className="pointer-events-none absolute -translate-x-1/2 text-[10px] leading-none text-muted-foreground tabular-nums"
               style={{
                 left: `${((index + 0.5) / count) * 100}%`,
                 bottom: `${heights[index] + 3}px`,

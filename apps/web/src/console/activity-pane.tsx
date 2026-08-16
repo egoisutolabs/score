@@ -43,6 +43,7 @@ function Tab({
 export function ActivityPane({
   rows,
   live,
+  degraded,
   journal,
   follow,
   onFollowChange,
@@ -52,6 +53,8 @@ export function ActivityPane({
 }: {
   readonly rows: readonly FeedRow[];
   readonly live: boolean;
+  /** The stream warned mid-replay: what's shown may be missing history. */
+  readonly degraded: boolean;
   readonly journal: { readonly lines: readonly LogLine[]; readonly live: boolean };
   readonly follow: boolean;
   readonly onFollowChange: (follow: boolean) => void;
@@ -68,6 +71,9 @@ export function ActivityPane({
         <p className="text-[10px] tracking-[0.18em] text-muted-foreground uppercase">activity</p>
         <Tab label="Events" active={!debug} onClick={() => onDebugChange(false)} />
         <Tab label="Debug" active={debug} onClick={() => onDebugChange(true)} />
+        {degraded && !debug && (
+          <p className="text-[11px] text-health-amber">history may be incomplete</p>
+        )}
         <p className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <span
             className={cn(

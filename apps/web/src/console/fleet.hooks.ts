@@ -93,11 +93,14 @@ export function useLogStream(
 } {
   const [lines, setLines] = useState<readonly LogLine[]>([]);
   const [live, setLive] = useState(false);
+  // Bumped when a fatally-closed source needs a whole new subscription.
+  const [generation, setGeneration] = useState(0);
   // Read through a ref so toggling follow never re-subscribes the stream
   // (the effect below deliberately keys on the project alone).
   const followRef = useRef(follow);
   followRef.current = follow;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `generation` is the fatal-close re-subscribe trigger; the body reads it nowhere.
   useEffect(() => {
     setLines([]);
     setLive(false);
@@ -141,14 +144,23 @@ export function useLogStream(
       }
     });
     source.onopen = () => setLive(true);
-    // EventSource retries by itself (with Last-Event-ID); this only dims the
-    // pane's live marker while it does.
-    source.onerror = () => setLive(false);
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // The browser retries transient drops itself (with Last-Event-ID) — but
+    // a non-200 response (the stream's 410/400 cursor contract) closes the
+    // source PERMANENTLY per the SSE spec, so a closed source schedules a
+    // whole new subscription instead of dimming the marker forever.
+    source.onerror = () => {
+      setLive(false);
+      if (source.readyState === EventSource.CLOSED && retryTimer === null) {
+        retryTimer = setTimeout(() => setGeneration((current) => current + 1), 5_000);
+      }
+    };
     return () => {
       if (flushTimer !== null) clearTimeout(flushTimer);
+      if (retryTimer !== null) clearTimeout(retryTimer);
       source.close();
     };
-  }, [projectKey]);
+  }, [projectKey, generation]);
 
   return { lines, live };
 }

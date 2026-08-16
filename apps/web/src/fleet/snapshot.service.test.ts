@@ -79,6 +79,30 @@ describe("fleetSnapshot", () => {
     // The project's actual defaults, not zeros that read as "won't dispatch".
     expect(view?.resolved?.maxParallel).toBe(1);
     expect(view?.resolved?.tickIntervalMs).toBe(60_000);
+    // Predates-the-field resolved.json: null repo, links simply hide.
+    expect(view?.resolved?.repo).toBeNull();
+  });
+
+  it("reads githubRepo from resolved.json as the repo link source", async () => {
+    // The camelCase key writeResolvedJson serializes — NOT the config file's
+    // snake_case github_repo; a wrong-key read would silently null every
+    // GitHub link in the console.
+    await writeFile(
+      join(home, "projects", "alpha", "resolved.json"),
+      JSON.stringify({
+        key: "alpha",
+        githubRepo: "acme/alpha",
+        tickIntervalMs: 5_000,
+        maxParallel: 2,
+        agent: { harness: "claude" },
+      }),
+    );
+    const [view] = await fleetSnapshot(
+      fakeAdapter([{ key: "alpha", loaded: true, pid: 1 }]),
+      config,
+      NOW,
+    );
+    expect(view?.resolved?.repo).toBe("acme/alpha");
   });
 
   it("treats an unreadable status.json as stale, never an error", async () => {

@@ -40,7 +40,7 @@ const CHART_DAYS = 14;
  */
 export function Console() {
   const { projects, pollError, refresh } = useFleet();
-  const { events, live } = useEventStream();
+  const { events, live, degraded } = useEventStream(projects.map((project) => project.key));
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
   const [scrollTopNonce, setScrollTopNonce] = useState(0);
@@ -257,6 +257,7 @@ export function Console() {
               <ActivityPane
                 rows={rows}
                 live={live}
+                degraded={degraded}
                 journal={journal}
                 follow={follow}
                 onFollowChange={setFollow}

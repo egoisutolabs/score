@@ -100,6 +100,27 @@ test("GET returns every project as the flattened wire shape", async () => {
   });
 });
 
+test("a resolved project's repo rides the wire for GitHub links", async () => {
+  const dir = join(root, "projects", "alpha");
+  mkdirSync(dir, { recursive: true });
+  // The camelCase key `score up` serializes; the console hides every GitHub
+  // link if this ever arrives null, so the pass-through must be pinned.
+  writeFileSync(
+    join(dir, "resolved.json"),
+    JSON.stringify({
+      key: "alpha",
+      githubRepo: "example/alpha",
+      tickIntervalMs: 60_000,
+      maxParallel: 1,
+      agent: { harness: "claude" },
+    }),
+  );
+  inject([{ key: "alpha", loaded: true, pid: 41 }]);
+  const res = await GET();
+  const body = JSON.parse(await res.text());
+  expect(body.data.projects[0].resolved).toMatchObject({ repo: "example/alpha" });
+});
+
 test("unparseable config → 503 with only the enum reason", async () => {
   inject([], async () => null);
   const res = await GET();
