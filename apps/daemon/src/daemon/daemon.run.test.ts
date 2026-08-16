@@ -1645,6 +1645,8 @@ async function runTracedLoop(
     telemetrySink?: Pick<TelemetryLogService, "append">;
     log?: CaptureLogger;
     status?: (path: string) => StatusWriter;
+    /** Resolve to simulate the opencode child dying; defaults to never. */
+    unexpectedExit?: Promise<void>;
   } = {},
 ): Promise<{
   requests: { method: string; path: string }[];
@@ -1660,7 +1662,7 @@ async function runTracedLoop(
     try {
       const handle: OpencodeServerHandle = {
         baseUrl: stub.baseUrl,
-        unexpectedExit: new Promise(() => {}),
+        unexpectedExit: overrides.unexpectedExit ?? new Promise(() => {}),
         stop: async () => {},
       };
       const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
@@ -1855,6 +1857,19 @@ test("a throwing logger during telemetry failure still cannot fail the pass", as
   });
   expect(error).toBeUndefined();
   expect(status.last_error).toBeNull();
+}, 20_000);
+
+test("a pass truncated by an unexpected child exit closes its tick as error", async () => {
+  // The child "dies" before the loop starts, so the first pass is truncated
+  // (stopping set, phases skipped) and runDaemonLoop rejects with childError
+  // only after the loop — the root span must still say error, not ok.
+  const { records, error } = await runTracedLoop(await tracedFixture(), false, {
+    unexpectedExit: Promise.resolve(),
+  });
+  expect((error as Error).message).toBe("opencode child exited unexpectedly");
+  const ticks = records.filter((record): record is TelemetrySpan => record.name === "score.tick");
+  expect(ticks).toHaveLength(1);
+  expect(ticks[0]?.status).toBe("error");
 }, 20_000);
 
 test("configured retention sweeps old telemetry segments", async () => {

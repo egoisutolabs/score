@@ -952,7 +952,12 @@ export async function runDaemonLoop(
             last_error: passError,
             last_gate_failure: lastGateFailure,
           });
-          telemetry?.closeTick(passError === null ? "ok" : "error");
+          // An unexpected child exit truncates the pass (stopping is set, the
+          // remaining phases are skipped) but surfaces as childError only
+          // AFTER the loop — the root span must not claim "ok" for a pass the
+          // dying child cut short. A normal signal shutdown truncates the same
+          // way yet stays "ok": the operator asked for it.
+          telemetry?.closeTick(passError === null && childError === undefined ? "ok" : "error");
         } catch (error) {
           // A fatal pass exit (RecoveryVerificationError, a rejecting status
           // write) must still close the root span: phase records already
