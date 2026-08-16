@@ -76,6 +76,10 @@ test("a record needs v: 1, an RFC 3339 ts, a signal, a score-namespaced name, an
     [{ attributes: true as never }, "boolean attributes"],
     [{ attributes: ["a", "b"] as never }, "array attributes"],
     [{ body: { token: "ghp_x" } as never }, "non-string body coerces past RegExp.test"],
+    [{ subject: "junk" as never }, "string subject"],
+    [{ subject: 42 as never }, "number subject"],
+    [{ subject: ["a"] as never }, "array subject"],
+    [{ subject: null as never }, "null subject"],
     [{ truncated: "false" as never }, "string truncated marker"],
     [{ truncated: 1 as never }, "numeric truncated marker"],
   ];

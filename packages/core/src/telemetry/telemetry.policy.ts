@@ -171,7 +171,10 @@ export function recordViolations(record: TelemetryRecord): string[] {
     else violations.push(...attributeViolations(attributes as TelemetryAttributes));
   }
   // Subject strings pass through untouched (identity is dispatch's), but the
-  // numbers must survive JSON — NaN/Infinity would serialize as null.
+  // carrier must be an object and the numbers must survive JSON — NaN/Infinity
+  // would serialize as null.
+  if (record.subject !== undefined && !isPlainObject(record.subject))
+    violations.push("subject must be an object");
   if (record.subject?.issue_number !== undefined && !Number.isFinite(record.subject.issue_number))
     violations.push("non-finite subject issue_number");
   if (
