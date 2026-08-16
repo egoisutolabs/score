@@ -11,6 +11,8 @@ import { runDown, runRestart, runUp, type UpDependencies } from "./supervisor.ru
 class RecordingRunner implements CommandRunner {
   readonly calls: string[][] = [];
   listOutput = "";
+  /** Per-call `list` outputs, consumed first — models a drain ending mid-run. */
+  readonly listQueue: string[] = [];
   failBootstrapMatching: string | undefined;
   failBootoutMatching: string | undefined;
   failKickstartMatching: string | undefined;
@@ -27,7 +29,7 @@ class RecordingRunner implements CommandRunner {
       command: [...command],
       cwd: options.cwd,
       exitCode: failed ? 5 : 0,
-      stdout: command[1] === "list" ? this.listOutput : "",
+      stdout: command[1] === "list" ? (this.listQueue.shift() ?? this.listOutput) : "",
       stderr: failed ? "Bootstrap failed: 5: Input/output error" : "",
       timedOut: false,
       dryRun: false,
@@ -63,6 +65,7 @@ beforeEach(async () => {
       key,
       "--managed",
     ],
+    sleep: async () => {},
   };
   logs = [];
   errors = [];
@@ -581,6 +584,59 @@ test("a deregistered job with its definition kept: `up` re-installs and starts (
     ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
   ]);
   expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=1 removed=0");
+});
+
+test("down then keyed up during the bootout drain waits it out and starts (#93)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // launchd's bootout is asynchronous: the booted-out job stays listed (plist
+  // gone) at plan time and for the first wait poll, then the process exits.
+  runner.listQueue.push("1\t0\tdev.score.alpha", "1\t0\tdev.score.alpha");
+  runner.listOutput = "";
+  runner.calls.length = 0;
+  logs = [];
+
+  await runUp(["alpha"], deps);
+  expect(logs).toContain("'alpha' is still stopping — waiting for the old process to exit");
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+  expect(errors).toEqual([]);
+});
+
+test("a drain outlasting the wait fails loudly with nothing mutated; the next up converges (RETRIED)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // The drain never ends: every status call keeps showing the booted-out job.
+  runner.calls.length = 0;
+  logs = [];
+
+  await runUp(["alpha"], deps);
+  expect(
+    errors.some((line) => line.includes("failed to start 'alpha'") && line.includes("stopping")),
+  ).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
+
+  // The wait mutated nothing, so once the process exits the retried command
+  // converges to a running job.
+  process.exitCode = 0;
+  runner.listOutput = "";
+  runner.calls.length = 0;
+  logs = [];
+  errors = [];
+  await runUp(["alpha"], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
 });
 
 test("no lifecycle HTTP route: web/server sources touching routes or fetch carry no lifecycle verbs", async () => {

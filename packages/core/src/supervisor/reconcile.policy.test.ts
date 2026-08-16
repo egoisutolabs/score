@@ -127,6 +127,34 @@ test("a loaded job with unreadable resolved.json still claims its checkout via c
   expect(decided.restart.map((entry) => entry.key)).toEqual(["a"]);
 });
 
+test("a stopping job (booted out, still draining) plans a start, never unchanged (#93)", () => {
+  // After `score down`, launchd keeps the booted-out job listed until its
+  // process exits. Its registration dies with the process, so an unchanged
+  // hash must still re-install — an `unchanged` verdict would leave the
+  // project down forever.
+  const decided = plan(
+    [project("a")],
+    [{ key: "a", loaded: true, pid: 42, stopping: true }],
+    existing(project("a")),
+  );
+  expect(decided.start.map((entry) => entry.key)).toEqual(["a"]);
+  expect(decided.unchanged).toEqual([]);
+  expect(decided.restart).toEqual([]);
+  expect(decided.refused).toEqual([]);
+});
+
+test("a stopping job's live process still blocks a second project on its checkout", () => {
+  const decided = plan(
+    [project("a"), project("b", { mainLocation: "/repos/a" })],
+    [{ key: "a", loaded: true, pid: 42, stopping: true }],
+    existing(project("a")),
+  );
+  expect(decided.start.map((entry) => entry.key)).toEqual(["a"]);
+  expect(decided.refused).toEqual([
+    { project: expect.objectContaining({ key: "b" }), blockingKey: "a" },
+  ]);
+});
+
 test("distinct checkouts never collide", () => {
   const decided = plan([project("a"), project("b")], [loaded("a")], existing(project("a")));
   expect(decided.refused).toEqual([]);

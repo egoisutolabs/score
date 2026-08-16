@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
+import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
 import {
   type DefinitionRenderer,
@@ -141,7 +141,13 @@ export interface UpDependencies {
   readonly invocationFor: (key: string) => readonly string[];
   /** Defaults to renderPlist — the injected-adapter tests are launchd-shaped. */
   readonly renderDefinition?: DefinitionRenderer;
+  /** Teardown-wait pacing; tests inject an instant sleep. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
+
+/** launchd SIGKILLs at ExitTimeOut, so a drain never legitimately outlasts it. */
+const TEARDOWN_WAIT_MS = (EXIT_TIMEOUT_SECONDS + 30) * 1000;
+const TEARDOWN_POLL_MS = 2000;
 
 export async function runUp(args: readonly string[], deps?: UpDependencies): Promise<void> {
   const only = parseSingleKey(args, "up");
@@ -153,6 +159,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
           invocationFor: deps.invocationFor,
           render: deps.renderDefinition ?? renderPlist,
         };
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const renderFor = (project: ResolvedProject): string =>
     render(project, invocationFor(project.key), jobEnvironment());
 
@@ -217,6 +224,29 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     else restarts.push(project);
   }
 
+  // Bootstrapping over a still-draining registration fails (launchd returns
+  // EIO until the booted-out process exits), so a start planned for a
+  // stopping job waits the drain out first. Waiting mutates nothing: a death
+  // or timeout here leaves the teardown untouched and the next `up` retries.
+  const stopping = new Set(
+    actual.filter((job) => job.loaded && job.stopping === true).map((job) => job.key),
+  );
+  const waitForTeardown = async (key: string): Promise<void> => {
+    for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
+      const job = (await adapter.status()).find((entry) => entry.key === key);
+      if (job === undefined || !job.loaded) return;
+      if (elapsed === 0) {
+        console.log(`'${key}' is still stopping — waiting for the old process to exit`);
+      }
+      if (elapsed >= TEARDOWN_WAIT_MS) {
+        throw new Error(
+          `still stopping after ${Math.round(TEARDOWN_WAIT_MS / 1000)}s — retry: score up ${key}`,
+        );
+      }
+      await sleep(TEARDOWN_POLL_MS);
+    }
+  };
+
   let started = 0;
   let restarted = 0;
   const apply = async (project: ResolvedProject, restart: boolean): Promise<void> => {
@@ -224,6 +254,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
       await withProjectLock(project.key, async () => {
         const definition = renderFor(project);
         if (restart) await adapter.stop(project.key);
+        if (!restart && stopping.has(project.key)) await waitForTeardown(project.key);
         await writeResolvedJson(project);
         await adapter.install(project.key, definition);
         await writeFile(installedDefinitionPath(project.key), definition, "utf8");

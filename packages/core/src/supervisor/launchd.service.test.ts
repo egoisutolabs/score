@@ -80,7 +80,8 @@ test("status merges launchctl list with definition-only plists, score namespace 
   await writeFile(join(agentsDir, "com.other.plist"), "<plist/>");
   const status = await adapter.status();
   expect(status).toEqual([
-    { key: "alpha", loaded: true, pid: 123 },
+    // Listed with no plist: booted out but still draining (#93).
+    { key: "alpha", loaded: true, pid: 123, stopping: true },
     { key: "beta", loaded: true },
     { key: "stale", loaded: false },
   ]);
