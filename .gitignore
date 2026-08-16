@@ -10,8 +10,9 @@ dist
 coverage
 *.lcov
 
-# logs
-logs
+# logs — root-only: a bare `logs` would swallow source dirs like the
+# console's /api/v1/projects/[key]/logs route (it did once)
+/logs
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 

@@ -15,6 +15,25 @@ function refuse(reason: FleetWarningReason, status: number): Response {
   return Response.json(fleetEnvelope(null, [{ reason }]), { status });
 }
 
+/**
+ * The console binds loopback, but the browser is a confused deputy: any
+ * website a user visits can fire a cross-origin "simple" POST at 127.0.0.1
+ * (text/plain needs no preflight, and the sender doesn't need to read the
+ * response to do damage), so a drive-by page must not reach the lifecycle
+ * verbs. Browsers always attach Origin to cross-origin POSTs — refuse any
+ * that names a foreign host, and refuse opaque ("null") origins outright.
+ * Non-browser clients (curl, scripts) send no Origin and stay welcome.
+ */
+function foreignOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin === null) return false;
+  try {
+    return new URL(origin).host !== new URL(request.url).host;
+  } catch {
+    return true;
+  }
+}
+
 async function parseAction(request: Request): Promise<Action | null> {
   try {
     const body = (await request.json()) as { action?: unknown };
@@ -31,6 +50,7 @@ export async function POST(
   { params }: { params: Promise<{ key: string }> },
 ): Promise<Response> {
   const { key } = await params;
+  if (foreignOrigin(request)) return refuse("ORIGIN_FORBIDDEN", 403);
   // Pattern-checked before any filesystem or supervisor touch: the key names
   // paths (job.plist, state dir) and a launchd label.
   if (!PROJECT_KEY_PATTERN.test(key)) return refuse("PROJECT_KEY_INVALID", 400);

@@ -136,4 +136,48 @@ describe("tailPoll", () => {
     expect(window.reset).toBe(true);
     expect([...window.lines]).toEqual(["line 0", "line 1"]);
   });
+
+  it("resets when the file is deleted mid-day under a live cursor", async () => {
+    await writeFile(file(DAY_ONE), "a\nb\nc\n");
+    const first = await poll();
+    await rm(file(DAY_ONE));
+    const gone = await poll(first.cursor);
+    // Deletion must present as a reset — a silent offset-0 cursor would make
+    // the client append the recreated file's content after its stale buffer.
+    expect(gone.reset).toBe(true);
+    expect(gone.lines.length).toBe(0);
+    await writeFile(file(DAY_ONE), "reborn\n");
+    const second = await poll(gone.cursor);
+    expect([...second.lines]).toEqual(["reborn"]);
+  });
+
+  it("forces progress through a line bigger than the read window", async () => {
+    await writeFile(file(DAY_ONE), "small\n");
+    const first = await poll();
+    // 300KB with no newline, then a normal line: the window (256KB) can never
+    // contain the newline from the stuck offset, so the tail must chunk
+    // through instead of wedging forever.
+    const huge = "x".repeat(300 * 1024);
+    await writeFile(file(DAY_ONE), `small\n${huge}\nafter\n`);
+    const second = await poll(first.cursor);
+    expect(second.lines.length).toBe(1);
+    expect(second.lines[0]?.length).toBe(256 * 1024);
+    const third = await poll(second.cursor);
+    expect(third.lines.at(-1)).toBe("after");
+    expect(third.lines[0]?.endsWith("x")).toBe(true);
+  });
+
+  it("keeps the cursor byte-exact when a poll lands mid-multibyte character", async () => {
+    await writeFile(file(DAY_ONE), "prev\n");
+    const first = await poll();
+    // Writer flushed "abc" plus the first byte of a 3-byte "…": deriving the
+    // offset from decoded text would re-encode the replacement char (3 bytes)
+    // and walk the cursor back into the already-delivered "prev" line.
+    await writeFile(file(DAY_ONE), Buffer.concat([Buffer.from("prev\nabc"), Buffer.from([0xe2])]));
+    const second = await poll(first.cursor);
+    expect(second.lines.length).toBe(0);
+    await writeFile(file(DAY_ONE), "prev\nabc…def\nnext\n");
+    const third = await poll(second.cursor);
+    expect([...third.lines]).toEqual(["abc…def", "next"]);
+  });
 });

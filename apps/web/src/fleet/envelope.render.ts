@@ -14,7 +14,8 @@ export type FleetWarningReason =
   | "PROJECT_UNKNOWN"
   | "PROJECT_DISABLED"
   | "ACTION_INVALID"
-  | "ACTION_FAILED";
+  | "ACTION_FAILED"
+  | "ORIGIN_FORBIDDEN";
 
 export interface FleetWarning {
   readonly reason: FleetWarningReason;

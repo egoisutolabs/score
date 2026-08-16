@@ -51,11 +51,12 @@ function seedDefinition(key: string): void {
   writeFileSync(join(dir, "job.plist"), "<plist/>");
 }
 
-function post(key: string, body: BodyInit): Promise<Response> {
+function post(key: string, body: BodyInit, headers?: Record<string, string>): Promise<Response> {
   return POST(
     new Request(`http://127.0.0.1/api/v1/projects/${key}/actions`, {
       method: "POST",
       body,
+      headers,
     }),
     { params: Promise.resolve({ key }) },
   );
@@ -103,6 +104,17 @@ test("restart runs stop, install, start from the saved definition", async () => 
   const res = await act("alpha", "restart");
   expect(res.status).toBe(200);
   expect(calls).toEqual(["stop alpha", "install alpha", "start alpha"]);
+});
+
+test("restart with a missing saved definition fails before touching the supervisor", async () => {
+  // The TUI's regression, ported with its app: restartProject must read the
+  // definition BEFORE stopping — reversed order would boot out a running
+  // daemon it cannot bring back. calls === [] is the assertion that matters.
+  inject([{ key: "alpha", loaded: true, pid: 7 }]);
+  const res = await act("alpha", "restart");
+  expect(res.status).toBe(500);
+  expect(JSON.parse(await res.text()).warnings).toEqual([{ reason: "ACTION_FAILED" }]);
+  expect(calls).toEqual([]);
 });
 
 test("start without a saved definition → 500 ACTION_FAILED, enum only", async () => {
@@ -174,6 +186,27 @@ test("unparseable config → 503 CONFIG_UNPARSEABLE", async () => {
   const res = await act("alpha", "start");
   expect(res.status).toBe(503);
   expect(JSON.parse(await res.text()).warnings).toEqual([{ reason: "CONFIG_UNPARSEABLE" }]);
+});
+
+test("a cross-origin browser POST → 403, no supervisor touch", async () => {
+  // The confused-deputy hole: a drive-by page can fire a no-preflight POST
+  // at loopback; the browser attaches its Origin, and that is the tell.
+  inject([{ key: "alpha", loaded: true, pid: 7 }]);
+  for (const origin of ["https://evil.example", "null"]) {
+    const res = await post("alpha", JSON.stringify({ action: "stop" }), { origin });
+    expect(res.status).toBe(403);
+    expect(JSON.parse(await res.text()).warnings).toEqual([{ reason: "ORIGIN_FORBIDDEN" }]);
+  }
+  expect(calls).toEqual([]);
+});
+
+test("the console's own same-origin POST passes the origin gate", async () => {
+  inject([{ key: "alpha", loaded: true, pid: 7 }]);
+  const res = await post("alpha", JSON.stringify({ action: "stop" }), {
+    origin: "http://127.0.0.1",
+  });
+  expect(res.status).toBe(200);
+  expect(calls).toEqual(["stop alpha"]);
 });
 
 test("non-POST verbs → 405, POST-only surface", () => {

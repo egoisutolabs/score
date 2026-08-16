@@ -8,8 +8,9 @@ const FOLLOW_SLACK_PX = 24;
 
 /**
  * The live tail. Follow pins the view to the newest line; scrolling up is how
- * a reader disengages (like a terminal), and `f`/`G` re-engage. The pane never
- * reflows history: lines only append, so a paused read stays put.
+ * a reader disengages (like a terminal), and `f`/`G` re-engage. While follow
+ * is off, history is not trimmed (up to a hard ceiling — see fleet.hooks.ts),
+ * so a paused read stays put instead of sliding as the buffer caps.
  */
 export function LogPane({
   file,
@@ -35,16 +36,21 @@ export function LogPane({
   useEffect(() => {
     const pane = scrollRef.current;
     if (!follow || pane === null) return;
-    pinning.current = true;
+    const before = pane.scrollTop;
     pane.scrollTop = pane.scrollHeight;
+    // Flag only an assignment that actually moved: a no-op fires no scroll
+    // event, so nothing would clear the flag and it would eat the reader's
+    // next real scroll instead.
+    if (pane.scrollTop !== before) pinning.current = true;
   }, [follow, lines]);
 
   useEffect(() => {
     if (scrollTopNonce === 0) return;
     const pane = scrollRef.current;
     if (pane === null) return;
-    pinning.current = true;
+    const before = pane.scrollTop;
     pane.scrollTop = 0;
+    if (pane.scrollTop !== before) pinning.current = true;
   }, [scrollTopNonce]);
 
   const handleScroll = (): void => {

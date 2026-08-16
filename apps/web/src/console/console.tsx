@@ -32,7 +32,7 @@ export function Console() {
   const { actionInFlight, run } = useProjectAction(refresh);
 
   const selected = projects.find((project) => project.key === selectedKey);
-  const tail = useLogTail(selected?.key ?? null);
+  const tail = useLogTail(selected?.key ?? null, follow);
 
   const select = useCallback((key: string): void => {
     setSelectedKey(key);
@@ -75,8 +75,8 @@ export function Console() {
         if (project !== undefined) select(project.key);
       };
 
-      if (event.key === "j") moveTo(index + 1);
-      else if (event.key === "k") moveTo(index - 1);
+      if (event.key === "j" || event.key === "ArrowDown") moveTo(index + 1);
+      else if (event.key === "k" || event.key === "ArrowUp") moveTo(index - 1);
       else if (event.key === "f") setFollow((value) => !value);
       else if (event.key === "G") setFollow(true);
       else if (event.key === "g") {

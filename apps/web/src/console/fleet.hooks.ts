@@ -12,6 +12,13 @@ import type {
 export const POLL_MS = 1000;
 /** The TUI's log buffer cap, kept — a chatty daemon can't grow the tab unbounded. */
 const MAX_LINES = 2000;
+/**
+ * While the reader has follow off, trimming would slide the text out from
+ * under them (log-pane promises a paused read stays put), so the cap is
+ * suspended up to this ceiling — the tab must still survive walking away
+ * from a paused, chatty tail.
+ */
+const PAUSED_MAX_LINES = 20_000;
 
 interface Envelope<T> {
   readonly data: T | null;
@@ -73,7 +80,10 @@ export function useFleet(): {
  * semantics (rotation, truncation, caps) and says so via `reset`; the client
  * only appends and caps its buffer. Switching projects starts a fresh tail.
  */
-export function useLogTail(projectKey: string | null): {
+export function useLogTail(
+  projectKey: string | null,
+  follow: boolean,
+): {
   readonly file: string;
   readonly lines: readonly string[];
 } {
@@ -81,6 +91,10 @@ export function useLogTail(projectKey: string | null): {
   const [lines, setLines] = useState<readonly string[]>([]);
   const cursor = useRef<string | null>(null);
   const inFlight = useRef(false);
+  // Read through a ref so toggling follow never restarts the poll loop (the
+  // effect below deliberately keys on the project alone).
+  const followRef = useRef(follow);
+  followRef.current = follow;
 
   useEffect(() => {
     cursor.current = null;
@@ -103,7 +117,8 @@ export function useLogTail(projectKey: string | null): {
         setFile(data.file);
         setLines((previous) => {
           const next = data.reset ? [...data.lines] : [...previous, ...data.lines];
-          return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+          const cap = followRef.current ? MAX_LINES : PAUSED_MAX_LINES;
+          return next.length > cap ? next.slice(next.length - cap) : next;
         });
       } catch {
         // A missing log file or a poll blip renders as an unchanged tail; the

@@ -58,7 +58,11 @@ export async function runUi(args: readonly string[]): Promise<void> {
     // with cwd=webDir, where a relative SCORE_HOME would name another dir.
     ...(process.env.SCORE_HOME !== undefined && { SCORE_HOME: scoreHome() }),
   };
-  if (!existsSync(join(webDir, ".next"))) {
+  // BUILD_ID, not .next itself: a failed or interrupted build leaves a
+  // partial .next (cache, no BUILD_ID) that `next start` refuses, and gating
+  // on the directory would skip the rebuild forever — BUILD_ID is written
+  // only when a build completes.
+  if (!existsSync(join(webDir, ".next", "BUILD_ID"))) {
     console.log("no console build found — building first (one-time)");
     const code = await exitOf(
       spawn("bun", ["run", "build"], { cwd: webDir, stdio: "inherit", env }),

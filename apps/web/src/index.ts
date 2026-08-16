@@ -7,5 +7,6 @@
 export * as api from "./app/api";
 export * as healthz from "./app/healthz";
 export * as readyz from "./app/readyz";
+export * as consoleUi from "./console";
 export * as fleet from "./fleet";
 export * from "./telemetry";

@@ -23,7 +23,8 @@ export interface TailWindow {
 /**
  * The cursor is opaque to clients but self-describing to the server: the
  * dated file plus the byte offset of the next unread line. No partial-line
- * text travels in it — the offset only ever advances past complete lines, so
+ * text travels in it — the offset only ever advances past complete lines
+ * (or past forced window-sized chunks of a line bigger than the window), so
  * a line split across polls is re-read whole once its newline lands.
  */
 interface TailCursor {
@@ -79,8 +80,15 @@ export async function tailPoll(
   try {
     size = (await stat(join(dir, file))).size;
   } catch {
-    // Today's file doesn't exist (yet): nothing to show, offset stays 0.
-    return { file, lines: [], cursor: encodeCursor({ file, offset: 0 }), reset };
+    // Today's file doesn't exist (yet) — or was deleted mid-day out from
+    // under a live cursor, which must reset the client's buffer exactly like
+    // a truncation, or stale lines get recreated-file content appended.
+    return {
+      file,
+      lines: [],
+      cursor: encodeCursor({ file, offset: 0 }),
+      reset: reset || (continued && offset > 0),
+    };
   }
   if (offset > size) {
     // The file shrank below the cursor: truncation/recreation — re-enter fresh.
@@ -116,20 +124,57 @@ export async function tailPoll(
     return { file, lines: [], cursor: encodeCursor({ file, offset: 0 }), reset: true };
   }
 
-  const parts = buffer.toString("utf8").split("\n");
-  const partial = parts.pop() ?? "";
-  if (dropFirst) parts.shift();
-  // Everything before the trailing partial line was consumed — including a
+  // Byte-exact accounting: newline positions come from the raw buffer, and
+  // each returned line decodes from its own complete byte range. Cursor math
+  // must never be derived from decoded text — a window edge can land inside
+  // a multibyte character, and its replacement-char decoding re-encodes to a
+  // different byte count, which would walk the offset into (or before)
+  // already-delivered bytes.
+  const lastNewline = buffer.lastIndexOf(0x0a);
+  if (lastNewline === -1) {
+    // No complete line in the window. At EOF that is a line still being
+    // written — hold position until its newline lands. But when bytes exist
+    // beyond a full window, the line is bigger than the window itself, and
+    // holding would wedge the cursor forever (the TUI read the unread range
+    // unbounded, so it could not wedge): force progress in window-sized
+    // chunks, delivered as lines — except a fresh entry's first fragment,
+    // which is dropped as always. A chunk edge may split a multibyte
+    // character; one replacement char per boundary is the price of bounded
+    // reads.
+    if (offset + length >= size) {
+      return { file, lines: [], cursor: encodeCursor({ file, offset }), reset };
+    }
+    return {
+      file,
+      lines: dropFirst ? [] : [buffer.toString("utf8")],
+      cursor: encodeCursor({ file, offset: offset + length }),
+      reset,
+    };
+  }
+
+  // Complete-line byte ranges, [start, end) excluding the newline. A line's
+  // bytes all sit inside the window (its newline does), so decoding a range
+  // can never split a character.
+  const ranges: (readonly [number, number])[] = [];
+  for (let start = 0; start <= lastNewline; ) {
+    const end = buffer.indexOf(0x0a, start);
+    ranges.push([start, end]);
+    start = end + 1;
+  }
+  if (dropFirst) ranges.shift();
+  let taken = ranges;
+  // Everything before the trailing partial was consumed — including a
   // dropped entry fragment and, on a fresh window, lines skipped by the cap.
-  let consumed = length - Buffer.byteLength(partial, "utf8");
-  let lines = parts;
-  if (fresh && parts.length > INITIAL_LINES) {
-    lines = parts.slice(parts.length - INITIAL_LINES);
-  } else if (!fresh && parts.length > MAX_LINES) {
+  let consumed = lastNewline + 1;
+  if (fresh && ranges.length > INITIAL_LINES) {
+    taken = ranges.slice(ranges.length - INITIAL_LINES);
+  } else if (!fresh && ranges.length > MAX_LINES) {
     // A follow burst pages oldest-first: return the first cap's worth and
     // advance the cursor only past what was returned, so nothing is lost.
-    lines = parts.slice(0, MAX_LINES);
-    consumed = lines.reduce((total, line) => total + Buffer.byteLength(line, "utf8") + 1, 0);
+    taken = ranges.slice(0, MAX_LINES);
+    const last = taken[taken.length - 1] as readonly [number, number];
+    consumed = last[1] + 1;
   }
+  const lines = taken.map(([from, to]) => buffer.toString("utf8", from, to));
   return { file, lines, cursor: encodeCursor({ file, offset: offset + consumed }), reset };
 }
