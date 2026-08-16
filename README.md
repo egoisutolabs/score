@@ -166,6 +166,11 @@ enforced.
 build. The console is a viewer over the fleet, nothing more: the daemon keeps
 running independently, and quitting the console never touches the fleet.
 
+`score up` comes first: the console drives an installed fleet (its
+start/stop/restart re-use the definitions `up` saved) and never provisions
+one — a project that was never `score up`'d gets "start the daemon first:
+score up <key>" instead of a start.
+
 ## Layout
 
 Bun workspaces + Turborepo. `apps/{daemon,web}` are entry points (the

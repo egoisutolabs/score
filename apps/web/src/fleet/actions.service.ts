@@ -8,10 +8,17 @@ function jobDefinitionPath(key: string): string {
   return join(projectDir(key), "job.plist");
 }
 
+/**
+ * Typed so the actions route can tell "never installed — run score up first"
+ * apart from a genuine action failure; the console only ever sees the enum,
+ * never this message.
+ */
+export class DefinitionMissingError extends Error {}
+
 async function readDefinition(key: string): Promise<string> {
   const definition = await readFile(jobDefinitionPath(key), "utf8").catch(() => null);
   if (definition === null) {
-    throw new Error(`no job definition for '${key}' — run: score up ${key}`);
+    throw new DefinitionMissingError(`no job definition for '${key}' — run: score up ${key}`);
   }
   return definition;
 }

@@ -57,7 +57,14 @@ export function Console() {
         return;
       }
       void run(project.key, action).then((error) => {
-        if (error !== null) toast.error(error);
+        if (error === null) return;
+        // The API stays enum-only; the console owns turning reasons into
+        // operator guidance.
+        toast.error(
+          error === "DEFINITION_MISSING"
+            ? `'${project.key}' isn't installed yet — start the daemon first: score up ${project.key}`
+            : `${action} '${project.key}' failed (${error})`,
+        );
       });
     },
     [run],
@@ -112,7 +119,7 @@ export function Console() {
           {selected === undefined ? (
             <div className="flex flex-1 items-center justify-center">
               <p className="text-[13px] text-muted-foreground">
-                no projects — run:{" "}
+                no projects — start the daemon first:{" "}
                 <code className="rounded-sm bg-secondary px-1.5 py-0.5">score up</code>
               </p>
             </div>

@@ -112,17 +112,17 @@ test("restart with a missing saved definition fails before touching the supervis
   // daemon it cannot bring back. calls === [] is the assertion that matters.
   inject([{ key: "alpha", loaded: true, pid: 7 }]);
   const res = await act("alpha", "restart");
-  expect(res.status).toBe(500);
-  expect(JSON.parse(await res.text()).warnings).toEqual([{ reason: "ACTION_FAILED" }]);
+  expect(res.status).toBe(409);
+  expect(JSON.parse(await res.text()).warnings).toEqual([{ reason: "DEFINITION_MISSING" }]);
   expect(calls).toEqual([]);
 });
 
-test("start without a saved definition → 500 ACTION_FAILED, enum only", async () => {
+test("start without a saved definition → 409 DEFINITION_MISSING, enum only", async () => {
   inject([{ key: "alpha", loaded: false }]);
   const res = await act("alpha", "start");
-  expect(res.status).toBe(500);
+  expect(res.status).toBe(409);
   const text = await res.text();
-  expect(JSON.parse(text).warnings).toEqual([{ reason: "ACTION_FAILED" }]);
+  expect(JSON.parse(text).warnings).toEqual([{ reason: "DEFINITION_MISSING" }]);
   expect(text).not.toContain(root);
   expect(calls).toEqual([]);
 });

@@ -5,7 +5,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
-import { restartProject, startProject, stopProject } from "../../../../../../fleet/actions.service";
+import {
+  DefinitionMissingError,
+  restartProject,
+  startProject,
+  stopProject,
+} from "../../../../../../fleet/actions.service";
 import { type FleetWarningReason, fleetEnvelope } from "../../../../../../fleet/envelope.render";
 import { fleetDeps } from "../../../../../../fleet/fleet.service";
 
@@ -86,9 +91,10 @@ export async function POST(
     } else {
       await restartProject(deps.adapter, key);
     }
-  } catch {
-    // Missing saved definition or a supervisor refusal: the remedy
-    // (`score up <key>`) is CLI guidance, never API payload.
+  } catch (error) {
+    // Enum-only either way; DEFINITION_MISSING is its own reason so the
+    // console can say "run: score up <key> first" instead of a shrug.
+    if (error instanceof DefinitionMissingError) return refuse("DEFINITION_MISSING", 409);
     return refuse("ACTION_FAILED", 500);
   }
   return Response.json(fleetEnvelope({ key, action }, []));
