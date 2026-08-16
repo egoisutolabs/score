@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import nextConfig from "./next.config";
 
 const webRoot = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = join(webRoot, "..", "..");
@@ -27,10 +28,10 @@ describe("API-only", () => {
     expect(files.filter((f) => /(^|\/)page\.[cm]?[jt]sx?$/.test(f))).toEqual([]);
     expect(files.filter((f) => f.endsWith(".css"))).toEqual([]);
     expect(files.filter((f) => /(^|\/)(tailwind|postcss)\.config\./.test(f))).toEqual([]);
-    expect(files.filter((f) => /^server\.(ts|js|mjs)$/.test(f))).toEqual([]);
-    expect(readFileSync(join(webRoot, "next.config.ts"), "utf8")).not.toMatch(
-      /output:\s*["']export["']/,
-    );
+    expect(files.filter((f) => /(^|\/)server\.[cm]?[jt]s$/.test(f))).toEqual([]);
+    // Resolved config value, not source text — any spelling of a static
+    // export would break `next start` serving /healthz dynamically.
+    expect(nextConfig.output).not.toBe("export");
   });
 
   it("has no client components", () => {
@@ -44,8 +45,12 @@ describe("API-only", () => {
 describe("loopback-only", () => {
   it("dev and start scripts bind 127.0.0.1", () => {
     const pkg = JSON.parse(readFileSync(join(webRoot, "package.json"), "utf8"));
-    expect(pkg.scripts.dev).toContain("--hostname 127.0.0.1");
-    expect(pkg.scripts.start).toContain("--hostname 127.0.0.1");
+    for (const script of [pkg.scripts.dev, pkg.scripts.start]) {
+      expect(script).toContain("--hostname 127.0.0.1");
+      // Ceiling: script text is the contract — but every --hostname in it
+      // must be loopback, so a stray public bind can't hide behind one.
+      expect(script).not.toMatch(/--hostname(?![ =]127\.0\.0\.1)/);
+    }
   });
 });
 
