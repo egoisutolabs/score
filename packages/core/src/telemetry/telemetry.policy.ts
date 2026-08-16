@@ -43,7 +43,9 @@ const SECRET_VALUE_SHAPES: readonly RegExp[] = [
   /\bghp_[A-Za-z0-9]{36}\b/, // GitHub classic PATs
   /\bgithub_pat_/, // GitHub fine-grained PATs
   /\bsk-[A-Za-z0-9]{20,}\b/, // API secret keys
-  /\bBearer\s+\S+/, // Authorization header values
+  // Authorization header values; /i because HTTP auth schemes are
+  // case-insensitive ("bearer ey..." is the same credential)
+  /\bBearer\s+\S+/i,
   // env/query-shaped assignment pairs; explicit [^A-Za-z] (never a folded
   // [^a-z], /i case-folds negated classes) so api_key=/KEY= match but monkey= doesn't
   /(^|[^A-Za-z])(key|token|password|secret)=\S+/i,
@@ -125,6 +127,15 @@ export function recordViolations(record: TelemetryRecord): string[] {
   if (body !== undefined && SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
     violations.push("secret-shaped value in body");
   if (record.attributes !== undefined) violations.push(...attributeViolations(record.attributes));
+  // Subject strings pass through untouched (identity is dispatch's), but the
+  // numbers must survive JSON — NaN/Infinity would serialize as null.
+  if (record.subject?.issue_number !== undefined && !Number.isFinite(record.subject.issue_number))
+    violations.push("non-finite subject issue_number");
+  if (
+    record.subject?.pull_request_number !== undefined &&
+    !Number.isFinite(record.subject.pull_request_number)
+  )
+    violations.push("non-finite subject pull_request_number");
   if (record.signal === "span") {
     if (record.span_id === "") violations.push("empty span_id");
     if (record.parent_span_id === "")

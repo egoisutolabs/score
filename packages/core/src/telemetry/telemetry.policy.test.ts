@@ -148,6 +148,7 @@ test("secret-shaped attribute values are rejected", () => {
     "github_pat_11ABCDEFG0abcdefghijklmnop", // GitHub fine-grained PAT
     `sk-${"a1B2c3d4e5".repeat(2)}`, // API secret key (20+ chars)
     "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
+    "authorization: bearer eyJhbGciOiJIUzI1NiJ9.p.s", // auth schemes are case-insensitive
     "key=deadbeef",
     "token=ghs_short",
     "password=hunter2",
@@ -239,4 +240,10 @@ test("subject names produced by dispatch.identity pass through byte-identical", 
   // Byte-identical carriage: the values ARE dispatch.identity's output, unreformatted.
   expect(record.subject?.session).toBe(identity.sessionName);
   expect(record.subject?.branch).toBe(identity.branch);
+
+  // Subject numbers must survive JSON — NaN/Infinity would store as null.
+  expect(recordViolations({ ...valid, subject: { issue_number: Number.NaN } })).not.toEqual([]);
+  expect(
+    recordViolations({ ...valid, subject: { pull_request_number: Number.POSITIVE_INFINITY } }),
+  ).not.toEqual([]);
 });
