@@ -28,6 +28,8 @@ export interface ResolvedJson {
   readonly agent: string;
   readonly tickIntervalMs: number;
   readonly maxParallel: number;
+  /** owner/repo, for GitHub links; null when resolved.json predates it. */
+  readonly repo: string | null;
 }
 
 export interface ProjectViewJson {

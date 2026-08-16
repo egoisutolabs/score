@@ -9,11 +9,13 @@ import { resolvedPath, statusPath } from "@score/shared/config/layout";
 import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@score/shared/config/resolve";
 import { type Dot, deriveDot } from "./dot.policy";
 
-/** The resolved.json values the config pane shows, read best-effort. */
+/** The resolved.json values the console shows, read best-effort. */
 export interface ResolvedView {
   readonly agent: string;
   readonly tickIntervalMs: number;
   readonly maxParallel: number;
+  /** owner/repo, for GitHub links; null when resolved.json predates it. */
+  readonly repo: string | null;
 }
 
 export interface ProjectView {
@@ -102,5 +104,6 @@ async function readResolvedView(path: string): Promise<ResolvedView | null> {
     tickIntervalMs:
       typeof raw.tickIntervalMs === "number" ? raw.tickIntervalMs : DEFAULT_TICK_INTERVAL_MS,
     maxParallel: typeof raw.maxParallel === "number" ? raw.maxParallel : DEFAULT_MAX_PARALLEL,
+    repo: typeof raw.githubRepo === "string" ? raw.githubRepo : null,
   };
 }
