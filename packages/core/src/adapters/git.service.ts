@@ -1,4 +1,4 @@
-import { cp, mkdir, stat } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type {
@@ -35,6 +35,19 @@ export const LANDING_COMMITTER = {
   name: "score-landing",
   email: "landing@score.invalid",
 } as const;
+
+/**
+ * Evidence for abortMerge's residue sweep (#92), persisted beside MERGE_HEAD
+ * (never in memory alone) so a death mid-land still sweeps: startup's
+ * self-heal either aborts the still-staged merge (which re-captures
+ * `stagedIgnored` fresh) or finishes an interrupted sweep from this file.
+ */
+interface StageSnapshot {
+  /** Every path status could see before the merge was staged. */
+  readonly before: readonly string[];
+  /** Ignored entries while the staged tree's .gitignore files were materialized. */
+  readonly stagedIgnored?: readonly string[];
+}
 
 export interface CommitObservation {
   readonly sha: string;
@@ -143,6 +156,13 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
   }
 
   async stageMerge(commit: string): Promise<boolean> {
+    // Snapshot every path status can see before the staged tree materializes:
+    // the residue sweep (#92) needs it to tell gate build outputs from
+    // anything that predates the stage. Written before the merge so a death
+    // at any later step still finds it on disk.
+    if (this.options.dryRun !== true) {
+      await this.#writeStageSnapshot({ before: statusPaths(await this.#statusWithIgnored()) });
+    }
     // The exact commit, never origin/<branch>: a branch can move between
     // observation and staging, and merging an unreachable (force-pushed-away)
     // SHA fails here — which is the correct, fail-closed outcome.
