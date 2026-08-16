@@ -29,10 +29,13 @@ export const merged: PullRequestObservation = {
 };
 
 export class CleanupWorkspace
-  implements WorktreeProvisioner, Pick<LandingWorkspace, "fastForwardDefaultBranch">
+  implements
+    WorktreeProvisioner,
+    Pick<LandingWorkspace, "fastForwardDefaultBranch" | "observePrimaryCheckout">
 {
   fastForwards = 0;
   deleted = 0;
+  primaryStatus = "";
   async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
     return [mergedWorktree];
   }
@@ -45,9 +48,13 @@ export class CleanupWorkspace
     this.deleted += 1;
     return false;
   }
+  async observePrimaryCheckout() {
+    return { branch: "main", status: this.primaryStatus };
+  }
+  // Mirrors GitService: the attempt refuses (returns false) on a dirty primary.
   async fastForwardDefaultBranch() {
     this.fastForwards += 1;
-    return true;
+    return this.primaryStatus === "";
   }
   async isAncestor(_ancestor: string, _descendant: string) {
     return true;

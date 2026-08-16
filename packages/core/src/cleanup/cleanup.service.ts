@@ -1,5 +1,6 @@
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import {
+  autoPullRefusalReason,
   cleanupStatusIsSafe,
   decideStranded,
   type StrandedEntry,
@@ -46,13 +47,12 @@ export class CleanupService {
     // Worktree authority plus the one landing-side verb cleanup legitimately
     // performs (autoPullMain); no merge or push method is visible here (#19).
     private readonly workspace: WorktreeProvisioner &
-      Pick<LandingWorkspace, "fastForwardDefaultBranch">,
+      Pick<LandingWorkspace, "fastForwardDefaultBranch" | "observePrimaryCheckout">,
     private readonly agents: AgentRuntime,
   ) {}
 
   async run(dryRun = false): Promise<readonly CleanupResult[]> {
     const results: CleanupResult[] = [];
-    let cleaned = 0;
     const merged = await this.changes.observeMergedOwnedChanges();
     for (const change of merged) {
       const worktrees = (await this.workspace.observeWorktrees()).filter((worktree) =>
@@ -73,7 +73,6 @@ export class CleanupService {
         });
         continue;
       }
-      cleaned += 1;
       if (dryRun) {
         results.push({ pullRequestNumber: change.number, action: "PLANNED" });
         continue;
@@ -91,11 +90,33 @@ export class CleanupService {
 
     results.push(...(await this.#reclaimStranded(merged, dryRun)));
 
-    // A clean, correctly checked-out primary branch is the only path to an automatic pull.
-    if (cleaned > 0 && this.options.autoPullMain) {
-      await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch);
+    // A clean, correctly checked-out primary branch is the only path to an
+    // automatic pull — attempted every pass, not only after a cleanup (#91):
+    // a quiet fleet must not run stale, and a refusal must be loud, or dirt
+    // in the primary silently strands every new worktree on old main.
+    if (this.options.autoPullMain) {
+      const refusal = await this.#attemptAutoPull();
+      if (refusal !== undefined) results.push({ action: "AUTO_PULL_REFUSED", message: refusal });
     }
     return results;
+  }
+
+  /** Undefined when the primary fast-forwarded; else the loud refusal reason (#91). */
+  async #attemptAutoPull(): Promise<string | undefined> {
+    try {
+      if (await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch)) {
+        return undefined;
+      }
+    } catch (error) {
+      // The pull itself failed (diverged origin, network): with the attempt
+      // now on every pass, a throw here would kill cleanup+dispatch every
+      // tick — surface it as the refusal instead of a dead phase.
+      return error instanceof Error ? error.message : String(error);
+    }
+    return autoPullRefusalReason(
+      await this.workspace.observePrimaryCheckout(),
+      this.options.defaultBranch,
+    );
   }
 
   /**

@@ -55,6 +55,7 @@ const CLEANUP_ACTIONS: ReadonlySet<string> = new Set([
   "STRANDED_RECLAIMED",
   "STRANDED_DIRTY",
   "STRANDED_RESPAWNED",
+  "AUTO_PULL_REFUSED",
 ]);
 
 const DISPATCH_BLOCK_REASONS: ReadonlySet<string> = new Set([
@@ -89,11 +90,15 @@ export function renderCleanupTelemetry(
   result: CleanupResult,
   ctx: TelemetryRenderContext,
 ): readonly TelemetryEvent[] {
-  // Stranded results are keyed by issue — there is no PR number to report (#64).
+  // Stranded results are keyed by issue — there is no PR number to report
+  // (#64); an auto-pull refusal is about the primary checkout and has no
+  // subject at all (#91).
   const subject: TelemetrySubject =
     "issueNumber" in result
       ? { issue_number: result.issueNumber }
-      : { pull_request_number: result.pullRequestNumber };
+      : "pullRequestNumber" in result
+        ? { pull_request_number: result.pullRequestNumber }
+        : {};
   const name = CLEANUP_ACTIONS.has(result.action)
     ? "score.cleanup.decision"
     : "score.cleanup.unknown";
