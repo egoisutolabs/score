@@ -680,6 +680,36 @@ test("a job re-registered while up waits fails fast without mutating, not the fu
   expect(process.exitCode).toBe(1);
 });
 
+test("start after a drain that fails at install: the next up re-installs and starts (RETRIED)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // Drain ends at the first wait poll; bootstrap then fails — leaving the
+  // same partial state as a process death after writeResolvedJson, before
+  // install: resolved.json rewritten, no registration, no record update.
+  runner.listQueue.push("1\t0\tdev.score.alpha", "1\t0\tdev.score.alpha");
+  runner.listOutput = "";
+  runner.failBootstrapMatching = "dev.score.alpha";
+  runner.calls.length = 0;
+  await runUp(["alpha"], deps);
+  expect(errors.some((line) => line.includes("failed to start 'alpha'"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+
+  // The next command plans the definition-only job as a start and converges.
+  runner.failBootstrapMatching = undefined;
+  runner.calls.length = 0;
+  logs = [];
+  errors = [];
+  process.exitCode = 0;
+  await runUp(["alpha"], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
 test("down of a key with no project state leaves no empty state dir behind (#99 review)", async () => {
   // /readyz reads every project dir as a project that must carry a parseable
   // resolved.json — an empty dir left by down's lock would wedge readiness.
