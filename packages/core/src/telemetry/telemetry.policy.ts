@@ -136,6 +136,9 @@ export function metricLabelViolations(
 
 /** The append gate: version, timestamp, naming, bounds, redaction — reject, don't mutate. */
 export function recordViolations(record: TelemetryRecord): string[] {
+  // A JSONL line can parse to null, an array, or a scalar — one malformed
+  // record to reject, never a TypeError that aborts the validating caller.
+  if (!isPlainObject(record)) return ["record must be an object"];
   const violations: string[] = [];
   if (record.v !== TELEMETRY_VERSION) violations.push(`unknown version ${String(record.v)}`);
   if (!isRfc3339(record.ts ?? ""))
@@ -148,9 +151,17 @@ export function recordViolations(record: TelemetryRecord): string[] {
   // here, because the full body must be scanned before boundBody truncates
   // for storage: a credential torn at the byte ceiling no longer matches its
   // shape, so a truncate-first order would store 35/36 chars of a secret.
-  const body = record.body;
-  if (body !== undefined && SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
-    violations.push("secret-shaped value in body");
+  const body = record.body as unknown;
+  if (body !== undefined) {
+    if (typeof body !== "string")
+      // RegExp.test would coerce an object to "[object Object]" and scan that,
+      // letting a nested credential ride through the redaction gate.
+      violations.push("body must be a string");
+    else if (SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
+      violations.push("secret-shaped value in body");
+  }
+  if (record.truncated !== undefined && typeof record.truncated !== "boolean")
+    violations.push("truncated must be a boolean");
   // The gate also runs on parsed, untrusted JSON in #77 — any non-object
   // shape here is malformed input to reject, never a crash or a silent pass
   // (Object.entries(null) throws; on a string/number/array it walks junk).

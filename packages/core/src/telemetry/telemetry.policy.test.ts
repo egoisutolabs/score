@@ -75,9 +75,20 @@ test("a record needs v: 1, an RFC 3339 ts, a signal, a score-namespaced name, an
     [{ attributes: 42 as never }, "number attributes"],
     [{ attributes: true as never }, "boolean attributes"],
     [{ attributes: ["a", "b"] as never }, "array attributes"],
+    [{ body: { token: "ghp_x" } as never }, "non-string body coerces past RegExp.test"],
+    [{ truncated: "false" as never }, "string truncated marker"],
+    [{ truncated: 1 as never }, "numeric truncated marker"],
   ];
   for (const [patch, why] of rejected) {
     expect(recordViolations({ ...valid, ...patch } as TelemetryRecord), why).not.toEqual([]);
+  }
+
+  // A JSONL line can parse to null, an array, or a scalar — one malformed
+  // record to reject, never a TypeError.
+  for (const root of [null, ["a"], "foo", 42]) {
+    expect(recordViolations(root as unknown as TelemetryRecord), JSON.stringify(root)).toEqual([
+      "record must be an object",
+    ]);
   }
 });
 
