@@ -113,6 +113,7 @@ export class ReplayService {
 
     for (const pair of pairs) {
       const layout = SOURCE_LAYOUT[pair.source];
+      const newest = pair.segments[pair.segments.length - 1];
       for (const segment of pair.segments) {
         const path = join(
           this.projectsDir,
@@ -149,8 +150,19 @@ export class ReplayService {
             break;
           }
           if (cycle.lines.length === 0) {
-            // No complete line before the mark: the remainder was an
-            // in-progress record at capture — withheld, cursor stays put.
+            if (segment === newest) {
+              // No complete line before the mark: the remainder was an
+              // in-progress record at capture — withheld, cursor stays put
+              // so a later read picks it up once the writer finishes it.
+              break;
+            }
+            // A closed segment (a newer one exists, so its writer moved on)
+            // ending mid-line is a torn record from a writer death — it
+            // will never be completed. Advance past it first so the
+            // warning's cursor resumes beyond the fragment, then name the
+            // shortfall and move on rather than hiding newer segments (#82).
+            advance(segment.mark);
+            yield* warn("RECORD_UNPARSEABLE");
             break;
           }
           for (const line of cycle.lines) {

@@ -121,6 +121,31 @@ test("the incomplete tail is withheld — even once the writer completes it past
   ]);
 });
 
+test("a torn tail in a closed segment warns and never hides newer segments", () => {
+  const dir = newProjectsDir();
+  // The writer died mid-append, then a later day's segment opened: the
+  // fragment is permanent, so replay must name it and continue.
+  seed(dir, "score", "telemetry/2026-08-14.jsonl", `${JSON.stringify(event(0))}\n{"v":1,"torn`);
+  seedRecords(dir, "score", "2026-08-15", [event(1)]);
+  const emissions = run(dir, ["score"], ["telemetry"]);
+  expect(records(emissions)).toEqual([0, 1]);
+  expect(emissions.map((emission) => emission.kind)).toEqual(["telemetry", "warning", "telemetry"]);
+  expect(emissions[1]).toEqual(expect.objectContaining({ reason: "RECORD_UNPARSEABLE" }));
+  // The warning's own cursor already rests past the fragment: a client
+  // resuming from it (all newer records filtered, say) never re-reads the
+  // torn bytes and never sees this warning twice.
+  expect(emissions[1]?.cursor).toEqual([
+    {
+      project: "score",
+      source: "telemetry",
+      segment: "2026-08-14",
+      byte_offset: statSync(join(dir, "score", "telemetry", "2026-08-14.jsonl")).size,
+    },
+  ]);
+  // The cursor moves past the torn segment into the newer one.
+  expect(emissions.at(-1)?.cursor[0]?.segment).toBe("2026-08-15");
+});
+
 test("filtered records advance the final cursor to the mark without emitting frames", () => {
   const dir = newProjectsDir();
   seedRecords(dir, "score", "2026-08-15", [event(0), event(1)]);

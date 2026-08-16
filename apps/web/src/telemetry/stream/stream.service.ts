@@ -2,10 +2,10 @@
  * One subscribe, end to end: parse the filter grammar, decode the presented
  * cursor, read the owners once for snapshots, capture the high-water marks,
  * then hand back a frame generator that replays to the marks, emits
- * `score.stream.caught_up`, and closes — `follow=true` gets the
- * FOLLOW_NOT_IMPLEMENTED warning seam (#82) instead of a hang. All owner
- * reads, the read-time stamp, and mark captures happen in open(), before
- * the first frame; the generator only reads segment bytes.
+ * `score.stream.caught_up`, and either closes (`follow=false`) or hands off
+ * to the live follow half (#82) — shared tailers, heartbeats, bounded
+ * buffers. All owner reads, the read-time stamp, and mark captures happen
+ * in open(), before the first frame; the generator only reads segment bytes.
  */
 
 import { randomUUID } from "node:crypto";
@@ -29,6 +29,8 @@ import {
 } from "../stream-envelope.interface";
 import { sseFrame } from "../stream-envelope.render";
 import { decodeCursor, encodeCursor } from "./cursor.render";
+import { FollowService } from "./follow/follow.service";
+import { defaultTailerRegistry, type TailerRegistry } from "./follow/tailer.service";
 import { parseStreamQuery, wantsSignal } from "./query.policy";
 import { initialCursor, planReplay, watermarkFor } from "./replay.policy";
 import { ReplayService } from "./replay.service";
@@ -41,6 +43,7 @@ export interface StreamDeps {
   readonly jobs: () => Promise<readonly JobStatus[] | null>;
   readonly now: () => Date;
   readonly streamId: () => string;
+  readonly tailers: TailerRegistry;
 }
 
 export function defaultStreamDeps(): StreamDeps {
@@ -60,12 +63,18 @@ export function defaultStreamDeps(): StreamDeps {
     jobs: () => new SupervisorJobsReader(new BunCommandRunner()).read(),
     now: () => new Date(),
     streamId: () => randomUUID(),
+    tailers: defaultTailerRegistry,
   };
 }
 
 export type StreamOutcome =
   | { readonly kind: "error"; readonly status: 400 | 410; readonly reason: WarningReason }
-  | { readonly kind: "stream"; readonly frames: () => Generator<string> };
+  | {
+      readonly kind: "stream";
+      readonly frames: () => AsyncGenerator<string>;
+      /** Cancellation hook: ends a parked follow wait now, not at the next wake. */
+      readonly close: () => void;
+    };
 
 export class StreamService {
   constructor(private readonly deps: StreamDeps = defaultStreamDeps()) {}
@@ -106,7 +115,9 @@ export class StreamService {
 
     const streamId = this.deps.streamId();
     const emittedAt = readTime.toISOString();
-    let cursor = encodeCursor(initialCursor(pairs));
+    const followService = new FollowService(this.deps);
+    let components = initialCursor(pairs);
+    let cursor = encodeCursor(components);
     const wrap = <T>(data: T, warnings?: readonly ApiWarning[]): StreamEnvelope<T> => ({
       api_version: "v1",
       emitted_at: emittedAt,
@@ -126,7 +137,7 @@ export class StreamService {
       selectedKeys.includes(project.key),
     );
 
-    function* frames(): Generator<string> {
+    async function* frames(): AsyncGenerator<string> {
       const degraded = observationWarnings.length > 0 ? observationWarnings : undefined;
       yield sseFrame(HELLO_EVENT, wrap({}), cursor);
       if (wantsSignal(query, "snapshot")) {
@@ -147,15 +158,19 @@ export class StreamService {
       // composite cursor — filtered records advanced it past the last
       // emitted frame, and caught_up must carry the true resting position.
       const replaying = replayService.replay(pairs, query);
+      let sawUnreadable = false;
       for (;;) {
         const step = replaying.next();
         if (step.done) {
-          cursor = encodeCursor(step.value);
+          components = step.value;
+          cursor = encodeCursor(components);
           break;
         }
         const emission = step.value;
-        cursor = encodeCursor(emission.cursor);
+        components = emission.cursor;
+        cursor = encodeCursor(components);
         if (emission.kind === "warning") {
+          sawUnreadable ||= emission.reason === "SEGMENT_UNREADABLE";
           yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: emission.reason }]), cursor);
         } else if (emission.kind === "telemetry") {
           yield sseFrame(
@@ -168,12 +183,23 @@ export class StreamService {
         }
       }
       yield sseFrame(CAUGHT_UP_EVENT, wrap({}), cursor);
-      // The #82 seam: an explicit, tested close instead of a silent hang.
-      if (query.follow) {
-        yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: "FOLLOW_NOT_IMPLEMENTED" }]), cursor);
+      // The live half (#82): the stream stays open past caught_up, fed by
+      // the shared tailers, until the client disconnects or is disconnected.
+      // A segment retention deleted mid-replay already carried its one
+      // warning; handing off would only re-plan against the gone segment
+      // and warn a second time — close cleanly instead, the client resumes
+      // from an explicit time bound.
+      if (query.follow && !sawUnreadable) {
+        yield* followService.follow({
+          streamId,
+          query,
+          projects: selectedKeys,
+          sources,
+          start: components,
+        });
       }
     }
 
-    return { kind: "stream", frames };
+    return { kind: "stream", frames, close: () => followService.close() };
   }
 }

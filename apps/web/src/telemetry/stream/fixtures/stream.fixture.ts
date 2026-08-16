@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TelemetryRecord } from "@score/core/telemetry/telemetry.interface";
 import type { StreamEnvelope } from "../../stream-envelope.interface";
+import { TailerRegistry } from "../follow/tailer.service";
 import type { StreamDeps } from "../stream.service";
 
 export const TODAY = "2026-08-15";
@@ -175,6 +176,7 @@ export function testDeps(projectsDir: string, overrides: Partial<StreamDeps> = {
     jobs: async () => [{ key: "score", loaded: true, pid: 4242 }],
     now: () => new Date(NOW),
     streamId: () => STREAM_ID,
+    tailers: new TailerRegistry(),
     ...overrides,
   };
 }
@@ -203,6 +205,8 @@ export function parseFrames(text: string): readonly ParsedFrame[] {
     });
 }
 
-export function drain(frames: () => Generator<string>): readonly ParsedFrame[] {
-  return parseFrames([...frames()].join(""));
+export async function drain(frames: () => AsyncGenerator<string>): Promise<readonly ParsedFrame[]> {
+  const chunks: string[] = [];
+  for await (const chunk of frames()) chunks.push(chunk);
+  return parseFrames(chunks.join(""));
 }

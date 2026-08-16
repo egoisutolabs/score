@@ -15,7 +15,7 @@ export const PROJECT_SNAPSHOT_EVENT = "score.snapshot.project";
 export const LOG_RECORD_EVENT = "score.log.record";
 /** Replay boundary: every durable record up to the captured mark was sent. */
 export const CAUGHT_UP_EVENT = "score.stream.caught_up";
-/** Carries a WarningReason envelope; also the follow seam's frame (#82). */
+/** Carries a WarningReason envelope. */
 export const WARNING_EVENT = "score.stream.warning";
 
 /** SSE event per stored telemetry signal. */
@@ -38,8 +38,7 @@ export type WarningReason =
   | "FILTER_INVALID"
   | "CURSOR_UNPARSEABLE"
   | "CURSOR_EXPIRED"
-  | "RECORD_UNPARSEABLE"
-  | "FOLLOW_NOT_IMPLEMENTED";
+  | "RECORD_UNPARSEABLE";
 
 export interface ApiWarning {
   readonly reason: WarningReason;
