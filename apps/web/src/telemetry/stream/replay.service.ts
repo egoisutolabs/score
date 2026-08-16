@@ -77,6 +77,24 @@ export function captureMarks(
   return pairs;
 }
 
+/** One project's high-water positions: newest segment + captured mark per source. */
+export function watermarkFor(
+  pairs: readonly PairMarks[],
+  project: string,
+): readonly TelemetryCursor[] {
+  return pairs
+    .filter((pair) => pair.project === project && pair.segments.length > 0)
+    .map((pair) => {
+      const newest = pair.segments[pair.segments.length - 1] as SegmentMark;
+      return {
+        project,
+        source: pair.source,
+        segment: newest.segment,
+        byte_offset: newest.mark,
+      };
+    });
+}
+
 export interface SegmentPlan extends SegmentMark {
   readonly start: number;
 }
