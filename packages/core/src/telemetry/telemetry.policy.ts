@@ -54,8 +54,15 @@ const SECRET_VALUE_SHAPES: readonly RegExp[] = [
   /(Key|Token|Password|Secret)=\S+/,
 ];
 
-/** Keys whose values are categorically secrets regardless of shape. */
-const SECRET_KEY_NAME = /_(token|key|secret|password)$/i;
+/**
+ * Keys whose final segment names a credential — bare ("token"), dotted
+ * ("auth.token"), or suffixed ("api_key") — hold categorically secret
+ * values regardless of shape. Final-segment only: "token_count" is a count.
+ */
+const SECRET_KEY_NAME = /(^|[._])(token|key|secret|password)$/i;
+
+/** Attributes are dimensions, not payloads — free detail belongs in body, behind its own ceiling. */
+export const MAX_ATTRIBUTE_VALUE_LENGTH = 256;
 
 /** Bounded body ceiling — bytes, not characters; no compression, no overflow side-files. */
 export const MAX_BODY_BYTES = 4096;
@@ -85,7 +92,10 @@ export function attributeViolations(attributes: TelemetryAttributes): string[] {
     if (typeof value === "number" && !Number.isFinite(value))
       // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
       violations.push(`non-finite value for attribute "${key}"`);
-    if (typeof value === "string" && SECRET_VALUE_SHAPES.some((shape) => shape.test(value)))
+    if (typeof value !== "string") continue;
+    if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH)
+      violations.push(`attribute "${key}" exceeds ${MAX_ATTRIBUTE_VALUE_LENGTH} chars`);
+    if (SECRET_VALUE_SHAPES.some((shape) => shape.test(value)))
       violations.push(`secret-shaped value for attribute "${key}"`);
   }
   return violations;
@@ -118,7 +128,8 @@ export function recordViolations(record: TelemetryRecord): string[] {
     violations.push(`ts is not an RFC 3339 timestamp: "${String(record.ts)}"`);
   if (!SIGNALS.has(record.signal)) violations.push(`unknown signal "${String(record.signal)}"`);
   if (!isValidTelemetryName(record.name)) violations.push(`invalid name "${record.name}"`);
-  if (!record.project) violations.push("missing project");
+  if (typeof record.project !== "string" || record.project === "")
+    violations.push("missing or non-string project");
   // The gate runs on the record as produced — body length is NOT a violation
   // here, because the full body must be scanned before boundBody truncates
   // for storage: a credential torn at the byte ceiling no longer matches its
@@ -126,7 +137,11 @@ export function recordViolations(record: TelemetryRecord): string[] {
   const body = record.body;
   if (body !== undefined && SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
     violations.push("secret-shaped value in body");
-  if (record.attributes !== undefined) violations.push(...attributeViolations(record.attributes));
+  // The gate also runs on parsed, untrusted JSON in #77 — a null field is
+  // malformed input to reject, never a crash (Object.entries(null) throws).
+  const attributes = record.attributes as TelemetryAttributes | null | undefined;
+  if (attributes === null) violations.push("attributes must be an object");
+  else if (attributes !== undefined) violations.push(...attributeViolations(attributes));
   // Subject strings pass through untouched (identity is dispatch's), but the
   // numbers must survive JSON — NaN/Infinity would serialize as null.
   if (record.subject?.issue_number !== undefined && !Number.isFinite(record.subject.issue_number))
@@ -140,14 +155,23 @@ export function recordViolations(record: TelemetryRecord): string[] {
     if (record.span_id === "") violations.push("empty span_id");
     if (record.parent_span_id === "")
       violations.push("empty parent_span_id — omit the field when there is no parent");
-    if (record.duration_ms !== undefined && !Number.isFinite(record.duration_ms))
-      violations.push("non-finite duration_ms");
+    if (
+      record.duration_ms !== undefined &&
+      (!Number.isFinite(record.duration_ms) || record.duration_ms < 0)
+    )
+      violations.push("duration_ms must be a finite non-negative number");
   }
   if (record.signal === "metric") {
+    if (attributes !== undefined)
+      // Locked decision: identity lives in events, never metrics — attributes
+      // on a metric would smuggle unbounded series past the label enums.
+      violations.push("metric records carry labels, not attributes");
     if (!Number.isFinite(record.value))
       // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
       violations.push("non-finite metric value");
-    if (record.labels !== undefined) violations.push(...metricLabelViolations(record.labels));
+    const labels = record.labels as Readonly<Record<string, string>> | null | undefined;
+    if (labels === null) violations.push("labels must be an object");
+    else if (labels !== undefined) violations.push(...metricLabelViolations(labels));
   }
   return violations;
 }

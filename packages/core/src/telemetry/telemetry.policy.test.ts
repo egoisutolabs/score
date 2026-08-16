@@ -24,13 +24,15 @@ const issue: IssueObservation = {
 };
 const identity = createWorkIdentity("/workspace", issue, "demo");
 
-const valid: TelemetryEvent = {
+// satisfies (not an annotation) keeps the inferred type free of the optional
+// fields, so spreads into metric literals don't drag `attributes?` along.
+const valid = {
   v: 1,
   ts: "2026-08-15T12:00:00Z",
   signal: "event",
   name: "score.dispatch.blocked",
   project: "demo",
-};
+} satisfies TelemetryEvent;
 
 // --- valid record ---
 
@@ -65,6 +67,10 @@ test("a record needs v: 1, an RFC 3339 ts, a signal, a score-namespaced name, an
     [{ signal: "log" as never }, "signal"],
     [{ name: "dispatch.blocked" }, "name"],
     [{ project: "" }, "project"],
+    [{ project: 123 as never }, "truthy non-string project"],
+    // Parsed, untrusted JSON can carry null where the type says object —
+    // rejected as a violation, never a crash.
+    [{ attributes: null as never }, "null attributes"],
   ];
   for (const [patch, why] of rejected) {
     expect(recordViolations({ ...valid, ...patch } as TelemetryRecord), why).not.toEqual([]);
@@ -127,13 +133,13 @@ test("a metric value must be finite — NaN/Infinity would serialize as null", (
   }
 });
 
-test("span identifiers are non-empty and durations finite", () => {
+test("span identifiers are non-empty and durations finite, non-negative", () => {
   const span = { ...valid, signal: "span", name: "score.landing.tick", span_id: "s1" } as const;
   expect(recordViolations({ ...span, parent_span_id: "s0", duration_ms: 42 })).toEqual([]);
   expect(recordViolations({ ...span, span_id: "" })).not.toEqual([]);
   // Absence of a parent is an omitted field, never an empty string.
   expect(recordViolations({ ...span, parent_span_id: "" })).not.toEqual([]);
-  for (const duration_ms of [Number.NaN, Number.POSITIVE_INFINITY]) {
+  for (const duration_ms of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
     expect(recordViolations({ ...span, duration_ms }), String(duration_ms)).not.toEqual([]);
   }
 });
@@ -182,8 +188,17 @@ test("near-miss values stay admitted — no entropy scanning past the declared s
   }
 });
 
-test("attributes named *_token/*_key/*_secret/*_password are rejected whatever they hold", () => {
-  for (const key of ["github_token", "api_key", "client_secret", "db_password"]) {
+test("attributes whose final segment names a credential are rejected whatever they hold", () => {
+  const rejected = [
+    "github_token", // suffixed
+    "api_key",
+    "client_secret",
+    "db_password",
+    "token", // bare
+    "password",
+    "auth.token", // dotted, OTel style
+  ];
+  for (const key of rejected) {
     expect(attributeViolations({ [key]: "harmless" }), key).not.toEqual([]);
   }
   for (const key of ["token_count", "keyboard", "secretary", "passwords_rotated"]) {
@@ -191,6 +206,9 @@ test("attributes named *_token/*_key/*_secret/*_password are rejected whatever t
   }
   // NaN/Infinity would serialize as null, outside the declared value types.
   expect(attributeViolations({ duration_ms: Number.NaN })).not.toEqual([]);
+  // Attributes are dimensions, not payloads — free detail belongs in body.
+  expect(attributeViolations({ detail: "a".repeat(256) })).toEqual([]);
+  expect(attributeViolations({ detail: "a".repeat(257) })).not.toEqual([]);
 });
 
 // --- metric-label policy: exhaustive over the declared enums ---
@@ -221,6 +239,16 @@ test("identifiers, paths, SHAs, free strings, and undeclared labels are rejected
   for (const key of ["session", "branch", "issue", "pr", "sha"]) {
     expect(metricLabelViolations({ [key]: "dispatch" }), key).not.toEqual([]);
   }
+});
+
+test("a metric carries labels only — attributes would smuggle identity past the enums", () => {
+  const metric = { ...valid, signal: "metric", name: "score.dispatch.starts", value: 1 } as const;
+  expect(recordViolations(metric)).toEqual([]);
+  const smuggled = { ...metric, attributes: { session: identity.sessionName } };
+  expect(recordViolations(smuggled as unknown as TelemetryRecord)).not.toEqual([]);
+  // null labels from untrusted JSON reject, never crash.
+  const nullLabels = { ...metric, labels: null };
+  expect(recordViolations(nullLabels as unknown as TelemetryRecord)).not.toEqual([]);
 });
 
 // --- identity ---

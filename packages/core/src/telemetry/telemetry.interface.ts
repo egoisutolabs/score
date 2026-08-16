@@ -76,6 +76,8 @@ export type TelemetryMetricLabels = {
 export interface TelemetryMetric extends TelemetryRecordBase {
   readonly signal: "metric";
   readonly value: number;
+  /** Metrics carry labels only — attributes would smuggle identity past the label enums. */
+  readonly attributes?: never;
   readonly labels?: TelemetryMetricLabels;
 }
 
