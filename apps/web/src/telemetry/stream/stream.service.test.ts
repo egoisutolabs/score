@@ -18,7 +18,7 @@ import {
   TRACE_ID,
   testDeps,
 } from "./fixtures/stream.fixture";
-import { openStream } from "./stream.service";
+import { StreamService } from "./stream.service";
 
 afterEach(cleanupSandboxes);
 
@@ -62,7 +62,10 @@ function fleetDeps(dir: string) {
 }
 
 async function frames(dir: string, search: string, lastEventId: string | null = null) {
-  const outcome = await openStream(new URLSearchParams(search), lastEventId, fleetDeps(dir));
+  const outcome = await new StreamService(fleetDeps(dir)).open(
+    new URLSearchParams(search),
+    lastEventId,
+  );
   if (outcome.kind !== "stream") throw new Error(`expected a stream, got ${outcome.reason}`);
   return drain(outcome.frames);
 }
@@ -236,31 +239,60 @@ test("follow=true reaches the #82 seam: caught_up, FOLLOW_NOT_IMPLEMENTED warnin
   expect(parsed.at(-1)?.envelope.warnings).toEqual([{ reason: "FOLLOW_NOT_IMPLEMENTED" }]);
 });
 
-test("an unreadable config degrades membership with a fleet warning, never a crash", async () => {
+test("unreadable owners degrade snapshots with explicit warnings, never a crash", async () => {
   const dir = newProjectsDir();
   seedFleet(dir);
-  const outcome = await openStream(
-    new URLSearchParams("follow=false"),
-    null,
-    testDeps(dir, { readConfig: async () => null, jobs: async () => [] }),
-  );
+  // Config unparseable and the supervisor unreachable at once: both facts
+  // ride every snapshot instead of posing as an empty-but-complete fleet.
+  const outcome = await new StreamService(
+    testDeps(dir, { readConfig: async () => null, jobs: async () => null }),
+  ).open(new URLSearchParams("follow=false"), null);
   if (outcome.kind !== "stream") throw new Error("expected a stream");
-  const fleet = drain(outcome.frames)[1];
+  const frames = drain(outcome.frames);
+  const fleet = frames[1];
   expect(fleet?.event).toBe("score.snapshot.fleet");
-  expect(fleet?.envelope.warnings).toEqual([{ reason: "CONFIG_UNPARSEABLE" }]);
+  expect(fleet?.envelope.warnings).toEqual([
+    { reason: "CONFIG_UNPARSEABLE" },
+    { reason: "SUPERVISOR_UNREADABLE" },
+  ]);
   const data = fleet?.envelope.data as { projects: { enabled: null }[] } | undefined;
   expect(data?.projects[0]?.enabled).toBeNull();
+  const project = frames[2];
+  expect(project?.event).toBe("score.snapshot.project");
+  expect(project?.envelope.warnings).toEqual(fleet?.envelope.warnings);
+});
+
+test("trace-filtered caught_up still rests at the captured marks", async () => {
+  const dir = newProjectsDir();
+  seedFleet(dir);
+  // Only one record of the trace is a landing decision; everything after it
+  // is filtered out, yet the boundary cursor must sit at the marks.
+  const parsed = await frames(
+    dir,
+    "projects=score&signals=event&names=score.landing.decision&follow=false",
+  );
+  const boundary = parsed.at(-1);
+  expect(boundary?.event).toBe("score.stream.caught_up");
+  expect(decodeCursor(boundary?.envelope.cursor ?? "")).toEqual([
+    {
+      project: "score",
+      source: "telemetry",
+      segment: TODAY,
+      byte_offset: statSync(join(dir, "score", "telemetry", `${TODAY}.jsonl`)).size,
+    },
+  ]);
 });
 
 test("errors before any event: unknown filter 400, bad cursor 400, expired cursor 410", async () => {
   const dir = newProjectsDir();
   seedFleet(dir);
-  expect(await openStream(new URLSearchParams("verbose=1"), null, fleetDeps(dir))).toEqual({
+  const service = new StreamService(fleetDeps(dir));
+  expect(await service.open(new URLSearchParams("verbose=1"), null)).toEqual({
     kind: "error",
     status: 400,
     reason: "FILTER_UNKNOWN",
   });
-  expect(await openStream(new URLSearchParams(), "not-a-cursor", fleetDeps(dir))).toEqual({
+  expect(await service.open(new URLSearchParams(), "not-a-cursor")).toEqual({
     kind: "error",
     status: 400,
     reason: "CURSOR_UNPARSEABLE",
@@ -270,7 +302,7 @@ test("errors before any event: unknown filter 400, bad cursor 400, expired curso
       { project: "score", source: "telemetry", segment: "2026-08-01", byte_offset: 0 },
     ]),
   ).toString("base64url");
-  expect(await openStream(new URLSearchParams(), expired, fleetDeps(dir))).toEqual({
+  expect(await service.open(new URLSearchParams(), expired)).toEqual({
     kind: "error",
     status: 410,
     reason: "CURSOR_EXPIRED",

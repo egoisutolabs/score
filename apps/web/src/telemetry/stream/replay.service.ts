@@ -61,10 +61,7 @@ export class ReplayService {
    * One stat pass over every selected project/source at subscribe time. A
    * file that appears after this call is beyond the mark by definition.
    */
-  captureMarks(
-    keys: readonly string[],
-    sources: readonly TelemetrySource[],
-  ): readonly PairMarks[] {
+  captureMarks(keys: readonly string[], sources: readonly TelemetrySource[]): readonly PairMarks[] {
     const pairs: PairMarks[] = [];
     for (const project of keys) {
       for (const source of sources) {

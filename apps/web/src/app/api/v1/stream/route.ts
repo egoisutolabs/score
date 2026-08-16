@@ -5,11 +5,11 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { openStream } from "../../../../telemetry/stream/stream.service";
+import { StreamService } from "../../../../telemetry/stream/stream.service";
 import { envelope } from "../../../../telemetry/stream-envelope.render";
 
 export async function GET(request: Request): Promise<Response> {
-  const outcome = await openStream(
+  const outcome = await new StreamService().open(
     new URL(request.url).searchParams,
     request.headers.get("last-event-id"),
   );

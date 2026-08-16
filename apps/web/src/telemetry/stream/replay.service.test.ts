@@ -1,18 +1,12 @@
-import { appendFileSync, rmSync } from "node:fs";
+import { appendFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { TelemetryCursor } from "@score/core/telemetry/telemetry.interface";
 import { afterEach, expect, test } from "vitest";
 import { cleanupSandboxes, newProjectsDir, seed, seedRecords } from "./fixtures/stream.fixture";
 import type { StreamQuery } from "./query.policy";
+import { initialCursor, planReplay, watermarkFor } from "./replay.policy";
 import type { ReplayEmission } from "./replay.service";
-import {
-  captureMarks,
-  initialCursor,
-  planReplay,
-  REPLAY_BATCH_LIMIT,
-  replay,
-  watermarkFor,
-} from "./replay.service";
+import { REPLAY_BATCH_LIMIT, ReplayService, readCycle } from "./replay.service";
 
 afterEach(cleanupSandboxes);
 
@@ -36,10 +30,10 @@ function run(
   cursor?: readonly TelemetryCursor[],
   query: StreamQuery = ALL,
 ): readonly ReplayEmission[] {
-  const marks = captureMarks(projectsDir, keys, sources);
-  const plan = planReplay(marks, cursor);
+  const service = new ReplayService(projectsDir);
+  const plan = planReplay(service.captureMarks(keys, sources), cursor);
   if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
-  return [...replay(projectsDir, plan.pairs, query)];
+  return [...service.replay(plan.pairs, query)];
 }
 
 function records(emissions: readonly ReplayEmission[]): readonly number[] {
@@ -62,6 +56,26 @@ test("batch cap: a mark spanning far more than 500 records arrives complete, in 
   expect(REPLAY_BATCH_LIMIT).toBe(500);
 });
 
+test("one I/O cycle parses at most REPLAY_BATCH_LIMIT records and the next resumes exactly", () => {
+  const dir = newProjectsDir();
+  const total = REPLAY_BATCH_LIMIT + 7;
+  seedRecords(
+    dir,
+    "score",
+    "2026-08-15",
+    Array.from({ length: total }, (_, i) => event(i)),
+  );
+  const path = join(dir, "score", "telemetry", "2026-08-15.jsonl");
+  const mark = statSync(path).size;
+  const first = readCycle(path, 0, mark);
+  if (first === "UNREADABLE") throw new Error("unexpected UNREADABLE");
+  expect(first.lines).toHaveLength(REPLAY_BATCH_LIMIT);
+  const next = readCycle(path, first.lines.at(-1)?.end ?? 0, mark);
+  if (next === "UNREADABLE") throw new Error("unexpected UNREADABLE");
+  expect(next.lines).toHaveLength(7);
+  expect(next.lines.at(-1)?.end).toBe(mark);
+});
+
 test("continuous writes: records appended after subscribe stay beyond the fixed mark", () => {
   const dir = newProjectsDir();
   seedRecords(
@@ -70,13 +84,13 @@ test("continuous writes: records appended after subscribe stay beyond the fixed 
     "2026-08-15",
     Array.from({ length: 600 }, (_, i) => event(i)),
   );
-  const marks = captureMarks(dir, ["score"], ["telemetry"]);
-  const plan = planReplay(marks, undefined);
+  const service = new ReplayService(dir);
+  const plan = planReplay(service.captureMarks(["score"], ["telemetry"]), undefined);
   if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
   const path = join(dir, "score", "telemetry", "2026-08-15.jsonl");
   // Writer keeps appending: before the first read and between batches.
   appendFileSync(path, `${JSON.stringify(event(9000))}\n`);
-  const generator = replay(dir, plan.pairs, ALL);
+  const generator = service.replay(plan.pairs, ALL);
   const first = generator.next().value as ReplayEmission;
   appendFileSync(path, `${JSON.stringify(event(9001))}\n`);
   const rest = [...generator];
@@ -88,11 +102,11 @@ test("the incomplete tail is withheld — even once the writer completes it past
   seedRecords(dir, "score", "2026-08-15", [event(0)]);
   const path = join(dir, "score", "telemetry", "2026-08-15.jsonl");
   appendFileSync(path, '{"v":1,"torn');
-  const marks = captureMarks(dir, ["score"], ["telemetry"]);
-  const plan = planReplay(marks, undefined);
+  const service = new ReplayService(dir);
+  const plan = planReplay(service.captureMarks(["score"], ["telemetry"]), undefined);
   if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
   appendFileSync(path, '":true}\n');
-  const emissions = [...replay(dir, plan.pairs, ALL)];
+  const emissions = [...service.replay(plan.pairs, ALL)];
   expect(records(emissions)).toEqual([0]);
   // The cursor stops at the last complete line, not the mark: the torn
   // bytes stay ahead of it for #82's resume.
@@ -103,6 +117,26 @@ test("the incomplete tail is withheld — even once the writer completes it past
       source: "telemetry",
       segment: "2026-08-15",
       byte_offset: expect.any(Number),
+    },
+  ]);
+});
+
+test("filtered records advance the final cursor to the mark without emitting frames", () => {
+  const dir = newProjectsDir();
+  seedRecords(dir, "score", "2026-08-15", [event(0), event(1)]);
+  const path = join(dir, "score", "telemetry", "2026-08-15.jsonl");
+  const service = new ReplayService(dir);
+  const plan = planReplay(service.captureMarks(["score"], ["telemetry"]), undefined);
+  if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
+  const generator = service.replay(plan.pairs, { follow: true, names: ["score.landing.decision"] });
+  let step = generator.next();
+  while (!step.done) step = generator.next();
+  expect(step.value).toEqual([
+    {
+      project: "score",
+      source: "telemetry",
+      segment: "2026-08-15",
+      byte_offset: statSync(path).size,
     },
   ]);
 });
@@ -126,11 +160,11 @@ test("a segment deleted after capture warns SEGMENT_UNREADABLE and replay contin
   const dir = newProjectsDir();
   seedRecords(dir, "score", "2026-08-14", [event(0)]);
   seedRecords(dir, "score", "2026-08-15", [event(1)]);
-  const marks = captureMarks(dir, ["score"], ["telemetry"]);
-  const plan = planReplay(marks, undefined);
+  const service = new ReplayService(dir);
+  const plan = planReplay(service.captureMarks(["score"], ["telemetry"]), undefined);
   if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
   rmSync(join(dir, "score", "telemetry", "2026-08-14.jsonl"));
-  const emissions = [...replay(dir, plan.pairs, ALL)];
+  const emissions = [...service.replay(plan.pairs, ALL)];
   expect(emissions.map((emission) => emission.kind)).toEqual(["warning", "telemetry"]);
   expect(records(emissions)).toEqual([1]);
 });
@@ -162,7 +196,8 @@ test("a cursor offset landing mid-line drops the torn fragment and resyncs", () 
 test("cursor naming a deleted segment → CURSOR_EXPIRED before any event", () => {
   const dir = newProjectsDir();
   seedRecords(dir, "score", "2026-08-15", [event(0)]);
-  const marks = captureMarks(dir, ["score"], ["telemetry"]);
+  const service = new ReplayService(dir);
+  const marks = service.captureMarks(["score"], ["telemetry"]);
   // Older than every retained segment: retention removed it.
   expect(
     planReplay(marks, [
@@ -171,7 +206,7 @@ test("cursor naming a deleted segment → CURSOR_EXPIRED before any event", () =
   ).toEqual({ ok: false, reason: "CURSOR_EXPIRED" });
   // Consumed bytes from a file that is gone entirely.
   expect(
-    planReplay(captureMarks(dir, ["score"], ["log"]), [
+    planReplay(service.captureMarks(["score"], ["log"]), [
       { project: "score", source: "log", segment: "2026-08-10", byte_offset: 12 },
     ]),
   ).toEqual({ ok: false, reason: "CURSOR_EXPIRED" });
@@ -211,7 +246,7 @@ test("log source: dated prose lines become records; a shapeless line warns", () 
   });
 });
 
-test("filtered-out records advance the cursor without a frame", () => {
+test("filtered-out records emit no frames", () => {
   const dir = newProjectsDir();
   seedRecords(dir, "score", "2026-08-15", [event(0), event(1)]);
   const emissions = run(dir, ["score"], ["telemetry"], undefined, {
@@ -226,7 +261,8 @@ test("composite cursor carries every positioned pair; a quiet pair keeps its pla
   seedRecords(dir, "alpha", "2026-08-15", [event(0)]);
   seedRecords(dir, "beta", "2026-08-15", [event(1)]);
   seed(dir, "beta", "logs/2026-08-15.log", "[2026-08-15T11:00:00.000Z] [info] hello\n");
-  const marks = captureMarks(dir, ["alpha", "beta"], ["telemetry", "log"]);
+  const service = new ReplayService(dir);
+  const marks = service.captureMarks(["alpha", "beta"], ["telemetry", "log"]);
   const plan = planReplay(marks, undefined);
   if (!plan.ok) throw new Error("unexpected CURSOR_EXPIRED");
   expect(initialCursor(plan.pairs)).toEqual([
@@ -234,7 +270,7 @@ test("composite cursor carries every positioned pair; a quiet pair keeps its pla
     { project: "beta", source: "telemetry", segment: "2026-08-15", byte_offset: 0 },
     { project: "beta", source: "log", segment: "2026-08-15", byte_offset: 0 },
   ]);
-  const emissions = [...replay(dir, plan.pairs, ALL)];
+  const emissions = [...service.replay(plan.pairs, ALL)];
   const last = emissions.at(-1);
   // Every component present on every emission; earlier pairs rest at their marks.
   expect(last?.cursor.map((component) => component.project)).toEqual(["alpha", "beta", "beta"]);

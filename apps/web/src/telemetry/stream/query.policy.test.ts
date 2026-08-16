@@ -42,6 +42,9 @@ const grammar: readonly [string, "ok" | "FILTER_UNKNOWN" | "FILTER_INVALID"][] =
   ["since=2026-08-15T00:00:00.250%2B02:00", "ok"],
   ["since=2026-08-15T00:00:00.250+02:00", "FILTER_INVALID"],
   ["since=yesterday", "FILTER_INVALID"],
+  // Date.parse would normalize this into March; the grammar must not.
+  ["since=2026-02-30T00:00:00Z", "FILTER_INVALID"],
+  ["since=2026-08-15T24:00:00Z", "FILTER_INVALID"],
   ["since=2026-08-15", "FILTER_INVALID"],
   ["until=2026-08-15T23:59:59Z", "ok"],
   ["until=2026-13-40T00:00:00Z", "FILTER_INVALID"],

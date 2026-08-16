@@ -5,6 +5,8 @@
 // and exact resume (#82's scope) and never mutates any store.
 export * from "./cursor.render";
 export * from "./query.policy";
+export * from "./replay.policy";
 export * from "./replay.service";
+export * from "./snapshot.render";
 export * from "./snapshot.service";
 export * from "./stream.service";

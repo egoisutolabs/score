@@ -1,10 +1,9 @@
 /**
- * Subscribe-time snapshots from the live owners: config keys, resolved.json,
- * status.json, and SupervisorAdapter.status() — never the telemetry log
- * (evidence is never truth, locked decision 11). Snapshots are built once
- * per subscribe and never refreshed mid-stream; a reconnect gets fresh
- * ones. Every field emitted is an allowlisted copy — absolute paths
- * (mainLocation, worktreeLocation) and free error text never leave the box.
+ * Subscribe-time owner reads: config keys, resolved.json, status.json, and
+ * the supervisor job table through core's read-only observation seam — never
+ * the telemetry log (evidence is never truth, locked decision 11). One
+ * observation per subscribe, never refreshed mid-stream; a reconnect gets a
+ * fresh one. Payload shaping lives in snapshot.render.ts.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -13,7 +12,6 @@ import type { StatusFile } from "@score/core/daemon/status.service";
 import type { Health } from "@score/core/observation/health.policy";
 import { healthFor } from "@score/core/observation/health.policy";
 import type { JobStatus } from "@score/core/observation/jobs.service";
-import type { TelemetryCursor } from "@score/core/telemetry/telemetry.interface";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@score/shared/config/resolve";
 
@@ -23,20 +21,6 @@ export interface SnapshotConfigView {
   readonly model: string | null;
   readonly tick_interval_ms: number;
   readonly max_parallel: number;
-}
-
-/**
- * status.json minus last_error/last_gate_failure: their free text can embed
- * absolute paths and raw gate output, which never enter API payloads — the
- * health reasons already carry the crashed/stale verdict those fields feed.
- */
-export interface SnapshotStatusView {
-  readonly state: StatusFile["state"];
-  readonly pid: number;
-  readonly tick: number | null;
-  readonly last_pass_started_at: string | null;
-  readonly last_pass_completed_at: string | null;
-  readonly updated_at: string;
 }
 
 export interface ProjectObservation {
@@ -51,131 +35,73 @@ export interface ProjectObservation {
 
 export interface FleetObservation {
   readonly keys: readonly string[];
-  /** False adds a CONFIG_UNPARSEABLE warning to the fleet snapshot. */
+  /** False adds a CONFIG_UNPARSEABLE warning to the snapshots. */
   readonly configReadable: boolean;
+  /** False adds a SUPERVISOR_UNREADABLE warning — job facts are unknown, not absent. */
+  readonly jobsReadable: boolean;
   readonly projects: readonly ProjectObservation[];
 }
 
-export interface FleetObservationDeps {
+export interface SnapshotDeps {
   readonly projectsDir: string;
   readonly readConfig: () => Promise<ScoreConfig | null>;
-  readonly jobs: () => Promise<readonly JobStatus[]>;
+  readonly jobs: () => Promise<readonly JobStatus[] | null>;
 }
 
 /**
  * One subscribe's worth of owner reads. Membership is the union of config
  * keys, supervisor jobs, and project state dirs — a decommissioned config
  * entry with surviving segments still replays, a config-only project still
- * appears as disabled/stopped. Every read degrades to null, never throws:
- * the stream is a disposable viewer of files another process owns.
+ * appears as disabled/stopped. Every read degrades to null with an explicit
+ * flag, never throws: the stream is a disposable viewer of files another
+ * process owns.
  */
-export async function observeFleet(
-  deps: FleetObservationDeps,
-  nowMs: number,
-): Promise<FleetObservation> {
-  const config = await deps.readConfig().catch(() => null);
-  const jobs = new Map((await deps.jobs().catch(() => [])).map((job) => [job.key, job]));
-  const keys = [
-    ...new Set([
-      ...Object.keys(config?.projects ?? {}),
-      ...jobs.keys(),
-      ...listProjectDirs(deps.projectsDir),
-    ]),
-  ].sort();
-  return {
-    keys,
-    configReadable: config !== null,
-    projects: keys.map((key) => {
-      const job = jobs.get(key);
-      const status = readStatusFile(join(deps.projectsDir, key, "status.json"));
-      const resolved = readConfigView(join(deps.projectsDir, key, "resolved.json"));
-      const tickIntervalMs =
-        resolved?.tick_interval_ms ??
-        config?.projects[key]?.config.tick_interval_ms ??
-        DEFAULT_TICK_INTERVAL_MS;
-      return {
-        key,
-        enabled: config === null ? null : (config.projects[key]?.enabled ?? null),
-        job,
-        status,
-        config: resolved,
-        health: healthFor({ job, status, tickIntervalMs, nowMs }),
-      };
-    }),
-  };
-}
+export class SnapshotService {
+  constructor(private readonly deps: SnapshotDeps) {}
 
-export interface FleetSnapshotData {
-  readonly projects: readonly {
-    readonly project: string;
-    readonly enabled: boolean | null;
-    readonly health: Health;
-  }[];
-}
+  async observe(nowMs: number): Promise<FleetObservation> {
+    const config = await this.deps.readConfig().catch(() => null);
+    const jobList = await this.deps.jobs().catch(() => null);
+    const jobs = new Map((jobList ?? []).map((job) => [job.key, job]));
+    const keys = [
+      ...new Set([
+        ...Object.keys(config?.projects ?? {}),
+        ...jobs.keys(),
+        ...this.listProjectDirs(),
+      ]),
+    ].sort();
+    return {
+      keys,
+      configReadable: config !== null,
+      jobsReadable: jobList !== null,
+      projects: keys.map((key) => {
+        const job = jobs.get(key);
+        const status = readStatusFile(join(this.deps.projectsDir, key, "status.json"));
+        const resolved = readConfigView(join(this.deps.projectsDir, key, "resolved.json"));
+        const tickIntervalMs =
+          resolved?.tick_interval_ms ??
+          config?.projects[key]?.config.tick_interval_ms ??
+          DEFAULT_TICK_INTERVAL_MS;
+        return {
+          key,
+          enabled: config === null ? null : (config.projects[key]?.enabled ?? null),
+          job,
+          status,
+          config: resolved,
+          health: healthFor({ job, status, tickIntervalMs, nowMs }),
+        };
+      }),
+    };
+  }
 
-export function fleetSnapshotData(observation: FleetObservation): FleetSnapshotData {
-  return {
-    projects: observation.projects.map((project) => ({
-      project: project.key,
-      enabled: project.enabled,
-      health: project.health,
-    })),
-  };
-}
-
-export interface ProjectSnapshotData {
-  readonly project: string;
-  readonly enabled: boolean | null;
-  readonly supervisor: { readonly loaded: boolean; readonly pid?: number } | null;
-  readonly status: SnapshotStatusView | null;
-  readonly config: SnapshotConfigView | null;
-  readonly health: Health;
-  /** The replay high-water positions captured for this project at subscribe. */
-  readonly telemetry_watermark: readonly Omit<TelemetryCursor, "project">[];
-}
-
-export function projectSnapshotData(
-  project: ProjectObservation,
-  watermark: readonly TelemetryCursor[],
-): ProjectSnapshotData {
-  return {
-    project: project.key,
-    enabled: project.enabled,
-    supervisor:
-      project.job === undefined
-        ? null
-        : {
-            loaded: project.job.loaded,
-            ...(project.job.pid !== undefined && { pid: project.job.pid }),
-          },
-    status:
-      project.status === null
-        ? null
-        : {
-            state: project.status.state,
-            pid: project.status.pid,
-            tick: project.status.tick,
-            last_pass_started_at: project.status.last_pass_started_at,
-            last_pass_completed_at: project.status.last_pass_completed_at,
-            updated_at: project.status.updated_at,
-          },
-    config: project.config,
-    health: project.health,
-    telemetry_watermark: watermark.map(({ source, segment, byte_offset }) => ({
-      source,
-      segment,
-      byte_offset,
-    })),
-  };
-}
-
-function listProjectDirs(projectsDir: string): readonly string[] {
-  try {
-    return readdirSync(projectsDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
-    return [];
+  private listProjectDirs(): readonly string[] {
+    try {
+      return readdirSync(this.deps.projectsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      return [];
+    }
   }
 }
 
