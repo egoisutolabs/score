@@ -135,6 +135,18 @@ export const cleanupRows: readonly MappingRow<CleanupResult>[] = [
     ],
   },
   {
+    label: "auto-pull AUTO_PULL_REFUSED",
+    input: { action: "AUTO_PULL_REFUSED", message: "primary checkout is not clean: a.txt" },
+    expected: [
+      {
+        name: "score.cleanup.decision",
+        subject: {},
+        attributes: { action: "AUTO_PULL_REFUSED" },
+        body: "primary checkout is not clean: a.txt",
+      },
+    ],
+  },
+  {
     label: "unknown action keeps the record",
     input: { pullRequestNumber: 15, action: "EVAPORATED" } as unknown as CleanupResult,
     expected: [

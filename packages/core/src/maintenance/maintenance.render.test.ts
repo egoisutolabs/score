@@ -95,3 +95,21 @@ test("a starved tick renders its cleanup lines and the capacity line", () => {
     { level: "info", text: "tick: cleaned=1 started=0 failed=0" },
   ]);
 });
+
+test("an auto-pull refusal renders as a loud warn every tick (#91)", () => {
+  const lines = renderMaintenanceTick(
+    tick(dispatch(), [
+      {
+        action: "AUTO_PULL_REFUSED",
+        message: "primary checkout is not clean: apps/web/.next/cache/a",
+      },
+    ]),
+  );
+
+  expect(lines).toEqual([
+    {
+      level: "warn",
+      text: "⚠ auto-pull of the default branch refused: primary checkout is not clean: apps/web/.next/cache/a",
+    },
+  ]);
+});
