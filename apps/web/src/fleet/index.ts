@@ -8,5 +8,6 @@ export * from "./actions.service";
 export * from "./dot.policy";
 export * from "./envelope.render";
 export * from "./fleet.service";
+export * from "./github.service";
 export * from "./project-view.render";
 export * from "./snapshot.service";

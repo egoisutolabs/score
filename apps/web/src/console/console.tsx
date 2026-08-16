@@ -16,7 +16,7 @@ import {
 import { ActivityPane } from "@/console/activity-pane";
 import { AlertBanner, troubledProjects } from "@/console/alert-banner";
 import { ConfigPage } from "@/console/config-page";
-import { useFleet, useLogStream, useProjectAction } from "@/console/fleet.hooks";
+import { useFleet, useGithub, useLogStream, useProjectAction } from "@/console/fleet.hooks";
 import { DOT_WORD, type ProjectAction, type ProjectViewJson } from "@/console/fleet-view.interface";
 import { timeAgo } from "@/console/format";
 import { HistoryPage } from "@/console/history-page";
@@ -128,6 +128,7 @@ export function Console() {
   const selected = projects.find((project) => project.key === selectedKey);
   // The journal stream only runs while the Debug tab is showing.
   const journal = useLogStream(debug && tab === "fleet" ? (selected?.key ?? null) : null, follow);
+  const { github } = useGithub(selected?.key ?? null);
 
   const select = useCallback((key: string): void => {
     setSelectedKey(key);
@@ -205,7 +206,8 @@ export function Console() {
 
   const selectedKeyOrNull = selected?.key ?? null;
   const stats = selectedKeyOrNull === null ? null : tiles(events, selectedKeyOrNull, nowMs);
-  const cards = selectedKeyOrNull === null ? [] : openPrs(foldProject(events, selectedKeyOrNull));
+  const fold = selectedKeyOrNull === null ? null : foldProject(events, selectedKeyOrNull);
+  const cards = fold === null ? [] : openPrs(fold);
   const buckets =
     selectedKeyOrNull === null ? [] : mergesPerDay(events, selectedKeyOrNull, CHART_DAYS, nowMs);
   const rows = selectedKeyOrNull === null ? [] : feedRows(events, selectedKeyOrNull, 200);
@@ -345,7 +347,15 @@ export function Console() {
                 {stats !== null && (
                   <StatTiles
                     stats={[
-                      { label: "PRs open", value: stats.prsOpen, tone: "blue" },
+                      // Live GitHub counts when the read works; the journal's
+                      // derived numbers otherwise — labeled identically, since
+                      // both answer the same question.
+                      { label: "issues open", value: github === null ? "—" : github.openIssues },
+                      {
+                        label: "PRs open",
+                        value: github === null ? stats.prsOpen : github.prs.length,
+                        tone: "blue",
+                      },
                       {
                         label: "stuck",
                         value: stats.stuck,
@@ -357,7 +367,6 @@ export function Console() {
                         value: stats.issuesBlocked,
                         ...(stats.issuesBlocked > 0 ? { tone: "red" as const } : {}),
                       },
-                      { label: "agent", value: selected.resolved?.agent.split(" ")[0] ?? "-" },
                     ]}
                   />
                 )}
@@ -380,7 +389,13 @@ export function Console() {
                   onDebugChange={setDebug}
                 />
               </main>
-              <PrPanel cards={cards} repo={selected.resolved?.repo ?? null} nowMs={nowMs} />
+              <PrPanel
+                github={github}
+                fold={fold}
+                fallbackCards={cards}
+                repo={selected.resolved?.repo ?? null}
+                nowMs={nowMs}
+              />
             </>
           )}
         </div>

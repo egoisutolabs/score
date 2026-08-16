@@ -93,7 +93,8 @@ async function readStatusFile(path: string): Promise<StatusFile | null> {
   };
 }
 
-async function readResolvedView(path: string): Promise<ResolvedView | null> {
+/** Exported for the github service: it needs the same lenient resolved read. */
+export async function readResolvedView(path: string): Promise<ResolvedView | null> {
   const raw = await readJson(path);
   if (raw === null) return null;
   const agent =

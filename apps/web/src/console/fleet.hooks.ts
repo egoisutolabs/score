@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FleetJson, ProjectAction, ProjectViewJson } from "@/console/fleet-view.interface";
+// Type-only: the server module never enters the client bundle.
+import type { GithubJson } from "@/fleet/github.service";
 
 /** The TUI's poll cadence, kept: the daemon writes state at tick granularity. */
 export const POLL_MS = 1000;
@@ -163,6 +165,52 @@ export function useLogStream(
   }, [projectKey, generation]);
 
   return { lines, live };
+}
+
+/** Live GitHub reads are two gh calls server-side; poll them gently. */
+const GITHUB_POLL_MS = 30_000;
+
+/**
+ * One project's live GitHub observation (open PRs with landing's verdicts,
+ * open-issue count). The server caches per project, so this cadence is a
+ * browser-side courtesy, not the real rate limiter. null while loading,
+ * unconfigured, or unreadable — the panel falls back to telemetry truth.
+ */
+export function useGithub(projectKey: string | null): { readonly github: GithubJson | null } {
+  const [github, setGithub] = useState<GithubJson | null>(null);
+  const inFlight = useRef(false);
+
+  useEffect(() => {
+    setGithub(null);
+    if (projectKey === null) return;
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      try {
+        const data = await fetchEnvelope<GithubJson>(
+          `/api/v1/projects/${encodeURIComponent(projectKey)}/github`,
+        );
+        if (!cancelled) setGithub(data);
+      } catch {
+        // Unconfigured or unreadable: the panel's telemetry fallback owns
+        // this state; a stale observation is worse than none.
+        if (!cancelled) setGithub(null);
+      } finally {
+        inFlight.current = false;
+      }
+    };
+    void poll();
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") void poll();
+    }, GITHUB_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [projectKey]);
+
+  return { github };
 }
 
 /**

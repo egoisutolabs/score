@@ -16,7 +16,9 @@ export type FleetWarningReason =
   | "ACTION_INVALID"
   | "ACTION_FAILED"
   | "DEFINITION_MISSING"
-  | "ORIGIN_FORBIDDEN";
+  | "ORIGIN_FORBIDDEN"
+  | "GITHUB_UNCONFIGURED"
+  | "GITHUB_UNREADABLE";
 
 export interface FleetWarning {
   readonly reason: FleetWarningReason;
