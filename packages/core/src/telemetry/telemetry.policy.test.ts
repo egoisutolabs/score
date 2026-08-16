@@ -153,6 +153,11 @@ test("span identifiers are non-empty and durations finite, non-negative", () => 
   for (const duration_ms of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
     expect(recordViolations({ ...span, duration_ms }), String(duration_ms)).not.toEqual([]);
   }
+  // status is a declared enum — out-of-vocabulary values from untrusted JSON reject.
+  expect(recordViolations({ ...span, status: "ok" })).toEqual([]);
+  for (const status of ["pending", 123]) {
+    expect(recordViolations({ ...span, status: status as never }), String(status)).not.toEqual([]);
+  }
 });
 
 // --- secret shapes: this table IS the spec ---

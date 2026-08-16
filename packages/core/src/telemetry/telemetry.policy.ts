@@ -184,6 +184,8 @@ export function recordViolations(record: TelemetryRecord): string[] {
       (!Number.isFinite(record.duration_ms) || record.duration_ms < 0)
     )
       violations.push("duration_ms must be a finite non-negative number");
+    if (record.status !== undefined && record.status !== "ok" && record.status !== "error")
+      violations.push('status must be "ok" or "error"');
   }
   if (record.signal === "metric") {
     if (attributes !== undefined)
