@@ -10,10 +10,9 @@
 
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
-import { supervisorForPlatform } from "@score/core/supervisor/supervisor-adapter.interface";
+import type { JobStatus } from "@score/core/observation/jobs.service";
+import { readSupervisorJobs } from "@score/core/observation/jobs.service";
 import type { TelemetrySource } from "@score/core/telemetry/telemetry.interface";
-import { BunCommandRunner } from "@score/shared/adapters/command-runner.service";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { scoreHome } from "@score/shared/config/layout";
 import { loadConfig } from "@score/shared/config/load";
@@ -44,16 +43,18 @@ export interface StreamDeps {
 export function defaultStreamDeps(): StreamDeps {
   return {
     projectsDir: join(scoreHome(), "projects"),
-    readConfig: () => loadConfig().catch(() => null),
-    jobs: async () => {
-      // An unsupported platform or a failing supervisor read degrades to an
-      // empty job list — membership still comes from config and state dirs.
+    // Absence is an empty fleet, not an unreadable one (readyz's same
+    // boundary); only a present-but-unparseable config degrades with a warning.
+    readConfig: async () => {
       try {
-        return await supervisorForPlatform(new BunCommandRunner()).adapter.status();
-      } catch {
-        return [];
+        return await loadConfig();
+      } catch (error) {
+        return (error as { code?: string }).code === "ENOENT" ? { version: 1, projects: {} } : null;
       }
     },
+    // Read-only by construction: the observation seam exposes status alone,
+    // so lifecycle verbs stay unreachable from this app (locked decision 6).
+    jobs: readSupervisorJobs,
     now: () => new Date(),
     streamId: () => randomUUID(),
   };
@@ -138,7 +139,11 @@ export async function openStream(
       if (emission.kind === "warning") {
         yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: emission.reason }]), cursor);
       } else if (emission.kind === "telemetry") {
-        yield sseFrame(TELEMETRY_RECORD_EVENTS[emission.record.signal], wrap(emission.record), cursor);
+        yield sseFrame(
+          TELEMETRY_RECORD_EVENTS[emission.record.signal],
+          wrap(emission.record),
+          cursor,
+        );
       } else {
         yield sseFrame(LOG_RECORD_EVENT, wrap(emission.record), cursor);
       }

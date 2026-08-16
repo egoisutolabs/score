@@ -8,9 +8,13 @@
  * layout — this module never writes, repairs, or reconciles a file.
  */
 
-import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { TelemetryCursor, TelemetryRecord, TelemetrySource } from "@score/core/telemetry/telemetry.interface";
+import type {
+  TelemetryCursor,
+  TelemetryRecord,
+  TelemetrySource,
+} from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
 import type { WarningReason } from "../stream-envelope.interface";
 import type { StreamLogRecord, StreamQuery } from "./query.policy";
@@ -212,12 +216,14 @@ export function* replay(
     const layout = SOURCE_LAYOUT[pair.source];
     for (const segment of pair.segments) {
       const extension = pair.source === "telemetry" ? ".jsonl" : ".log";
-      const realPath = join(projectsDir, pair.project, layout.dir, `${segment.segment}${extension}`);
+      const realPath = join(
+        projectsDir,
+        pair.project,
+        layout.dir,
+        `${segment.segment}${extension}`,
+      );
       const warned = new Set<WarningReason>();
-      const warn = function* (
-        this: void,
-        reason: WarningReason,
-      ): Generator<ReplayEmission> {
+      const warn = function* (this: void, reason: WarningReason): Generator<ReplayEmission> {
         if (warned.has(reason)) return;
         warned.add(reason);
         yield { kind: "warning", reason, cursor: composite() };
@@ -279,13 +285,21 @@ const LOG_LINE = /^\[([^\]]+)\] \[([a-z]+)\] (.*)$/;
 function parseLine(
   pair: PairPlan,
   text: string,
-): { kind: "telemetry"; record: TelemetryRecord } | { kind: "log"; record: StreamLogRecord } | "UNPARSEABLE" {
+):
+  | { kind: "telemetry"; record: TelemetryRecord }
+  | { kind: "log"; record: StreamLogRecord }
+  | "UNPARSEABLE" {
   if (pair.source === "log") {
     const match = LOG_LINE.exec(text);
     if (match === null) return "UNPARSEABLE";
     return {
       kind: "log",
-      record: { project: pair.project, ts: match[1] as string, level: match[2] as string, body: match[3] as string },
+      record: {
+        project: pair.project,
+        ts: match[1] as string,
+        level: match[2] as string,
+        body: match[3] as string,
+      },
     };
   }
   let parsed: unknown;
@@ -345,7 +359,10 @@ function readCycle(path: string, offset: number, mark: number): Cycle | "UNREADA
     let cursor = 0;
     while (cursor <= lastNewline && lines.length < REPLAY_BATCH_LIMIT) {
       const newline = view.indexOf(NEWLINE, cursor);
-      lines.push({ text: view.subarray(cursor, newline).toString("utf8"), end: offset + newline + 1 });
+      lines.push({
+        text: view.subarray(cursor, newline).toString("utf8"),
+        end: offset + newline + 1,
+      });
       cursor = newline + 1;
     }
     return { lines };

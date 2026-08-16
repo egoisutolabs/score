@@ -7,12 +7,12 @@
  * (mainLocation, worktreeLocation) and free error text never leave the box.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StatusFile } from "@score/core/daemon/status.service";
 import type { Health } from "@score/core/observation/health.policy";
 import { healthFor } from "@score/core/observation/health.policy";
-import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
+import type { JobStatus } from "@score/core/observation/jobs.service";
 import type { TelemetryCursor } from "@score/core/telemetry/telemetry.interface";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
 import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@score/shared/config/resolve";
@@ -144,7 +144,10 @@ export function projectSnapshotData(
     supervisor:
       project.job === undefined
         ? null
-        : { loaded: project.job.loaded, ...(project.job.pid !== undefined && { pid: project.job.pid }) },
+        : {
+            loaded: project.job.loaded,
+            ...(project.job.pid !== undefined && { pid: project.job.pid }),
+          },
     status:
       project.status === null
         ? null

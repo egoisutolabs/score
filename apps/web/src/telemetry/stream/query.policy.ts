@@ -184,14 +184,15 @@ function inWindow(query: StreamQuery, ts: string): boolean {
   const ms = Date.parse(ts);
   // An unparseable timestamp has no place in any window.
   if (Number.isNaN(ms)) return false;
-  return (query.sinceMs === undefined || ms >= query.sinceMs) &&
-    (query.untilMs === undefined || ms <= query.untilMs);
+  return (
+    (query.sinceMs === undefined || ms >= query.sinceMs) &&
+    (query.untilMs === undefined || ms <= query.untilMs)
+  );
 }
 
 /** Spans carry `attributes.phase`, metrics `labels.phase`, decision events their name's segment. */
 function phaseOf(record: TelemetryRecord): Phase | undefined {
-  const declared =
-    record.signal === "metric" ? record.labels?.phase : record.attributes?.phase;
+  const declared = record.signal === "metric" ? record.labels?.phase : record.attributes?.phase;
   if (typeof declared === "string" && isPhase(declared)) return declared;
   const segment = record.name.split(".")[1];
   return segment !== undefined && isPhase(segment) ? segment : undefined;

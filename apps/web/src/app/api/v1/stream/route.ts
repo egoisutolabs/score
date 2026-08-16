@@ -5,8 +5,8 @@
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-import { envelope } from "../../../../telemetry/stream-envelope.render";
 import { openStream } from "../../../../telemetry/stream/stream.service";
+import { envelope } from "../../../../telemetry/stream-envelope.render";
 
 export async function GET(request: Request): Promise<Response> {
   const outcome = await openStream(
