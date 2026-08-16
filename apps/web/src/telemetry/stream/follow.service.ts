@@ -71,9 +71,9 @@ export class FollowService {
     };
 
     const enqueue = (frame: string): boolean => {
-      // The 1025th queued envelope disconnects this subscriber. Nothing
-      // queued is owed to it: the client resumes exactly from the last
-      // frame actually written, which is the only cursor it ever saw.
+      // The 1025th queued envelope disconnects this subscriber: what is
+      // already queued still drains, then the stream ends, and the client
+      // resumes exactly from the last frame it received.
       if (queue.length >= FOLLOW_QUEUE_LIMIT) {
         overflowed = true;
         return false;
@@ -151,14 +151,16 @@ export class FollowService {
       scan();
       armHeartbeat();
       for (;;) {
-        if (overflowed) return;
+        // Drain before honoring overflow or closing: everything enqueued is
+        // in-bound and owed to the client; only the frames that never fit
+        // ride on its resume.
         const next = queue.shift();
         if (next !== undefined) {
           armHeartbeat();
           yield next;
           continue;
         }
-        if (closing) return;
+        if (overflowed || closing) return;
         if (heartbeatDue) {
           armHeartbeat();
           yield HEARTBEAT_FRAME;

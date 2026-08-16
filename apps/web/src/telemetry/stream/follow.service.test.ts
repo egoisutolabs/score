@@ -298,8 +298,9 @@ test("the 1025th queued envelope disconnects; the last written cursor resumes ex
   const upfront = await pullUntil(gen, "score.stream.caught_up");
   const caughtUp = upfront.at(-1)?.envelope.cursor ?? null;
 
-  // The consumer never pulls again while the writer floods one envelope
-  // past the ceiling: the subscription is disconnected, not stalled.
+  // The consumer never pulls while the writer floods one envelope past the
+  // ceiling: the 1024 buffered envelopes still drain, then the subscription
+  // is disconnected — never stalled, never re-fed.
   expect(FOLLOW_QUEUE_LIMIT).toBe(1024);
   const pending = gen.next();
   appendProbes(
@@ -309,10 +310,22 @@ test("the 1025th queued envelope disconnects; the last written cursor resumes ex
     Array.from({ length: FOLLOW_QUEUE_LIMIT + 1 }, (_, i) => i + 1),
   );
   await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
-  expect((await pending).done).toBe(true);
+  const delivered: ParsedFrame[] = [];
+  let step = await pending;
+  while (!step.done) {
+    delivered.push(parseFrames(step.value)[0] as ParsedFrame);
+    step = await gen.next();
+  }
+  expect(probeNs(delivered)).toEqual(Array.from({ length: FOLLOW_QUEUE_LIMIT }, (_, i) => i + 1));
 
-  // The client's last written cursor (caught_up) resumes with every flooded
-  // record — no gap, no duplicate.
+  // Resuming from the last delivered frame yields exactly the one record
+  // that never fit; from caught_up, the whole flood — no gap, no duplicate.
+  const tail = await collect(
+    deps,
+    "projects=score&signals=event&follow=false",
+    delivered.at(-1)?.envelope.cursor ?? null,
+  );
+  expect(probeNs(tail)).toEqual([FOLLOW_QUEUE_LIMIT + 1]);
   const resumed = await collect(deps, "projects=score&signals=event&follow=false", caughtUp);
   expect(probeNs(resumed)).toEqual(Array.from({ length: FOLLOW_QUEUE_LIMIT + 1 }, (_, i) => i + 1));
 
