@@ -143,7 +143,8 @@ Verified manually against `opencode 1.17.15` (`opencode serve --hostname
 
 ## Supervisor platforms
 
-`score up / down / tui` pick the supervisor by platform: launchd
+`score up / down` (and the console's start/stop/restart actions) pick the
+supervisor by platform: launchd
 (`~/Library/LaunchAgents`) on macOS, systemd user units
 (`~/.config/systemd/user/score-<key>.service`) on Linux. Other platforms are
 unsupported and fail before touching anything.
@@ -158,10 +159,17 @@ loginctl enable-linger $USER
 `score doctor` deliberately does not check this — it is documented, not
 enforced.
 
+## Console
+
+`score ui [--port <n>]` serves the web console at `http://127.0.0.1:<n>`
+(default 3111). The first run builds the Next.js app; later runs reuse the
+build. The console is a viewer over the fleet, nothing more: the daemon keeps
+running independently, and quitting the console never touches the fleet.
+
 ## Layout
 
-Bun workspaces + Turborepo. `apps/{daemon,tui,web}` are entry points (the
-`score` CLI is `apps/daemon`; `web` is the API-only Next.js app);
+Bun workspaces + Turborepo. `apps/{daemon,web}` are entry points (the
+`score` CLI is `apps/daemon`; `web` is the web console (Next.js));
 `packages/{shared,core,agents,tracker}` are libraries — ports live in `core`,
 implementations in `agents`/`tracker`. Files are named `<noun>.<role>.ts`
 (`.service`, `.policy`, `.render`, `.interface`, `.run`); see `AGENTS.md`.

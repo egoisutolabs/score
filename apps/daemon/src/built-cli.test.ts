@@ -6,8 +6,9 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * The bundle must actually start, not just bundle: the monorepo split once
- * shipped a dist whose flattened TUI import made every command die on an
- * unresolvable TUI renderer dependency before argv routing.
+ * shipped a dist whose flattened workspace imports made every command die on
+ * an unresolvable dependency before argv routing, so this boots the built
+ * entry and proves argv reaches a command.
  */
 test("the built CLI starts and routes argv", () => {
   const build = spawnSync("bun", ["run", "build"], { cwd: packageRoot, encoding: "utf8" });

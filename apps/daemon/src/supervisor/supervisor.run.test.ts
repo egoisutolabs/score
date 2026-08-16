@@ -788,10 +788,20 @@ test.skipIf(process.getuid?.() === 0)(
   },
 );
 
-test("no lifecycle HTTP route: web/server sources touching routes or fetch carry no lifecycle verbs", async () => {
-  // The control half of decision 6/7 (#58): lifecycle authority stays in the
-  // CLI/supervisor path, so no HTTP-facing app may install/start/stop jobs.
+test("lifecycle over HTTP stays confined to the console's fleet path", async () => {
+  // Decision 6/7 (#58) reserved job lifecycle for the CLI/supervisor path.
+  // The web console supersedes half of that deliberately: start/stop/restart
+  // exist over loopback HTTP, but ONLY through the fleet feature and its
+  // routes, plus the console UI that calls them. Everything else in an
+  // HTTP-facing app — telemetry, health, stream, any resurrected server
+  // stub — must stay lifecycle-free, so sprawl beyond the sanctioned
+  // surface still fails here.
   const repoRoot = join(import.meta.dirname, "..", "..", "..", "..");
+  const allowed = [
+    join("apps", "web", "src", "fleet") + sep,
+    join("apps", "web", "src", "app", "api", "v1", "projects") + sep,
+    join("apps", "web", "src", "console") + sep,
+  ];
   const offenders: string[] = [];
   for (const app of ["server", "web"]) {
     // A missing app is vacuously clean.
@@ -805,12 +815,15 @@ test("no lifecycle HTTP route: web/server sources touching routes or fetch carry
       }
       const path = join(entry.parentPath, entry.name);
       if (path.includes(`${sep}node_modules${sep}`)) continue;
+      if (allowed.some((prefix) => path.includes(sep + prefix) || path.startsWith(prefix))) {
+        continue;
+      }
       const source = await readFile(path, "utf8");
       // Import boundary first: a route can hide lifecycle calls behind a
       // helper, but the helper still has to import the supervisor feature
-      // or the TUI actions from somewhere in the app.
+      // from somewhere in the app.
       const importsLifecycle =
-        /from\s+["'](@score\/core\/supervisor|@score\/tui|@egoisutolabs\/score)/.test(source) ||
+        /from\s+["'](@score\/core\/supervisor|@egoisutolabs\/score)/.test(source) ||
         /\bsupervisor-adapter|launchd\.service|systemd\.service|supervisor\.run\b/.test(source);
       const routeWithVerbs =
         /route|fetch/i.test(source) &&

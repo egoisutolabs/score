@@ -1,7 +1,10 @@
-// Scaffold contract for #75: API-only, loopback-only, server stub gone.
-// Script text and file globs are the contract — no runtime introspection.
+// Scaffold contract: the web console. #75's API-only rule is retired — the
+// app now owns UI (App Router pages, Tailwind, client components) — but the
+// rest of that contract still holds: loopback-only, Next CLI as the sole
+// command, no custom server, no static export, no Pages Router. Script text
+// and file globs are the contract — no runtime introspection.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import nextConfig from "./next.config";
@@ -9,8 +12,8 @@ import nextConfig from "./next.config";
 const webRoot = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = join(webRoot, "..", "..");
 // Never legitimate source at any depth. "dist" is NOT here: a route segment
-// like src/app/dist/ must stay visible to the API-only globs, so build-output
-// dist dirs are skipped only where a walk opts in.
+// like src/app/dist/ must stay visible to source globs, so build-output dist
+// dirs are skipped only where a walk opts in.
 const SKIP = new Set(["node_modules", ".next", ".turbo", ".git"]);
 const SKIP_WITH_BUILD_OUT = new Set([...SKIP, "dist"]);
 
@@ -25,20 +28,17 @@ function walk(dir: string, skip: ReadonlySet<string> = SKIP): string[] {
   return out;
 }
 
-describe("API-only", () => {
-  const files = walk(webRoot).map((f) => relative(webRoot, f));
-
-  it("has no page.tsx, CSS framework, static export, or custom server", () => {
-    expect(files.filter((f) => /(^|\/)page\.[cm]?[jt]sx?$/.test(f))).toEqual([]);
-    // Pages Router serves UI from any module under pages/ — reject the
-    // directories themselves, not just app-router page.* filenames.
+describe("Next CLI only", () => {
+  it("has no Pages Router, custom server, or static export", () => {
+    // Pages Router serves UI from any module under pages/ — the console is
+    // App Router only, so reject the directories themselves.
     expect(existsSync(join(webRoot, "pages"))).toBe(false);
     expect(existsSync(join(webRoot, "src", "pages"))).toBe(false);
-    expect(files.filter((f) => /\.(css|s[ac]ss)$/.test(f))).toEqual([]);
-    // public/ files are served verbatim by URL — a public/index.html is a UI.
+    expect(existsSync(join(webRoot, "server.ts"))).toBe(false);
+    expect(existsSync(join(webRoot, "server.js"))).toBe(false);
+    // public/ files are served verbatim by URL, outside the router and this
+    // contract's globs — adding one is a conscious contract change.
     expect(existsSync(join(webRoot, "public"))).toBe(false);
-    expect(files.filter((f) => /(^|\/)(tailwind|postcss)\.config\./.test(f))).toEqual([]);
-    expect(files.filter((f) => /(^|\/)server\.[cm]?[jt]s$/.test(f))).toEqual([]);
     // Exact script text: the Next CLI is the sole command — no custom
     // entrypoint, no smuggled second command behind & or &&. Changing a
     // script means consciously updating this contract.
@@ -49,13 +49,6 @@ describe("API-only", () => {
     // Resolved config value, not source text — any spelling of a static
     // export would break `next start` serving /healthz dynamically.
     expect(nextConfig.output).not.toBe("export");
-  });
-
-  it("has no client components", () => {
-    const offenders = files
-      .filter((f) => /\.[cm]?[jt]sx?$/.test(f))
-      .filter((f) => /^\s*["']use client["']/m.test(readFileSync(join(webRoot, f), "utf8")));
-    expect(offenders).toEqual([]);
   });
 });
 
@@ -72,11 +65,16 @@ describe("loopback-only", () => {
   });
 });
 
-describe("healthz route location", () => {
-  // Independent of route.test.ts (which co-moves with the module): Next maps
-  // GET /healthz only from this exact path, so a rename can't stay green.
+describe("route locations", () => {
+  // Independent of each route's own tests (which co-move with the module):
+  // Next maps these URLs only from these exact paths, so a rename can't
+  // stay green.
   it("src/app/healthz/route.ts exists where Next routes it", () => {
     expect(existsSync(join(webRoot, "src", "app", "healthz", "route.ts"))).toBe(true);
+  });
+  it("the console page and layout exist where Next routes them", () => {
+    expect(existsSync(join(webRoot, "src", "app", "page.tsx"))).toBe(true);
+    expect(existsSync(join(webRoot, "src", "app", "layout.tsx"))).toBe(true);
   });
 });
 

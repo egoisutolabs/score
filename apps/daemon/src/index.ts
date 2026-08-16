@@ -4,6 +4,7 @@ import { runDaemon } from "./daemon/daemon.run";
 import { runRepair } from "./repair/repair.run";
 import { runDoctor } from "./supervisor/doctor";
 import { runDown, runRestart, runUp } from "./supervisor/supervisor.run";
+import { runUi } from "./ui/ui.run";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -15,8 +16,8 @@ try {
   else if (command === "down") await runDown(args);
   else if (command === "restart") await runRestart(args);
   else if (command === "doctor") await runDoctor();
-  // Dynamic import keeps OpenTUI out of the daemon/supervisor code paths.
-  else if (command === "tui") await (await import("@score/tui/app")).runTui(args);
+  // `ui` serves the web console from this checkout; it never touches the fleet.
+  else if (command === "ui") await runUi(args);
   else if (command === "config") {
     if (args[0] !== "init" || args.length > 1) throw new Error("usage: score config init");
     await runConfigInit();

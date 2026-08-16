@@ -26,7 +26,7 @@ const stoppedJob: JobStatus = { key: "p", loaded: false };
 
 describe("healthFor", () => {
   // Each reason code produced from its deriveDot fixture in
-  // apps/tui/src/dots.test.ts — the 1:1 mapping the epic locks.
+  // apps/web/src/fleet/dot.policy.test.ts — the 1:1 mapping the epic locks.
   const table: [string, JobStatus | undefined, StatusFile | null, Health][] = [
     ["healthy heartbeat", runningJob, status(), { state: "healthy", reasons: ["OK"] }],
     [
