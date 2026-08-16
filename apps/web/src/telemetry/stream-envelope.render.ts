@@ -18,7 +18,11 @@ export function envelope<T>(data: T, warnings?: readonly ApiWarning[]): StreamEn
   };
 }
 
-/** One SSE frame: named event, the envelope as `data:`, blank-line terminator. */
-export function sseFrame(event: string, body: StreamEnvelope<unknown>): string {
-  return `event: ${event}\ndata: ${JSON.stringify(body)}\n\n`;
+/**
+ * One SSE frame: optional `id:` (the composite cursor a client echoes back
+ * as Last-Event-ID), named event, the envelope as `data:`, blank-line
+ * terminator.
+ */
+export function sseFrame(event: string, body: StreamEnvelope<unknown>, id?: string): string {
+  return `${id === undefined ? "" : `id: ${id}\n`}event: ${event}\ndata: ${JSON.stringify(body)}\n\n`;
 }
