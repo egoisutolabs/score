@@ -95,16 +95,28 @@ export class CleanupService {
     // a quiet fleet must not run stale, and a refusal must be loud, or dirt
     // in the primary silently strands every new worktree on old main.
     if (this.options.autoPullMain) {
-      const pulled = await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch);
-      if (!pulled) {
-        const primary = await this.workspace.observePrimaryCheckout();
-        results.push({
-          action: "AUTO_PULL_REFUSED",
-          message: autoPullRefusalReason(primary, this.options.defaultBranch),
-        });
-      }
+      const refusal = await this.#attemptAutoPull();
+      if (refusal !== undefined) results.push({ action: "AUTO_PULL_REFUSED", message: refusal });
     }
     return results;
+  }
+
+  /** Undefined when the primary fast-forwarded; else the loud refusal reason (#91). */
+  async #attemptAutoPull(): Promise<string | undefined> {
+    try {
+      if (await this.workspace.fastForwardDefaultBranch(this.options.defaultBranch)) {
+        return undefined;
+      }
+    } catch (error) {
+      // The pull itself failed (diverged origin, network): with the attempt
+      // now on every pass, a throw here would kill cleanup+dispatch every
+      // tick — surface it as the refusal instead of a dead phase.
+      return error instanceof Error ? error.message : String(error);
+    }
+    return autoPullRefusalReason(
+      await this.workspace.observePrimaryCheckout(),
+      this.options.defaultBranch,
+    );
   }
 
   /**

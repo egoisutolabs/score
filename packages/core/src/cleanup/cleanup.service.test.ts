@@ -59,6 +59,31 @@ test("a dirty primary reports the auto-pull refusal with the blocking paths, eve
   expect(second.filter((result) => result.action === "AUTO_PULL_REFUSED")).toHaveLength(1);
 });
 
+test("a pull that throws surfaces as a refusal instead of killing the pass (#91)", async () => {
+  class ThrowingPullWorkspace extends CleanupWorkspace {
+    override async fastForwardDefaultBranch(): Promise<boolean> {
+      throw new Error("fatal: Not possible to fast-forward, aborting.");
+    }
+  }
+  const results = await new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: true,
+      agent: { harness: "claude" },
+    },
+    mergedHost,
+    new ThrowingPullWorkspace(),
+    makeAgents(),
+  ).run(false);
+  expect(results[0]?.action).toBe("CLEANED");
+  expect(results).toContainEqual({
+    action: "AUTO_PULL_REFUSED",
+    message: "fatal: Not possible to fast-forward, aborting.",
+  });
+});
+
 test("a clean primary still fast-forwards when the pass cleaned nothing (#91)", async () => {
   class NoWorktreeWorkspace extends CleanupWorkspace {
     override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {

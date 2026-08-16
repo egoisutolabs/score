@@ -34,8 +34,8 @@ export function autoPullRefusalReason(
     const more = paths.length - shown.length;
     return `primary checkout is not clean: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
   }
-  // The dirt was gone by this re-observation, or the pull itself refused
-  // (e.g. origin diverged) — still loud, just without paths to name.
+  // The dirt was gone by this re-observation (a racing operator action) —
+  // still loud, just without paths to name.
   return "fast-forward refused despite a clean primary checkout";
 }
 

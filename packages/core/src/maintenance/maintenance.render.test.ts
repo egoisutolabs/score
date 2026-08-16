@@ -109,7 +109,7 @@ test("an auto-pull refusal renders as a loud warn every tick (#91)", () => {
   expect(lines).toEqual([
     {
       level: "warn",
-      text: "⚠ auto-pull of main refused: primary checkout is not clean: apps/web/.next/cache/a",
+      text: "⚠ auto-pull of the default branch refused: primary checkout is not clean: apps/web/.next/cache/a",
     },
   ]);
 });

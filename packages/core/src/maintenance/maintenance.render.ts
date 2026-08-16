@@ -41,7 +41,7 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
       // commits stale for four hours.
       lines.push({
         level: "warn",
-        text: `⚠ auto-pull of main refused: ${cleanup.message}`,
+        text: `⚠ auto-pull of the default branch refused: ${cleanup.message}`,
       });
     } else if (cleanup.action === "STRANDED_RESPAWNED") {
       lines.push({
