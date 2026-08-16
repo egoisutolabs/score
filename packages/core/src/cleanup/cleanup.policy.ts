@@ -1,3 +1,5 @@
+import type { PrimaryCheckoutObservation } from "@score/core/workspace-driver.interface";
+
 /** Legacy reads each porcelain record's path text without interpreting renames. */
 export function changedPathsFromPorcelain(status: string): readonly string[] {
   return status
@@ -10,6 +12,31 @@ export function cleanupStatusIsSafe(status: string, allowlist: readonly string[]
   return changedPathsFromPorcelain(status).every((path) =>
     allowlist.some((owned) => (owned.endsWith("/") ? path.startsWith(owned) : path === owned)),
   );
+}
+
+/**
+ * Auto-pull refusal (#91): fastForwardDefaultBranch refuses without saying
+ * why, and the silence once left the fleet 30 commits stale for four hours.
+ * The caller re-observes the primary and this names the blockers.
+ */
+export function autoPullRefusalReason(
+  checkout: PrimaryCheckoutObservation,
+  defaultBranch: string,
+): string {
+  if (checkout.branch !== defaultBranch) {
+    return `primary checkout is on ${checkout.branch}, not ${defaultBranch}`;
+  }
+  const paths = changedPathsFromPorcelain(checkout.status);
+  if (paths.length > 0) {
+    // Untracked build caches can dirty hundreds of files; name enough to act
+    // on without flooding the log.
+    const shown = paths.slice(0, 10);
+    const more = paths.length - shown.length;
+    return `primary checkout is not clean: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
+  }
+  // The dirt was gone by this re-observation, or the pull itself refused
+  // (e.g. origin diverged) — still loud, just without paths to name.
+  return "fast-forward refused despite a clean primary checkout";
 }
 
 export interface StrandedEntry {

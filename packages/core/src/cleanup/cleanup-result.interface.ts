@@ -19,4 +19,13 @@ export interface StrandedCleanupResult {
   readonly message?: string;
 }
 
-export type CleanupResult = MergedCleanupResult | StrandedCleanupResult;
+/**
+ * Auto-pull refusal (#91): about the primary checkout itself, so it carries
+ * neither a PR number nor an issue number — only the loud reason.
+ */
+export interface AutoPullCleanupResult {
+  readonly action: "AUTO_PULL_REFUSED";
+  readonly message: string;
+}
+
+export type CleanupResult = MergedCleanupResult | StrandedCleanupResult | AutoPullCleanupResult;

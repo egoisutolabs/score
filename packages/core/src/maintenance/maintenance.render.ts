@@ -36,6 +36,13 @@ export function renderMaintenanceTick(result: MaintenanceTickResult): readonly L
         level: "warn",
         text: `⚠ stranded issue #${cleanup.issueNumber} not reclaimed: ${cleanup.message ?? "dirty worktree"}`,
       });
+    } else if (cleanup.action === "AUTO_PULL_REFUSED") {
+      // Loud on every pass (#91): a silent refusal once ran the fleet 30
+      // commits stale for four hours.
+      lines.push({
+        level: "warn",
+        text: `⚠ auto-pull of main refused: ${cleanup.message}`,
+      });
     } else if (cleanup.action === "STRANDED_RESPAWNED") {
       lines.push({
         level: "warn",
