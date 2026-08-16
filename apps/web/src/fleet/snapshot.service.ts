@@ -16,6 +16,8 @@ export interface ResolvedView {
   readonly maxParallel: number;
   /** owner/repo, for GitHub links; null when resolved.json predates it. */
   readonly repo: string | null;
+  /** The daemon's primary checkout, for the Config view; null when absent. */
+  readonly mainLocation: string | null;
 }
 
 export interface ProjectView {
@@ -105,5 +107,6 @@ async function readResolvedView(path: string): Promise<ResolvedView | null> {
       typeof raw.tickIntervalMs === "number" ? raw.tickIntervalMs : DEFAULT_TICK_INTERVAL_MS,
     maxParallel: typeof raw.maxParallel === "number" ? raw.maxParallel : DEFAULT_MAX_PARALLEL,
     repo: typeof raw.githubRepo === "string" ? raw.githubRepo : null,
+    mainLocation: typeof raw.mainLocation === "string" ? raw.mainLocation : null,
   };
 }

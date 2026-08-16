@@ -128,43 +128,52 @@
   }
 }
 /*
- * score console — committed dark instrument theme. Overrides the generated
- * shadcn blocks above (later :root wins) rather than editing them, so a
- * future `shadcn add` diff stays clean. Design contract: near-monochrome
- * graphite; the ONLY saturated pixels are the four health colors (the TUI's
- * dot vocabulary) — hue means health, never decoration. Selection is a
- * cursor-block inversion, not an accent color. All type is monospace; the
- * console must render identically offline, so no webfonts.
+ * score console — the Score Web design file's system, committed dark-only.
+ * Palette, type (IBM Plex Sans for prose, JetBrains Mono for data), radii,
+ * and accent vocabulary come from the design source ("Score Web.dc"):
+ * health colors carry state, blue carries PR identity/links, cyan carries
+ * agent activity, purple is reserved for the future Brake feature. This
+ * block overrides the generated shadcn tokens above (later :root wins) so
+ * `shadcn add` diffs stay clean. Fonts are bundled (@fontsource) — the
+ * console must render identically offline.
  */
 :root,
 .dark {
-  --font-sans:
-    ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
-  --font-mono: var(--font-sans);
-  --background: oklch(0.163 0.008 261);
-  --foreground: oklch(0.906 0.005 247);
-  --card: oklch(0.192 0.008 261);
-  --card-foreground: var(--foreground);
-  --popover: oklch(0.192 0.008 261);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(0.906 0.005 247);
-  --primary-foreground: oklch(0.163 0.008 261);
-  --secondary: oklch(0.24 0.008 261);
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(0.24 0.008 261);
-  --muted-foreground: oklch(0.62 0.012 250);
-  --accent: oklch(0.24 0.008 261);
-  --accent-foreground: var(--foreground);
-  --destructive: oklch(0.637 0.208 25.3);
-  --border: oklch(0.263 0.009 259);
-  --input: oklch(0.263 0.009 259);
-  --ring: oklch(0.62 0.012 250);
-  --radius: 0.375rem;
-  /* The TUI's dot colors, verbatim — continuity is the point. */
-  --health-green: #3fb950;
-  --health-amber: #d29922;
-  --health-red: #f85149;
-  --health-gray: #6e7681;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --background: #0b0e14;
+  --foreground: #dde3ea;
+  --card: #0d1118;
+  --card-foreground: #dde3ea;
+  --popover: #0d1118;
+  --popover-foreground: #dde3ea;
+  --primary: #dde3ea;
+  --primary-foreground: #0b0e14;
+  --secondary: #161c26;
+  --secondary-foreground: #dde3ea;
+  --muted: #11151d;
+  --muted-foreground: #8a94a6;
+  --accent: #161c26;
+  --accent-foreground: #dde3ea;
+  --destructive: #e06c6c;
+  --border: #1b2330;
+  --input: #232c3a;
+  --ring: #2e3a4c;
+  --radius: 0.625rem;
+  /* State vocabulary (the design's dots and alarms). */
+  --health-green: #3ddc84;
+  --health-amber: #ffb454;
+  --health-red: #e06c6c;
+  --health-gray: #4e5866;
+  /* Non-state accents: identity and activity, never alarm. */
+  --accent-cyan: #56d4dd;
+  --accent-blue: #5aa9ff;
+  --accent-purple: #c792ea;
+  /* Two quieter inks below muted-foreground, straight from the design. */
+  --ink-dim: #5f6875;
+  --ink-faint: #4e5866;
+  /* Cards sit on hairlines one step lighter than the chrome border. */
+  --card-border: #1e2632;
 }
 
 @theme inline {
@@ -172,27 +181,10 @@
   --color-health-amber: var(--health-amber);
   --color-health-red: var(--health-red);
   --color-health-gray: var(--health-gray);
-}
-
-/* The header's tick pulse: one fill per daemon pass (see console/tick-pulse). */
-@keyframes tick-fill {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
-}
-
-/* Vars come from tick-pulse.tsx; reduced motion holds a full, still bar. */
-.tick-pulse {
-  animation: tick-fill var(--tick-interval) linear infinite;
-  animation-delay: var(--tick-delay);
-  transform-origin: left;
-}
-@media (prefers-reduced-motion: reduce) {
-  .tick-pulse {
-    animation: none;
-    transform: scaleX(1);
-  }
+  --color-accent-cyan: var(--accent-cyan);
+  --color-accent-blue: var(--accent-blue);
+  --color-accent-purple: var(--accent-purple);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+  --color-card-border: var(--card-border);
 }

@@ -1,28 +1,35 @@
 "use client";
 
+import { TONE_TEXT, type Tone } from "@/console/tone";
+
 /**
- * The stat-tile row: label above, bare number below — a reading, not a
- * chart. Values arrive computed (activity.policy); a tile never derives.
+ * The design file's stat tiles: quiet sans label, JetBrains Mono value,
+ * hue only where the design assigns one (blue identity, cyan activity,
+ * green landed, amber attention). Values arrive computed
+ * (activity.policy); a tile never derives.
  */
 export interface Stat {
   readonly label: string;
   readonly value: number | string;
-  /** Colors the value; reserved for states worth alarm (health discipline). */
-  readonly tone?: "red" | "amber";
+  readonly tone?: Tone | "blue";
 }
 
-const TONE_CLASS = { red: "text-health-red", amber: "text-health-amber" } as const;
+const VALUE_CLASS: Record<NonNullable<Stat["tone"]>, string> = {
+  ...TONE_TEXT,
+  blue: "text-accent-blue",
+};
 
 export function StatTiles({ stats }: { readonly stats: readonly Stat[] }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
       {stats.map((stat) => (
-        <div key={stat.label} className="rounded-md border bg-card px-4 py-3">
-          <p className="text-[10px] tracking-[0.18em] text-muted-foreground uppercase">
-            {stat.label}
-          </p>
+        <div
+          key={stat.label}
+          className="rounded-[10px] border border-card-border bg-card px-3.5 py-3"
+        >
+          <p className="text-xs text-ink-dim">{stat.label}</p>
           <p
-            className={`mt-1 text-2xl font-semibold tabular-nums ${stat.tone !== undefined ? TONE_CLASS[stat.tone] : ""}`}
+            className={`font-mono text-[22px] leading-relaxed font-medium ${stat.tone !== undefined ? VALUE_CLASS[stat.tone] : "text-foreground"}`}
           >
             {stat.value}
           </p>

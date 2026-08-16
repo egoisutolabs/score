@@ -1,4 +1,12 @@
 import type { Metadata } from "next";
+// Bundled fonts (the design file's pair): the console must render
+// identically with no network, so no Google Fonts <link>.
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/700.css";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 

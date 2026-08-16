@@ -1,9 +1,13 @@
 import { expect, test } from "vitest";
-import type { DecisionEvent } from "./activity.policy";
+import type { DecisionEvent, LandingSpan } from "./activity.policy";
 import {
   feedRows,
   foldProject,
+  historyStats,
+  landingSpans,
+  medianSpanMs,
   mergesPerDay,
+  mergesPerDayByProject,
   openPrs,
   TROUBLE_RANK,
   tiles,
@@ -223,6 +227,129 @@ test("mergesPerDay zero-fills UTC day buckets across a month boundary", () => {
     { day: "2026-03-01", count: 1 },
     { day: "2026-03-02", count: 1 },
   ]);
+});
+
+test("mergesPerDayByProject zero-fills every requested project independently", () => {
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const result = mergesPerDayByProject(
+    [
+      landing(1, "merged", "2026-08-15T09:00:00Z"),
+      { ...landing(2, "merged", "2026-08-16T09:00:00Z"), project: "beta" },
+      { ...landing(3, "merged", "2026-08-16T10:00:00Z"), project: "beta" },
+    ],
+    [PROJECT, "beta", "gamma"],
+    2,
+    now,
+  );
+  expect(result.get(PROJECT)).toEqual([
+    { day: "2026-08-15", count: 1 },
+    { day: "2026-08-16", count: 0 },
+  ]);
+  expect(result.get("beta")).toEqual([
+    { day: "2026-08-15", count: 0 },
+    { day: "2026-08-16", count: 2 },
+  ]);
+  expect(result.get("gamma")).toEqual([
+    { day: "2026-08-15", count: 0 },
+    { day: "2026-08-16", count: 0 },
+  ]);
+});
+
+test("landingSpans measures first-observed-landing to merge, newest first", () => {
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const spans = landingSpans(
+    [
+      landing(7, "checks-pending", "2026-08-16T08:00:00Z"),
+      landing(7, "soaking", "2026-08-16T09:00:00Z"),
+      landing(7, "merged", "2026-08-16T10:00:00Z"),
+      landing(9, "merged", "2026-08-16T11:00:00Z"),
+    ],
+    PROJECT,
+    0,
+    now,
+  );
+  expect(spans).toEqual([
+    // #9's merge is the only landing event seen for it: no span, not zero.
+    { number: 9, project: PROJECT, mergedTs: "2026-08-16T11:00:00Z", spanMs: null },
+    {
+      number: 7,
+      project: PROJECT,
+      mergedTs: "2026-08-16T10:00:00Z",
+      spanMs: 2 * 60 * 60 * 1000,
+    },
+  ]);
+});
+
+test("landingSpans window is (sinceMs, nowMs] and drops dry-run merges", () => {
+  const since = Date.parse("2026-08-15T12:00:00Z");
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const spans = landingSpans(
+    [
+      landing(1, "merged", "2026-08-15T12:00:00Z"),
+      landing(2, "merged", "2026-08-16T12:00:00Z"),
+      landing(3, "merged", "2026-08-16T11:00:00Z", true),
+    ],
+    PROJECT,
+    since,
+    now,
+  );
+  expect(spans.map((span) => span.number)).toEqual([2]);
+});
+
+function span(spanMs: number | null): LandingSpan {
+  return { number: 1, project: PROJECT, mergedTs: T, spanMs };
+}
+
+test("medianSpanMs takes the middle of odd, averages even, ignores nulls, nulls on empty", () => {
+  expect(medianSpanMs([span(30), span(10), span(20)])).toBe(20);
+  expect(medianSpanMs([span(40), span(10), span(30), span(20)])).toBe(25);
+  expect(medianSpanMs([span(10), span(null), span(30)])).toBe(20);
+  expect(medianSpanMs([span(null)])).toBeNull();
+  expect(medianSpanMs([])).toBeNull();
+});
+
+test("historyStats counts merges, unrepaired merges over the whole buffer, and windowed pings", () => {
+  const since = Date.parse("2026-08-16T00:00:00Z");
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const result = historyStats(
+    [
+      // #1 merged clean; #2 merged after a repair ping outside the window —
+      // still repaired, and its ping does not count as a windowed ping.
+      landing(1, "soaking", "2026-08-16T09:00:00Z"),
+      landing(1, "merged", "2026-08-16T10:00:00Z"),
+      repair(2, "PINGED", "2026-08-15T20:00:00Z"),
+      landing(2, "checks-red", "2026-08-15T20:00:00Z"),
+      landing(2, "merged", "2026-08-16T02:00:00Z"),
+      repair(3, "PINGED", "2026-08-16T05:00:00Z"),
+      repair(3, "PINGED", "2026-08-16T06:00:00Z", true),
+    ],
+    PROJECT,
+    since,
+    now,
+  );
+  expect(result).toEqual({
+    merged: 2,
+    medianSpanMs: ((60 + 6 * 60) / 2) * 60 * 1000,
+    mergedWithoutRepair: 1,
+    repairPings: 1,
+  });
+});
+
+test("historyStats ping window is (sinceMs, nowMs]: edges match merged24h's convention", () => {
+  const since = Date.parse("2026-08-16T00:00:00Z");
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const result = historyStats(
+    [
+      repair(1, "PINGED", "2026-08-16T00:00:00Z"),
+      repair(2, "PINGED", "2026-08-16T00:00:01Z"),
+      repair(3, "PINGED", "2026-08-16T12:00:00Z"),
+      repair(4, "PINGED", "2026-08-16T12:00:01Z"),
+    ],
+    PROJECT,
+    since,
+    now,
+  );
+  expect(result.repairPings).toBe(2);
 });
 
 test("feedRows renders each phase's terse line, newest first, capped at limit", () => {

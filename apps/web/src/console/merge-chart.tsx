@@ -1,24 +1,15 @@
 "use client";
 
-// The validated sequential green pair against the console's dark surface:
-// contrast >= 3:1 for both, lightness monotonic past → today. Deliberately
-// literal hexes — the --health-* tokens are reserved for status and must
-// never be borrowed as series color, even though today's green coincides.
-const PAST_GREEN = "#26843b";
-const TODAY_GREEN = "#3fb950";
-
-// Geometry in viewBox units. Only the x axis stretches (the plot is a fixed
-// PLOT_H px tall), so y units are real pixels: the zero stub and label
-// offsets render exactly, while bar/gap widths scale with the pane.
-const BAR_W = 6;
-const GAP = 2;
-const PITCH = BAR_W + GAP;
-const PLOT_H = 96;
-// Headroom above the tallest bar so its count label never clips.
-const MAX_BAR_H = PLOT_H - 14;
-// A zero day still shows a 2px stub — the day visibly exists.
-const STUB_H = 2;
-const TOP_RADIUS = 2.5;
+// The design file's chart greens: past bars sit back, today reads bright.
+// Sequential single hue (validated: contrast >= 3:1 on the card surface,
+// lightness monotonic) — the --health-* tokens stay reserved for status
+// even though today's green coincides.
+const PAST_GREEN = "#245c40";
+const TODAY_GREEN = "#3ddc84";
+/** Bar area height, the design's 84px. */
+const PLOT_H = 84;
+/** A zero day still shows a stub — the day visibly exists. */
+const STUB_H = 4;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -28,26 +19,12 @@ function formatDay(day: string): string {
   return `${MONTHS[Number(month) - 1]} ${Number(date)}`;
 }
 
-/** Rounded top corners only — the baseline edge stays square. */
-function barPath(x: number, height: number): string {
-  // Clamp so a stub-height or narrow bar never folds the arcs over.
-  const r = Math.min(TOP_RADIUS, height, BAR_W / 2);
-  const top = PLOT_H - height;
-  return [
-    `M${x} ${PLOT_H}`,
-    `V${top + r}`,
-    `Q${x} ${top} ${x + r} ${top}`,
-    `H${x + BAR_W - r}`,
-    `Q${x + BAR_W} ${top} ${x + BAR_W} ${top + r}`,
-    `V${PLOT_H}`,
-    "Z",
-  ].join(" ");
-}
-
 /**
- * Merges per day as a single-series bar chart. Purely presentational: the
- * caller guarantees buckets are oldest→newest, zero-filled, one per day.
- * Single series, so no legend; identity is carried by the title above it.
+ * Merges per day, the design file's layout verbatim: one flex column per
+ * day — count in faint mono above, flat bar below — so every day's number
+ * is readable without hover (the design labels every bar; with 14 quiet
+ * single-digit labels that is density, not noise). Purely presentational:
+ * the caller guarantees buckets are oldest→newest, zero-filled.
  */
 export function MergeChart({
   buckets,
@@ -55,86 +32,47 @@ export function MergeChart({
   readonly buckets: readonly { day: string; count: number }[];
 }) {
   const count = buckets.length;
-  const last = count - 1;
   const max = buckets.reduce((m, b) => Math.max(m, b.count), 0);
-  const total = buckets.reduce((sum, b) => sum + b.count, 0);
-  // Scale only when a real max exists; an all-zero span is all stubs, and
-  // guarding here is what keeps the math divide-by-zero free.
-  const heights = buckets.map((b) =>
-    max > 0 && b.count > 0 ? Math.max(STUB_H, (b.count / max) * MAX_BAR_H) : STUB_H,
-  );
+  const mid = buckets[Math.floor(count / 2)];
 
-  // Selective direct labels: only the max bucket and today get a count.
-  // A tie or an all-zero span collapses to today's label alone.
-  const labeled = new Set<number>();
-  if (count > 0) {
-    labeled.add(last);
-    if (max > 0) labeled.add(buckets.findIndex((b) => b.count === max));
+  if (count === 0) {
+    return <p className="text-[12.5px] text-ink-dim">no merge history in the replayed window</p>;
   }
-
-  const summary =
-    count === 0
-      ? "Merges per day: no days recorded"
-      : count === 1
-        ? `Merges per day: ${total} merged on ${formatDay(buckets[0].day)}`
-        : `Merges per day: ${total} merged over ${count} days, ${formatDay(buckets[0].day)} to ${formatDay(buckets[last].day)}`;
 
   return (
     <div className="w-full">
-      <div role="img" aria-label={summary}>
-        {/* The border-b is the 1px recessive baseline; bars anchor onto it,
-            and it stays visible as an empty track when there are no buckets.
-            Height is literal px, NOT rem: the label offsets below are CSS px
-            derived from viewBox units, so a font-relative height would shear
-            labels off their bars under browser font scaling. */}
-        <div className="relative w-full border-b border-border" style={{ height: PLOT_H }}>
-          {count > 0 && (
-            // aria-hidden: the role="img" wrapper carries the accessible name;
-            // per-bar <title>s exist for hover tooltips, not for AT.
-            <svg
-              className="absolute inset-0 h-full w-full"
-              viewBox={`0 0 ${count * PITCH} ${PLOT_H}`}
-              preserveAspectRatio="none"
-              aria-hidden="true"
+      <div
+        role="img"
+        aria-label={`Merges per day over ${count} days, ${formatDay(buckets[0].day)} to today`}
+      >
+        <div className="flex items-end gap-1.5" style={{ height: PLOT_H + 20 }}>
+          {buckets.map((bucket, index) => (
+            <div
+              key={bucket.day}
+              title={`${formatDay(bucket.day)} — ${bucket.count} merged`}
+              className="flex h-full flex-1 flex-col items-center justify-end gap-[5px]"
             >
-              {buckets.map((bucket, index) => (
-                <g key={bucket.day} className="group">
-                  <title>{`${formatDay(bucket.day)} — ${bucket.count} merged`}</title>
-                  <path
-                    d={barPath(index * PITCH + GAP / 2, heights[index])}
-                    fill={index === last ? TODAY_GREEN : PAST_GREEN}
-                    className="group-hover:brightness-125"
-                  />
-                  {/* Full-height, full-pitch hit target so hover doesn't
-                      demand landing on a thin bar or a 2px stub. */}
-                  <rect x={index * PITCH} y={0} width={PITCH} height={PLOT_H} fill="transparent" />
-                </g>
-              ))}
-            </svg>
-          )}
-          {/* Count labels live in HTML, not the stretched SVG, so the text
-              never distorts. Text wears the muted token, never bar color. */}
-          {[...labeled].map((index) => (
-            <span
-              key={buckets[index].day}
-              // leading-none keeps the tallest bar's label line box inside
-              // MAX_BAR_H's headroom instead of inheriting line-height 1.5.
-              className="pointer-events-none absolute -translate-x-1/2 text-[10px] leading-none text-muted-foreground tabular-nums"
-              style={{
-                left: `${((index + 0.5) / count) * 100}%`,
-                bottom: `${heights[index] + 3}px`,
-              }}
-            >
-              {buckets[index].count}
-            </span>
+              <span className="font-mono text-[10.5px] leading-none text-ink-faint">
+                {bucket.count}
+              </span>
+              <div
+                className="w-full rounded-t-[3px]"
+                style={{
+                  height:
+                    max > 0 && bucket.count > 0
+                      ? Math.max(STUB_H, Math.round((bucket.count / max) * PLOT_H))
+                      : STUB_H,
+                  background: index === count - 1 ? TODAY_GREEN : PAST_GREEN,
+                }}
+              />
+            </div>
           ))}
         </div>
-        {count > 0 && (
-          <div className="flex justify-between pt-1 text-[10px] text-muted-foreground">
-            <span>{formatDay(buckets[0].day)}</span>
-            {count > 1 && <span>{formatDay(buckets[last].day)}</span>}
-          </div>
-        )}
+        <div className="flex justify-between pt-1.5 font-mono text-[11px] text-ink-faint">
+          <span>{formatDay(buckets[0].day)}</span>
+          {mid !== undefined && count > 2 && <span>{formatDay(mid.day)}</span>}
+          <span>today</span>
+        </div>
       </div>
       {/* role="img" flattens its subtree for AT; the real data lives here. */}
       <table className="sr-only">

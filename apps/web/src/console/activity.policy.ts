@@ -237,6 +237,121 @@ export function mergesPerDay(
   return buckets;
 }
 
+/** Per-project merge buckets, one zero-filled `mergesPerDay` series per requested project. */
+export function mergesPerDayByProject(
+  events: readonly DecisionEvent[],
+  projects: readonly string[],
+  days: number,
+  nowMs: number,
+): Map<string, MergeDayBucket[]> {
+  const series = new Map<string, MergeDayBucket[]>();
+  for (const project of projects) series.set(project, mergesPerDay(events, project, days, nowMs));
+  return series;
+}
+
+/**
+ * One merged PR and how long landing was observed watching it. `spanMs` is
+ * merge ts minus the first landing decision (any tag) seen for the PR in the
+ * event buffer — "time in landing observation", NOT time-to-merge: the buffer
+ * may begin mid-flight, so the first observed event only bounds when landing
+ * actually started. The UI labels this "landing → merge". Null when the merge
+ * is the only landing event seen for the PR.
+ */
+export interface LandingSpan {
+  readonly number: number;
+  readonly project: string;
+  readonly mergedTs: string;
+  readonly spanMs: number | null;
+}
+
+/** Merges within (sinceMs, nowMs] with their observation spans, newest first. */
+export function landingSpans(
+  events: readonly DecisionEvent[],
+  project: string,
+  sinceMs: number,
+  nowMs: number,
+): LandingSpan[] {
+  // The span starts at the earliest landing event in the whole buffer, not
+  // the window: the window bounds which merges count, not their history.
+  const firstSeenMs = new Map<number, number>();
+  const landingSeen = new Map<number, number>();
+  for (const event of events) {
+    if (!isLive(event, project) || event.name !== LANDING) continue;
+    const number = event.subject?.pull_request_number;
+    if (number === undefined) continue;
+    const tsMs = Date.parse(event.ts);
+    if (Number.isNaN(tsMs)) continue;
+    landingSeen.set(number, (landingSeen.get(number) ?? 0) + 1);
+    const current = firstSeenMs.get(number);
+    if (current === undefined || tsMs < current) firstSeenMs.set(number, tsMs);
+  }
+  const spans: LandingSpan[] = [];
+  for (const event of events) {
+    if (!isLive(event, project) || event.name !== LANDING) continue;
+    if (event.attributes?.tag !== "merged") continue;
+    const number = event.subject?.pull_request_number;
+    if (number === undefined) continue;
+    const mergedMs = Date.parse(event.ts);
+    if (Number.isNaN(mergedMs) || mergedMs <= sinceMs || mergedMs > nowMs) continue;
+    const first = firstSeenMs.get(number);
+    // A lone merge event has no observed history to span.
+    const spanMs =
+      first === undefined || (landingSeen.get(number) ?? 0) < 2 ? null : mergedMs - first;
+    spans.push({ number, project, mergedTs: event.ts, spanMs });
+  }
+  spans.sort((a, b) => Date.parse(b.mergedTs) - Date.parse(a.mergedTs));
+  return spans;
+}
+
+/** Median over the non-null spans; null when every span is null or the list is empty. */
+export function medianSpanMs(spans: readonly LandingSpan[]): number | null {
+  const values = spans
+    .map((span) => span.spanMs)
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b);
+  if (values.length === 0) return null;
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 === 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+}
+
+export interface HistoryStats {
+  readonly merged: number;
+  readonly medianSpanMs: number | null;
+  readonly mergedWithoutRepair: number;
+  readonly repairPings: number;
+}
+
+/** Headline numbers for the History tab; merges and pings windowed to (sinceMs, nowMs]. */
+export function historyStats(
+  events: readonly DecisionEvent[],
+  project: string,
+  sinceMs: number,
+  nowMs: number,
+): HistoryStats {
+  const spans = landingSpans(events, project, sinceMs, nowMs);
+  // Repair history is judged over the whole buffer, not the window: a PR
+  // repaired before the window still did not merge unassisted.
+  const repairedPrs = new Set<number>();
+  let repairPings = 0;
+  for (const event of events) {
+    if (!isLive(event, project) || event.name !== REPAIR) continue;
+    const number = event.subject?.pull_request_number;
+    if (number !== undefined) repairedPrs.add(number);
+    if (event.attributes?.action === "PINGED") {
+      const tsMs = Date.parse(event.ts);
+      if (tsMs > sinceMs && tsMs <= nowMs) repairPings += 1;
+    }
+  }
+  let mergedWithoutRepair = 0;
+  for (const span of spans) if (!repairedPrs.has(span.number)) mergedWithoutRepair += 1;
+  return {
+    merged: spans.length,
+    medianSpanMs: medianSpanMs(spans),
+    mergedWithoutRepair,
+    repairPings,
+  };
+}
+
 /** Fleet-wide merges on nowMs's UTC day — the header's "merged today". */
 export function mergedTodayFleet(events: readonly DecisionEvent[], nowMs: number): number {
   const today = utcDay(nowMs);

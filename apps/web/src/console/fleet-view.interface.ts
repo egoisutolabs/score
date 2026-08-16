@@ -30,6 +30,8 @@ export interface ResolvedJson {
   readonly maxParallel: number;
   /** owner/repo, for GitHub links; null when resolved.json predates it. */
   readonly repo: string | null;
+  /** The daemon's primary checkout, for the Config view; null when absent. */
+  readonly mainLocation: string | null;
 }
 
 export interface ProjectViewJson {

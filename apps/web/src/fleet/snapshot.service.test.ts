@@ -105,6 +105,19 @@ describe("fleetSnapshot", () => {
     expect(view?.resolved?.repo).toBe("acme/alpha");
   });
 
+  it("reads mainLocation from resolved.json for the Config view", async () => {
+    await writeFile(
+      join(home, "projects", "alpha", "resolved.json"),
+      JSON.stringify({ key: "alpha", mainLocation: "/repos/alpha", agent: { harness: "claude" } }),
+    );
+    const [view] = await fleetSnapshot(
+      fakeAdapter([{ key: "alpha", loaded: true, pid: 1 }]),
+      config,
+      NOW,
+    );
+    expect(view?.resolved?.mainLocation).toBe("/repos/alpha");
+  });
+
   it("treats an unreadable status.json as stale, never an error", async () => {
     await writeFile(join(home, "projects", "alpha", "status.json"), "{not json");
     const [view] = await fleetSnapshot(
