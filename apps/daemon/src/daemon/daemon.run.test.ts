@@ -1017,6 +1017,33 @@ test("self-heal aborts a staged merge left in the checkout and logs one recovery
   ]);
 });
 
+test("self-heal finishes a residue sweep a death interrupted, and logs it (#92)", async () => {
+  const repo = await fixtureRepo(false);
+  // As left by a death between landing's abort and its residue sweep: no
+  // MERGE_HEAD, the persisted stage snapshot, and the aborted gate's dirt.
+  await mkdir(join(repo, "apps", "web", ".next"), { recursive: true });
+  await writeFile(join(repo, "apps", "web", ".next", "chunk.js"), "built\n");
+  await writeFile(
+    join(repo, ".git", "score-stage-snapshot.json"),
+    JSON.stringify({ before: [], stagedIgnored: ["apps/web/.next/"] }),
+  );
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+  const log = new CaptureLogger();
+
+  await selfHealStagedMerge(git, log, false, "main");
+
+  expect(existsSync(join(repo, "apps", "web", ".next", "chunk.js"))).toBe(false);
+  expect(log.logged).toEqual([
+    {
+      level: "warn",
+      text: "swept staged-merge build residue left by a previous run: apps/web/.next/chunk.js",
+    },
+  ]);
+});
+
 test("self-heal is silent when no merge is in progress", async () => {
   const repo = await fixtureRepo(false);
   const git = new GitService(new ExecRunner(), {
@@ -1035,6 +1062,7 @@ test("self-heal fails closed when the abort leaves MERGE_HEAD behind", async () 
     mergeInProgress: async () => true,
     abortMerge: async () => {},
     observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
+    sweepStageResidue: async () => [],
   };
   await expect(selfHealStagedMerge(stuck, new CaptureLogger(), false, "main")).rejects.toThrow(
     /failed to abort the staged merge/,
@@ -1049,6 +1077,7 @@ test("self-heal under dry-run only announces the abort it would run", async () =
       aborted = true;
     },
     observePrimaryCheckout: async () => ({ branch: "main", status: "" }),
+    sweepStageResidue: async () => [],
   };
   const log = new CaptureLogger();
 
@@ -1445,6 +1474,9 @@ test("a push failure inside one pass is reconciled by a later pass of the same d
   // — a startup-only recovery would never fire here, which is exactly the
   // regression this test pins.
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  // Git commands are faked (the generic rev-parse answer doubles as the
+  // --absolute-git-dir the #92 snapshot resolves through), but stageMerge
+  // persists that snapshot with real filesystem writes under `repo`.
   const { home } = await managedFixture(repo, undefined, 25);
   await withEnv({ SCORE_HOME: home }, async () => {
     const prJson = JSON.stringify({

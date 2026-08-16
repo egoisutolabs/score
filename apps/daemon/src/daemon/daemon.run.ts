@@ -338,12 +338,24 @@ async function preflightManagedRuntime(
  * one, per locked decision D1: reset and re-land.)
  */
 export async function selfHealStagedMerge(
-  git: Pick<GitService, "mergeInProgress" | "abortMerge" | "observePrimaryCheckout">,
+  git: Pick<
+    GitService,
+    "mergeInProgress" | "abortMerge" | "observePrimaryCheckout" | "sweepStageResidue"
+  >,
   log: Logger,
   dryRun: boolean,
   defaultBranch: string,
 ): Promise<void> {
-  if (!(await git.mergeInProgress())) return;
+  if (!(await git.mergeInProgress())) {
+    // A death between landing's abort and its residue sweep leaves no
+    // MERGE_HEAD but a persisted stage snapshot; finishing the sweep here is
+    // that boundary's next-tick convergence (#92). No-op without a snapshot.
+    const swept = await git.sweepStageResidue();
+    if (swept.length > 0) {
+      log.warn(`swept staged-merge build residue left by a previous run: ${swept.join(", ")}`);
+    }
+    return;
+  }
   // Landing only ever stages merges on the default branch, so a MERGE_HEAD
   // anywhere else is not the daemon's merge to abort — an operator's
   // in-progress conflict resolution must survive a daemon start.
