@@ -17,7 +17,8 @@ const RECORD_NAME = /^score(\.[a-z][a-z0-9_]*)+$/;
 const RFC3339_TS =
   /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$/;
 
-function isRfc3339(ts: string): boolean {
+/** Exported for the stream's since/until grammar (#81) — same bar as record timestamps. */
+export function isRfc3339(ts: string): boolean {
   const match = RFC3339_TS.exec(ts);
   if (!match) return false;
   const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] = match;

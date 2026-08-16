@@ -7,6 +7,7 @@
 
 import type { TelemetryRecord } from "@score/core/telemetry/telemetry.interface";
 import { METRIC_LABELS } from "@score/core/telemetry/telemetry.interface";
+import { isRfc3339 } from "@score/core/telemetry/telemetry.policy";
 
 /** What a subscription can select; `snapshot` and `log` are stream-only kinds. */
 export const STREAM_SIGNALS = ["snapshot", "event", "span", "metric", "log"] as const;
@@ -52,9 +53,6 @@ const KNOWN_PARAMS: ReadonlySet<string> = new Set([
 
 const INVALID: QueryParseResult = { ok: false, reason: "FILTER_INVALID" };
 
-/** RFC 3339 date-time shape; range validity is delegated to Date.parse. */
-const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
-
 export function parseStreamQuery(params: URLSearchParams): QueryParseResult {
   for (const key of params.keys()) {
     if (!KNOWN_PARAMS.has(key)) return { ok: false, reason: "FILTER_UNKNOWN" };
@@ -79,7 +77,9 @@ export function parseStreamQuery(params: URLSearchParams): QueryParseResult {
   const time = (name: string): number | undefined | "INVALID" => {
     const value = params.get(name);
     if (value === null) return undefined;
-    if (!RFC3339.test(value)) return "INVALID";
+    // The record-timestamp bar (#74): shape and calendar ranges both —
+    // Date.parse alone would normalize 2026-02-30 into March.
+    if (!isRfc3339(value)) return "INVALID";
     const ms = Date.parse(value);
     return Number.isNaN(ms) ? "INVALID" : ms;
   };
