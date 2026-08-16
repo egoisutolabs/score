@@ -160,13 +160,16 @@ export function renderLandingTelemetry(
   ctx: TelemetryRenderContext,
 ): readonly TelemetryEvent[] {
   const name = LANDING_TAGS.has(result.tag) ? "score.landing.decision" : "score.landing.unknown";
+  // result.note is omitted on purpose: build-red notes carry raw gate output
+  // and several tags interpolate error messages, both of which embed absolute
+  // paths that never enter telemetry (epic attribute-safety rule) — the prose
+  // log keeps the full note.
   return [
     decisionEvent(
       ctx,
       name,
       { pull_request_number: result.pullRequestNumber },
       { tag: result.tag },
-      result.note,
     ),
   ];
 }

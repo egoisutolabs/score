@@ -271,15 +271,21 @@ const landingTags = [
 ] as const;
 
 export const landingRows: readonly MappingRow<LandingResult>[] = [
+  // Notes can carry raw gate output and interpolated errors with absolute
+  // paths, so the mapper drops them — a path-bearing note proving no body is
+  // stored is the point.
   ...landingTags.map((tag, index) => ({
     label: tag,
-    input: { pullRequestNumber: 41 + index, tag, note: `note for ${tag}` },
+    input: {
+      pullRequestNumber: 41 + index,
+      tag,
+      note: `gate output tail for ${tag}: at /Users/op/wt/demo/src/index.ts:3`,
+    },
     expected: [
       {
         name: "score.landing.decision",
         subject: { pull_request_number: 41 + index },
         attributes: { tag },
-        body: `note for ${tag}`,
       },
     ],
   })),
@@ -295,7 +301,6 @@ export const landingRows: readonly MappingRow<LandingResult>[] = [
         name: "score.landing.unknown",
         subject: { pull_request_number: 53 },
         attributes: { tag: "levitating" },
-        body: "novel state",
       },
     ],
   },
