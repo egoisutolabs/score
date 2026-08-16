@@ -475,6 +475,27 @@ test.skipIf(process.getuid?.() === 0)(
   },
 );
 
+test("a segment deleted between subscribe and replay: one warning, no follow handoff", async () => {
+  const dir = newProjectsDir();
+  seedRecords(dir, "score", TODAY, [probe(0)]);
+  const outcome = await new StreamService(testDeps(dir)).open(
+    new URLSearchParams("projects=score&signals=event"),
+    null,
+  );
+  if (outcome.kind !== "stream") throw new Error("expected a stream");
+  // Marks are captured; retention deletes the segment before the lazy
+  // replay reads it. The replay's own warning is the stream's only one:
+  // follow must not start and re-warn against the gone segment.
+  rmSync(join(dir, "score", "telemetry", `${TODAY}.jsonl`));
+  const frames = await drain(outcome.frames);
+  expect(frames.map((frame) => frame.event)).toEqual([
+    "score.stream.hello",
+    "score.stream.warning",
+    "score.stream.caught_up",
+  ]);
+  expect(frames[1]?.envelope.warnings).toEqual([{ reason: "SEGMENT_UNREADABLE" }]);
+});
+
 test("mid-stream segment deletion: one warning, then a clean close", async () => {
   fakeTimers();
   const dir = newProjectsDir();

@@ -158,6 +158,7 @@ export class StreamService {
       // composite cursor — filtered records advanced it past the last
       // emitted frame, and caught_up must carry the true resting position.
       const replaying = replayService.replay(pairs, query);
+      let sawUnreadable = false;
       for (;;) {
         const step = replaying.next();
         if (step.done) {
@@ -169,6 +170,7 @@ export class StreamService {
         components = emission.cursor;
         cursor = encodeCursor(components);
         if (emission.kind === "warning") {
+          sawUnreadable ||= emission.reason === "SEGMENT_UNREADABLE";
           yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: emission.reason }]), cursor);
         } else if (emission.kind === "telemetry") {
           yield sseFrame(
@@ -183,7 +185,11 @@ export class StreamService {
       yield sseFrame(CAUGHT_UP_EVENT, wrap({}), cursor);
       // The live half (#82): the stream stays open past caught_up, fed by
       // the shared tailers, until the client disconnects or is disconnected.
-      if (query.follow) {
+      // A segment retention deleted mid-replay already carried its one
+      // warning; handing off would only re-plan against the gone segment
+      // and warn a second time — close cleanly instead, the client resumes
+      // from an explicit time bound.
+      if (query.follow && !sawUnreadable) {
         yield* followService.follow({
           streamId,
           query,
