@@ -63,6 +63,9 @@ function railStatus(
   }
   const fold = foldProject(events, project.key);
   for (const [number, state] of fold.prs) {
+    // A merged PR's last repair action lingers in the fold forever (repair
+    // emits no terminal event) — only unmerged PRs can be "repairing".
+    if (state.landing?.tag === "merged") continue;
     if (
       state.repair !== undefined &&
       ["PINGED", "SPAWNED", "WORKING"].includes(state.repair.action)
@@ -221,6 +224,7 @@ export function Console() {
               key={name}
               type="button"
               onClick={() => setTab(name)}
+              aria-current={tab === name ? "page" : undefined}
               className={cn(
                 "rounded-md border px-3 py-[5px] text-[13.5px] capitalize",
                 "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",

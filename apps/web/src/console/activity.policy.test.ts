@@ -335,6 +335,29 @@ test("historyStats counts merges, unrepaired merges over the whole buffer, and w
   });
 });
 
+test("historyStats ignores the daemon's routine NOT_NEEDED repair scans", () => {
+  // The repair phase emits NOT_NEEDED for every healthy open PR every pass;
+  // treating those as "repaired" would zero mergedWithoutRepair for a fleet
+  // nothing ever repaired.
+  const since = Date.parse("2026-08-16T00:00:00Z");
+  const now = Date.parse("2026-08-16T12:00:00Z");
+  const result = historyStats(
+    [
+      landing(1, "checks-pending", "2026-08-16T08:00:00Z"),
+      repair(1, "NOT_NEEDED", "2026-08-16T08:30:00Z"),
+      landing(1, "soaking", "2026-08-16T09:00:00Z"),
+      repair(1, "NOT_NEEDED", "2026-08-16T09:30:00Z"),
+      landing(1, "merged", "2026-08-16T10:00:00Z"),
+    ],
+    PROJECT,
+    since,
+    now,
+  );
+  expect(result.merged).toBe(1);
+  expect(result.mergedWithoutRepair).toBe(1);
+  expect(result.repairPings).toBe(0);
+});
+
 test("historyStats ping window is (sinceMs, nowMs]: edges match merged24h's convention", () => {
   const since = Date.parse("2026-08-16T00:00:00Z");
   const now = Date.parse("2026-08-16T12:00:00Z");

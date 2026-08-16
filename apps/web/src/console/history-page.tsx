@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { REPLAY_DAYS } from "@/console/activity.hooks";
 import {
   type DecisionEvent,
   historyStats,
@@ -10,10 +11,11 @@ import {
 } from "@/console/activity.policy";
 import { StatTiles } from "@/console/stat-tiles";
 
-// The replay buffer holds 30 days, so 30d is the widest honest range — no
-// "all" chip, it would relabel the same window.
-const RANGES = [7, 14, 30] as const;
-const DEFAULT_RANGE = 14;
+// The widest chip is exactly what the stream replays (REPLAY_DAYS) — a
+// wider label would present the same buffer as more history than it holds.
+const RANGES = [7, REPLAY_DAYS] as const;
+const DEFAULT_RANGE = REPLAY_DAYS;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Categorical hues for project identity, assigned by sorted project order so
 // the same fleet always colors the same way. Deliberately literal hexes:
@@ -155,7 +157,12 @@ export function HistoryPage({
 }) {
   const [range, setRange] = useState<(typeof RANGES)[number]>(DEFAULT_RANGE);
 
-  const sinceMs = nowMs - range * 24 * 60 * 60 * 1000;
+  // Calendar-aligned window: every number on this page shares the strips'
+  // span — [start of the oldest bucket's UTC day, now] — so the tiles, the
+  // by-project table, and the bars can never disagree about "merged · Nd"
+  // (a rolling now-Nd window would drop up to a day the buckets still show).
+  const oldestDay = new Date(nowMs - (range - 1) * DAY_MS).toISOString().slice(0, 10);
+  const sinceMs = Date.parse(`${oldestDay}T00:00:00.000Z`) - 1;
 
   // Sorted once: hue assignment, strips, and the by-project card must agree
   // on order or the same project would wear different colors per card.

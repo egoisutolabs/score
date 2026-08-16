@@ -330,14 +330,20 @@ export function historyStats(
 ): HistoryStats {
   const spans = landingSpans(events, project, sinceMs, nowMs);
   // Repair history is judged over the whole buffer, not the window: a PR
-  // repaired before the window still did not merge unassisted.
+  // repaired before the window still did not merge unassisted. Only ACTIVE
+  // repair actions count as "repaired" — the daemon also emits a routine
+  // NOT_NEEDED decision for every healthy PR every pass, and counting those
+  // would mark the entire fleet repaired.
   const repairedPrs = new Set<number>();
   let repairPings = 0;
   for (const event of events) {
     if (!isLive(event, project) || event.name !== REPAIR) continue;
     const number = event.subject?.pull_request_number;
-    if (number !== undefined) repairedPrs.add(number);
-    if (event.attributes?.action === "PINGED") {
+    const action = event.attributes?.action;
+    if (number !== undefined && typeof action === "string" && ACTIVE_REPAIR.has(action)) {
+      repairedPrs.add(number);
+    }
+    if (action === "PINGED") {
       const tsMs = Date.parse(event.ts);
       if (tsMs > sinceMs && tsMs <= nowMs) repairPings += 1;
     }

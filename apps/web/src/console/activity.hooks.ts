@@ -6,9 +6,9 @@ import type { DecisionEvent } from "@/console/activity.policy";
 /** How far back the fleet's decision history replays on subscribe. */
 export const REPLAY_DAYS = 14;
 /**
- * Decision events only — a couple per pass, so 14 days across a fleet stays
- * small. Ticks and phase spans are deliberately not subscribed: at one per
- * minute per project they would drown the buffer with non-decisions.
+ * Decision events only. Ticks and phase spans are deliberately not
+ * subscribed: at one per minute per project they would drown the buffer
+ * with non-decisions.
  */
 const DECISION_NAMES = [
   "score.dispatch.decision",
@@ -16,8 +16,22 @@ const DECISION_NAMES = [
   "score.repair.decision",
   "score.cleanup.decision",
 ].join(",");
-/** Backstop for a pathological backlog; oldest fall off first. */
-const MAX_EVENTS = 20_000;
+/**
+ * Dropped at ingest: the repair phase emits one of these for every healthy
+ * open PR every pass — pure scan noise at ~1.4k/day per PR that no
+ * derivation consumes (historyStats gates on active repair, the fold's
+ * repair state is only read through the ACTIVE_REPAIR set, and a feed of
+ * "not_needed" rows would bury real decisions).
+ */
+const REPAIR_NOISE = new Set(["NOT_NEEDED", "SKIPPED"]);
+/**
+ * After the noise filter the dominant residue is landing's per-observation
+ * event (~720/day per open PR at the default 60s tick), so this holds
+ * roughly 14 days × 5 open PRs. Oldest fall off first, and a trim flips
+ * `degraded` — silently presenting a shortened window as complete history
+ * is exactly what that flag exists to prevent.
+ */
+const MAX_EVENTS = 50_000;
 
 /**
  * One fleet-wide subscription to the decision-event stream: replay from
@@ -59,7 +73,11 @@ export function useEventStream(projectKeys: readonly string[]): {
       pending = [];
       setEvents((previous) => {
         const next = [...previous, ...batch];
-        return next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next;
+        if (next.length <= MAX_EVENTS) return next;
+        // Trimming inside the advertised window means the numbers derived
+        // from this buffer stop being complete — say so.
+        setDegraded(true);
+        return next.slice(next.length - MAX_EVENTS);
       });
     };
 
@@ -75,6 +93,13 @@ export function useEventStream(projectKeys: readonly string[]): {
         const envelope = JSON.parse(event.data as string) as { data?: DecisionEvent };
         const record = envelope.data;
         if (record?.name === undefined || record.ts === undefined) return;
+        if (
+          record.name === "score.repair.decision" &&
+          typeof record.attributes?.action === "string" &&
+          REPAIR_NOISE.has(record.attributes.action)
+        ) {
+          return;
+        }
         pending.push(record);
         flushTimer ??= setTimeout(flush, 48);
       } catch {
