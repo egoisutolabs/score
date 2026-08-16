@@ -1,12 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  FleetJson,
-  LogTailJson,
-  ProjectAction,
-  ProjectViewJson,
-} from "@/console/fleet-view.interface";
+import type { FleetJson, ProjectAction, ProjectViewJson } from "@/console/fleet-view.interface";
 
 /** The TUI's poll cadence, kept: the daemon writes state at tick granularity. */
 export const POLL_MS = 1000;
@@ -75,70 +70,87 @@ export function useFleet(): {
   return { projects, pollError, refresh };
 }
 
+/** One journal line as the pane renders it; `level` drives the tint only. */
+export interface LogLine {
+  readonly level: string;
+  readonly text: string;
+}
+
 /**
- * Cursor-poll tail of one project's dated logs. The server owns tail
- * semantics (rotation, truncation, caps) and says so via `reset`; the client
- * only appends and caps its buffer. Switching projects starts a fresh tail.
+ * The project's journal over the telemetry stream (#81/#82): one EventSource
+ * on /api/v1/stream scoped to this project's log signal. The stream owns
+ * replay, rotation, shared tailers, and resume — cursors ride the SSE `id:`
+ * line, so the browser's automatic reconnect presents Last-Event-ID and no
+ * line is lost across a blip. The client only appends and caps its buffer.
  */
-export function useLogTail(
+export function useLogStream(
   projectKey: string | null,
   follow: boolean,
 ): {
-  readonly file: string;
-  readonly lines: readonly string[];
+  readonly lines: readonly LogLine[];
+  /** False while the browser is (re)connecting the stream. */
+  readonly live: boolean;
 } {
-  const [file, setFile] = useState("");
-  const [lines, setLines] = useState<readonly string[]>([]);
-  const cursor = useRef<string | null>(null);
-  const inFlight = useRef(false);
-  // Read through a ref so toggling follow never restarts the poll loop (the
-  // effect below deliberately keys on the project alone).
+  const [lines, setLines] = useState<readonly LogLine[]>([]);
+  const [live, setLive] = useState(false);
+  // Read through a ref so toggling follow never re-subscribes the stream
+  // (the effect below deliberately keys on the project alone).
   const followRef = useRef(follow);
   followRef.current = follow;
 
   useEffect(() => {
-    cursor.current = null;
-    setFile("");
     setLines([]);
+    setLive(false);
     if (projectKey === null) return;
 
-    let cancelled = false;
-    const poll = async (): Promise<void> => {
-      if (inFlight.current) return;
-      inFlight.current = true;
-      try {
-        const query =
-          cursor.current === null ? "" : `?cursor=${encodeURIComponent(cursor.current)}`;
-        const data = await fetchEnvelope<LogTailJson>(
-          `/api/v1/projects/${encodeURIComponent(projectKey)}/logs${query}`,
-        );
-        if (cancelled) return;
-        cursor.current = data.cursor;
-        setFile(data.file);
-        setLines((previous) => {
-          const next = data.reset ? [...data.lines] : [...previous, ...data.lines];
-          const cap = followRef.current ? MAX_LINES : PAUSED_MAX_LINES;
-          return next.length > cap ? next.slice(next.length - cap) : next;
-        });
-      } catch {
-        // A missing log file or a poll blip renders as an unchanged tail; the
-        // fleet poll owns surfacing daemon trouble.
-      } finally {
-        inFlight.current = false;
-      }
+    // Replay of a day's journal arrives as one SSE message per record;
+    // coalescing appends per animation-ish frame keeps a thousand-line
+    // catch-up from becoming a thousand renders.
+    let pending: LogLine[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = (): void => {
+      flushTimer = null;
+      const batch = pending;
+      pending = [];
+      setLines((previous) => {
+        const next = [...previous, ...batch];
+        const cap = followRef.current ? MAX_LINES : PAUSED_MAX_LINES;
+        return next.length > cap ? next.slice(next.length - cap) : next;
+      });
     };
 
-    void poll();
-    const interval = setInterval(() => {
-      if (document.visibilityState === "visible") void poll();
-    }, POLL_MS);
+    const source = new EventSource(
+      `/api/v1/stream?projects=${encodeURIComponent(projectKey)}&signals=log`,
+    );
+    source.addEventListener("score.log.record", (event: MessageEvent) => {
+      try {
+        const envelope = JSON.parse(event.data as string) as {
+          data?: { ts?: string; level?: string; body?: string };
+        };
+        const record = envelope.data;
+        if (record?.body === undefined) return;
+        const time = typeof record.ts === "string" ? record.ts.slice(11, 19) : "";
+        pending.push({
+          level: record.level ?? "",
+          text: time === "" ? record.body : `[${time}] ${record.body}`,
+        });
+        flushTimer ??= setTimeout(flush, 48);
+      } catch {
+        // One unparseable frame is dropped; the stream's own warning frames
+        // and the fleet poll own surfacing real trouble.
+      }
+    });
+    source.onopen = () => setLive(true);
+    // EventSource retries by itself (with Last-Event-ID); this only dims the
+    // pane's live marker while it does.
+    source.onerror = () => setLive(false);
     return () => {
-      cancelled = true;
-      clearInterval(interval);
+      if (flushTimer !== null) clearTimeout(flushTimer);
+      source.close();
     };
   }, [projectKey]);
 
-  return { file, lines };
+  return { lines, live };
 }
 
 /**

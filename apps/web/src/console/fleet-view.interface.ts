@@ -45,13 +45,6 @@ export interface FleetJson {
   readonly projects: readonly ProjectViewJson[];
 }
 
-export interface LogTailJson {
-  readonly file: string;
-  readonly lines: readonly string[];
-  readonly cursor: string;
-  readonly reset: boolean;
-}
-
 export type ProjectAction = "start" | "stop" | "restart";
 
 /**

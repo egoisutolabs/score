@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useFleet, useLogTail, useProjectAction } from "@/console/fleet.hooks";
+import { useFleet, useLogStream, useProjectAction } from "@/console/fleet.hooks";
 import {
   DEFAULT_TICK_INTERVAL_MS,
   type ProjectAction,
@@ -32,7 +32,7 @@ export function Console() {
   const { actionInFlight, run } = useProjectAction(refresh);
 
   const selected = projects.find((project) => project.key === selectedKey);
-  const tail = useLogTail(selected?.key ?? null, follow);
+  const journal = useLogStream(selected?.key ?? null, follow);
 
   const select = useCallback((key: string): void => {
     setSelectedKey(key);
@@ -124,8 +124,8 @@ export function Console() {
                 onAction={(action) => act(selected, action)}
               />
               <LogPane
-                file={tail.file}
-                lines={tail.lines}
+                lines={journal.lines}
+                live={journal.live}
                 follow={follow}
                 onFollowChange={setFollow}
                 scrollTopNonce={scrollTopNonce}

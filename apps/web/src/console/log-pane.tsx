@@ -1,26 +1,36 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { LogLine } from "@/console/fleet.hooks";
 import { cn } from "@/lib/utils";
 
 /** Scrolling this far off the bottom is a deliberate read, not drift. */
 const FOLLOW_SLACK_PX = 24;
 
+/** Level → tint, the health-color discipline applied to the journal. */
+function levelClass(level: string): string {
+  const normalized = level.toLowerCase();
+  if (normalized.startsWith("err") || normalized === "fatal") return "text-health-red";
+  if (normalized.startsWith("warn")) return "text-health-amber";
+  return "text-foreground/90";
+}
+
 /**
- * The live tail. Follow pins the view to the newest line; scrolling up is how
- * a reader disengages (like a terminal), and `f`/`G` re-engage. While follow
- * is off, history is not trimmed (up to a hard ceiling — see fleet.hooks.ts),
- * so a paused read stays put instead of sliding as the buffer caps.
+ * The live journal, streamed from /api/v1/stream. Follow pins the view to
+ * the newest line; scrolling up is how a reader disengages (like a
+ * terminal), and `f`/`G` re-engage. While follow is off, history is not
+ * trimmed (up to a hard ceiling — see fleet.hooks.ts), so a paused read
+ * stays put instead of sliding as the buffer caps.
  */
 export function LogPane({
-  file,
   lines,
+  live,
   follow,
   onFollowChange,
   scrollTopNonce,
 }: {
-  readonly file: string;
-  readonly lines: readonly string[];
+  readonly lines: readonly LogLine[];
+  readonly live: boolean;
   readonly follow: boolean;
   readonly onFollowChange: (follow: boolean) => void;
   /** Bumped by the `g` shortcut: jump to the top of the buffer. */
@@ -66,10 +76,10 @@ export function LogPane({
   };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col" aria-label="logs">
+    <section className="flex min-h-0 flex-1 flex-col" aria-label="journal">
       <div className="flex items-center gap-2 border-b px-6 py-2">
-        <p className="text-[10px] tracking-[0.18em] text-muted-foreground uppercase">logs</p>
-        {file !== "" && <p className="text-[11px] text-muted-foreground">{file}</p>}
+        <p className="text-[10px] tracking-[0.18em] text-muted-foreground uppercase">journal</p>
+        {!live && <p className="text-[11px] text-health-amber">reconnecting…</p>}
         <button
           type="button"
           onClick={() => onFollowChange(!follow)}
@@ -85,14 +95,20 @@ export function LogPane({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-6 py-3"
+        className="min-h-0 flex-1 overflow-y-auto px-6 py-3 font-mono text-[12px] leading-[1.7]"
       >
         {lines.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground">no log lines yet today</p>
+          <p className="text-muted-foreground">no journal lines yet today</p>
         ) : (
-          <pre className="text-[12px] leading-[1.7] break-words whitespace-pre-wrap text-foreground/90">
-            {lines.join("\n")}
-          </pre>
+          lines.map((line, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: lines are append-only between resets; index identity is stable enough for a log.
+              key={index}
+              className={cn("break-words whitespace-pre-wrap", levelClass(line.level))}
+            >
+              {line.text}
+            </div>
+          ))
         )}
       </div>
     </section>
