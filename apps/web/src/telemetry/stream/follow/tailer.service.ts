@@ -26,7 +26,11 @@ class ProjectTailer {
     this.signature = this.readSignature();
     for (const dir of SOURCE_DIRS) {
       try {
-        this.watchers.push(watch(join(projectDir, dir), () => this.check()));
+        const watcher = watch(join(projectDir, dir), () => this.check());
+        // A watcher failing later emits an async "error" event that would
+        // otherwise crash the process; drop it and let the poll carry on.
+        watcher.on("error", () => watcher.close());
+        this.watchers.push(watcher);
       } catch {
         // Dir absent (or unwatchable): the poll covers it, at poll latency.
       }

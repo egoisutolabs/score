@@ -9,7 +9,7 @@
 import { appendFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { decodeCursor } from "./cursor.render";
+import { decodeCursor } from "../cursor.render";
 import {
   cleanupSandboxes,
   drain,
@@ -21,10 +21,10 @@ import {
   seedRecords,
   TODAY,
   testDeps,
-} from "./fixtures/stream.fixture";
+} from "../fixtures/stream.fixture";
+import type { StreamDeps } from "../stream.service";
+import { StreamService } from "../stream.service";
 import { FOLLOW_QUEUE_LIMIT, HEARTBEAT_FRAME, HEARTBEAT_INTERVAL_MS } from "./follow.service";
-import type { StreamDeps } from "./stream.service";
-import { StreamService } from "./stream.service";
 import { TAILER_POLL_INTERVAL_MS, TailerRegistry } from "./tailer.service";
 
 const TOMORROW = "2026-08-16";
@@ -360,6 +360,70 @@ test("idle stream: a heartbeat comment rides every 15s window", async () => {
   expect((await second).value).toBe(HEARTBEAT_FRAME);
   expect(HEARTBEAT_INTERVAL_MS).toBe(15_000);
   await gen.return(undefined);
+});
+
+test("cancelling a parked stream releases its tailer promptly, not at the next heartbeat", async () => {
+  fakeTimers();
+  const dir = newProjectsDir();
+  seedRecords(dir, "score", TODAY, [probe(0)]);
+  const tailers = new TailerRegistry();
+  const outcome = await new StreamService(testDeps(dir, { tailers })).open(
+    new URLSearchParams("projects=score&signals=event"),
+    null,
+  );
+  if (outcome.kind !== "stream") throw new Error("expected a stream");
+  const gen = outcome.frames();
+  await pullUntil(gen, "score.stream.caught_up");
+  const pending = gen.next();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(tailers.size()).toBe(1);
+
+  // The route's cancel path: close the parked wait, then return the
+  // generator — with no timer advancement, the tailer must already be gone.
+  outcome.close();
+  await gen.return(undefined);
+  expect((await pending).done).toBe(true);
+  expect(tailers.size()).toBe(0);
+});
+
+test("the terminal warning still lands when the queue is already saturated", async () => {
+  fakeTimers();
+  const dir = newProjectsDir();
+  seedRecords(dir, "score", TODAY, [probe(0)]);
+  const deps = testDeps(dir);
+  const gen = await subscribe(deps, "projects=score&signals=event");
+  await pullUntil(gen, "score.stream.caught_up");
+  const pending = gen.next();
+  await vi.advanceTimersByTimeAsync(1);
+
+  // Fill the queue to exactly the cap: the parked pull takes one frame, a
+  // second burst tops the queue back up to FOLLOW_QUEUE_LIMIT.
+  appendProbes(
+    dir,
+    "score",
+    TODAY,
+    Array.from({ length: FOLLOW_QUEUE_LIMIT }, (_, i) => i + 1),
+  );
+  await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
+  const first = parseFrames((await pending).value as string)[0] as ParsedFrame;
+  expect(probeNs([first])).toEqual([1]);
+  appendProbes(dir, "score", TODAY, [FOLLOW_QUEUE_LIMIT + 1]);
+  await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
+
+  // Retention deletes the segment while the queue sits at the cap: the
+  // guaranteed warning must not be lost to the ceiling.
+  rmSync(join(dir, "score", "telemetry", `${TODAY}.jsonl`));
+  await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
+  const drained: ParsedFrame[] = [];
+  for (;;) {
+    const step = await gen.next();
+    if (step.done) break;
+    drained.push(parseFrames(step.value)[0] as ParsedFrame);
+  }
+  expect(probeNs(drained)).toEqual(Array.from({ length: FOLLOW_QUEUE_LIMIT }, (_, i) => i + 2));
+  const last = drained.at(-1);
+  expect(last?.event).toBe("score.stream.warning");
+  expect(last?.envelope.warnings).toEqual([{ reason: "SEGMENT_UNREADABLE" }]);
 });
 
 test("wakes that enqueue nothing never push the heartbeat deadline", async () => {

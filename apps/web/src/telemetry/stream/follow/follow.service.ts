@@ -12,17 +12,17 @@
 
 import { join } from "node:path";
 import type { TelemetryCursor, TelemetrySource } from "@score/core/telemetry/telemetry.interface";
-import type { ApiWarning, StreamEnvelope } from "../stream-envelope.interface";
+import type { ApiWarning, StreamEnvelope } from "../../stream-envelope.interface";
 import {
   LOG_RECORD_EVENT,
   TELEMETRY_RECORD_EVENTS,
   WARNING_EVENT,
-} from "../stream-envelope.interface";
-import { sseFrame } from "../stream-envelope.render";
-import { encodeCursor } from "./cursor.render";
-import type { StreamQuery } from "./query.policy";
-import { planReplay } from "./replay.policy";
-import { ReplayService } from "./replay.service";
+} from "../../stream-envelope.interface";
+import { sseFrame } from "../../stream-envelope.render";
+import { encodeCursor } from "../cursor.render";
+import type { StreamQuery } from "../query.policy";
+import { planReplay } from "../replay.policy";
+import { ReplayService } from "../replay.service";
 import type { TailerRegistry } from "./tailer.service";
 
 /** Heartbeat cadence and queue bound — constant ceilings by definition (#82). */
@@ -47,7 +47,20 @@ export interface FollowParams {
 }
 
 export class FollowService {
+  #abortWake: () => void = () => {};
+  #aborted = false;
+
   constructor(private readonly deps: FollowDeps) {}
+
+  /**
+   * Prompt teardown for a cancelled response: ends the loop's idle wait now
+   * instead of at the next wake or heartbeat, so a queued generator return
+   * (and the tailer release in its finally) runs immediately.
+   */
+  close(): void {
+    this.#aborted = true;
+    this.#abortWake();
+  }
 
   async *follow(params: FollowParams): AsyncGenerator<string> {
     const replayService = new ReplayService(this.deps.projectsDir);
@@ -82,6 +95,15 @@ export class FollowService {
       return true;
     };
 
+    // The terminal warning is the stream's contract ("one warning, then a
+    // clean close") — it bypasses the cap because it is provably the last
+    // frame, and a client that never hears it would wrongly retry from a
+    // cursor the stream just declared unrecoverable.
+    const closeWith = (frame: string): void => {
+      queue.push(frame);
+      closing = true;
+    };
+
     // One scan: re-plan from the subscriber's own cursor and replay the
     // delta. Fully synchronous, so a tailer wake never interleaves with a
     // scan in progress, and rotation order rides on replay's segment walk.
@@ -95,8 +117,7 @@ export class FollowService {
         // Retention deleted a segment the cursor still names: the position
         // is unrecoverable — one warning, then a clean close. The client
         // resumes from an explicit time bound, not from this cursor.
-        enqueue(frameFor(WARNING_EVENT, null, [{ reason: "SEGMENT_UNREADABLE" }]));
-        closing = true;
+        closeWith(frameFor(WARNING_EVENT, null, [{ reason: "SEGMENT_UNREADABLE" }]));
         wakeLoop();
         return;
       }
@@ -109,19 +130,19 @@ export class FollowService {
         }
         const emission = step.value;
         components = emission.cursor;
+        // Retention removed a segment out from under the live scan (after
+        // the re-plan, before the read): the same boundary as a failed
+        // re-plan — this warning is the stream's last frame, clean close.
+        if (emission.kind === "warning" && emission.reason === "SEGMENT_UNREADABLE") {
+          closeWith(frameFor(WARNING_EVENT, null, [{ reason: emission.reason }]));
+          break;
+        }
         const delivered =
           emission.kind === "warning"
             ? enqueue(frameFor(WARNING_EVENT, null, [{ reason: emission.reason }]))
             : emission.kind === "telemetry"
               ? enqueue(frameFor(TELEMETRY_RECORD_EVENTS[emission.record.signal], emission.record))
               : enqueue(frameFor(LOG_RECORD_EVENT, emission.record));
-        // Retention removed a segment out from under the live scan (after
-        // the re-plan, before the read): the same boundary as a failed
-        // re-plan — this warning is the stream's last frame, clean close.
-        if (emission.kind === "warning" && emission.reason === "SEGMENT_UNREADABLE") {
-          closing = true;
-          break;
-        }
         if (!delivered) break;
       }
       wakeLoop();
@@ -151,6 +172,8 @@ export class FollowService {
       scan();
       armHeartbeat();
       for (;;) {
+        // A cancelled response has no reader: stop before producing more.
+        if (this.#aborted) return;
         // Drain before honoring overflow or closing: everything enqueued is
         // in-bound and owed to the client; only the frames that never fit
         // ride on its resume.
@@ -168,6 +191,7 @@ export class FollowService {
         }
         await new Promise<void>((resolve) => {
           wakeLoop = resolve;
+          this.#abortWake = resolve;
         });
       }
     } finally {

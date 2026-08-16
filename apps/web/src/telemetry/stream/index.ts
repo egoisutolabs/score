@@ -5,11 +5,10 @@
 // tailers, heartbeats, bounded subscriber queues, exact resume. Never
 // mutates any store.
 export * from "./cursor.render";
-export * from "./follow.service";
+export * from "./follow";
 export * from "./query.policy";
 export * from "./replay.policy";
 export * from "./replay.service";
 export * from "./snapshot.render";
 export * from "./snapshot.service";
 export * from "./stream.service";
-export * from "./tailer.service";

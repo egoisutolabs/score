@@ -125,8 +125,9 @@ export function parseStreamQuery(params: URLSearchParams): QueryParseResult {
       ...(subject && { subject }),
       ...(sinceMs !== undefined && { sinceMs }),
       ...(untilMs !== undefined && { untilMs }),
-      // The epic's default is a stream that stays open; this PR closes it at
-      // the seam either way, but the default still selects the warning path.
+      // The epic's default: a subscription stays open past caught_up and
+      // follows appends live (#82); only an explicit follow=false closes
+      // the stream at the boundary.
       follow: follow !== "false",
     },
   };

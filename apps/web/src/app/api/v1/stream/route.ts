@@ -33,10 +33,12 @@ export async function GET(request: Request): Promise<Response> {
         else controller.enqueue(encoder.encode(next.value));
       },
       async cancel() {
-        // Client went away: run the generator's cleanup so its shared
-        // tailer refs release. A pending idle wait settles within one
-        // heartbeat interval.
+        // Client went away: end a parked idle wait immediately, then run
+        // the generator's cleanup so its shared tailer refs release now —
+        // disconnect churn must not hold dead subscriptions to the next
+        // wake or heartbeat.
         cancelled = true;
+        outcome.close();
         await frames.return(undefined);
       },
     }),

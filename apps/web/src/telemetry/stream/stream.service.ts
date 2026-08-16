@@ -29,13 +29,13 @@ import {
 } from "../stream-envelope.interface";
 import { sseFrame } from "../stream-envelope.render";
 import { decodeCursor, encodeCursor } from "./cursor.render";
-import { FollowService } from "./follow.service";
+import { FollowService } from "./follow/follow.service";
+import { defaultTailerRegistry, type TailerRegistry } from "./follow/tailer.service";
 import { parseStreamQuery, wantsSignal } from "./query.policy";
 import { initialCursor, planReplay, watermarkFor } from "./replay.policy";
 import { ReplayService } from "./replay.service";
 import { fleetSnapshotData, projectSnapshotData } from "./snapshot.render";
 import { SnapshotService } from "./snapshot.service";
-import { defaultTailerRegistry, type TailerRegistry } from "./tailer.service";
 
 export interface StreamDeps {
   readonly projectsDir: string;
@@ -69,7 +69,12 @@ export function defaultStreamDeps(): StreamDeps {
 
 export type StreamOutcome =
   | { readonly kind: "error"; readonly status: 400 | 410; readonly reason: WarningReason }
-  | { readonly kind: "stream"; readonly frames: () => AsyncGenerator<string> };
+  | {
+      readonly kind: "stream";
+      readonly frames: () => AsyncGenerator<string>;
+      /** Cancellation hook: ends a parked follow wait now, not at the next wake. */
+      readonly close: () => void;
+    };
 
 export class StreamService {
   constructor(private readonly deps: StreamDeps = defaultStreamDeps()) {}
@@ -189,6 +194,6 @@ export class StreamService {
       }
     }
 
-    return { kind: "stream", frames };
+    return { kind: "stream", frames, close: () => followService.close() };
   }
 }

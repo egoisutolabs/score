@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TelemetryRecord } from "@score/core/telemetry/telemetry.interface";
 import type { StreamEnvelope } from "../../stream-envelope.interface";
+import { TailerRegistry } from "../follow/tailer.service";
 import type { StreamDeps } from "../stream.service";
-import { TailerRegistry } from "../tailer.service";
 
 export const TODAY = "2026-08-15";
 export const NOW = `${TODAY}T12:00:00.000Z`;
