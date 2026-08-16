@@ -2,10 +2,10 @@
  * One subscribe, end to end: parse the filter grammar, decode the presented
  * cursor, read the owners once for snapshots, capture the high-water marks,
  * then hand back a frame generator that replays to the marks, emits
- * `score.stream.caught_up`, and closes — `follow=true` gets the
- * FOLLOW_NOT_IMPLEMENTED warning seam (#82) instead of a hang. All owner
- * reads, the read-time stamp, and mark captures happen in open(), before
- * the first frame; the generator only reads segment bytes.
+ * `score.stream.caught_up`, and either closes (`follow=false`) or hands off
+ * to the live follow half (#82) — shared tailers, heartbeats, bounded
+ * buffers. All owner reads, the read-time stamp, and mark captures happen
+ * in open(), before the first frame; the generator only reads segment bytes.
  */
 
 import { randomUUID } from "node:crypto";
@@ -29,11 +29,13 @@ import {
 } from "../stream-envelope.interface";
 import { sseFrame } from "../stream-envelope.render";
 import { decodeCursor, encodeCursor } from "./cursor.render";
+import { FollowService } from "./follow.service";
 import { parseStreamQuery, wantsSignal } from "./query.policy";
 import { initialCursor, planReplay, watermarkFor } from "./replay.policy";
 import { ReplayService } from "./replay.service";
 import { fleetSnapshotData, projectSnapshotData } from "./snapshot.render";
 import { SnapshotService } from "./snapshot.service";
+import { defaultTailerRegistry, type TailerRegistry } from "./tailer.service";
 
 export interface StreamDeps {
   readonly projectsDir: string;
