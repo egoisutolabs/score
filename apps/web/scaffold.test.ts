@@ -1,6 +1,6 @@
 // Scaffold contract for #75: API-only, loopback-only, server stub gone.
 // Script text and file globs are the contract — no runtime introspection.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -46,11 +46,20 @@ describe("loopback-only", () => {
   it("dev and start scripts bind 127.0.0.1", () => {
     const pkg = JSON.parse(readFileSync(join(webRoot, "package.json"), "utf8"));
     for (const script of [pkg.scripts.dev, pkg.scripts.start]) {
-      expect(script).toContain("--hostname 127.0.0.1");
+      // Boundary after the address so 127.0.0.1.example.com can't pass.
+      expect(script).toMatch(/--hostname[ =]127\.0\.0\.1(?=\s|$)/);
       // Ceiling: script text is the contract — but every --hostname in it
       // must be loopback, so a stray public bind can't hide behind one.
-      expect(script).not.toMatch(/--hostname(?![ =]127\.0\.0\.1)/);
+      expect(script).not.toMatch(/--hostname(?![ =]127\.0\.0\.1(?:\s|$))/);
     }
+  });
+});
+
+describe("healthz route location", () => {
+  // Independent of route.test.ts (which co-moves with the module): Next maps
+  // GET /healthz only from this exact path, so a rename can't stay green.
+  it("src/app/healthz/route.ts exists where Next routes it", () => {
+    expect(existsSync(join(webRoot, "src", "app", "healthz", "route.ts"))).toBe(true);
   });
 });
 
