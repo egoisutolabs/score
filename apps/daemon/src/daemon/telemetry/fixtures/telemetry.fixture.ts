@@ -225,13 +225,17 @@ export const dispatchRows: readonly MappingRow<DispatchResult>[] = [
   },
   {
     label: "failed",
-    input: { ...emptyDispatch, failed: [{ issueNumber: 36, message: "spawn refused" }] },
+    // The adapter message can embed absolute worktree paths, so the mapper
+    // drops it — a path-bearing input proving no body is stored is the point.
+    input: {
+      ...emptyDispatch,
+      failed: [{ issueNumber: 36, message: "worktree not found: /Users/op/wt/demo/some-branch" }],
+    },
     expected: [
       {
         name: "score.dispatch.decision",
         subject: { issue_number: 36 },
         attributes: { decision: "failed" },
-        body: "spawn refused",
       },
     ],
   },
@@ -267,15 +271,21 @@ const landingTags = [
 ] as const;
 
 export const landingRows: readonly MappingRow<LandingResult>[] = [
+  // Notes can carry raw gate output and interpolated errors with absolute
+  // paths, so the mapper drops them — a path-bearing note proving no body is
+  // stored is the point.
   ...landingTags.map((tag, index) => ({
     label: tag,
-    input: { pullRequestNumber: 41 + index, tag, note: `note for ${tag}` },
+    input: {
+      pullRequestNumber: 41 + index,
+      tag,
+      note: `gate output tail for ${tag}: at /Users/op/wt/demo/src/index.ts:3`,
+    },
     expected: [
       {
         name: "score.landing.decision",
         subject: { pull_request_number: 41 + index },
         attributes: { tag },
-        body: `note for ${tag}`,
       },
     ],
   })),
@@ -291,7 +301,6 @@ export const landingRows: readonly MappingRow<LandingResult>[] = [
         name: "score.landing.unknown",
         subject: { pull_request_number: 53 },
         attributes: { tag: "levitating" },
-        body: "novel state",
       },
     ],
   },
