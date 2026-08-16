@@ -116,7 +116,9 @@ export function Console() {
   const [follow, setFollow] = useState(true);
   const [scrollTopNonce, setScrollTopNonce] = useState(0);
   const [help, setHelp] = useState(false);
-  const [debug, setDebug] = useState(false);
+  // Journal-first: the raw tail is the fleet view's default pane — it is
+  // never empty for a project that has ever run, unlike the derived feed.
+  const [debug, setDebug] = useState(true);
   const { actionInFlight, run } = useProjectAction(refresh);
   // One coarse clock for every "Nm ago" on screen; ticks with the fleet poll.
   const [nowMs, setNowMs] = useState(() => Date.now());

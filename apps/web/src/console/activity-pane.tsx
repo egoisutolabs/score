@@ -35,10 +35,11 @@ function Tab({
 }
 
 /**
- * The design file's Activity card: Events is the decision feed (what the
- * daemon decided, newest first, verb column in the design's grid), Debug is
- * the raw journal — outcomes vs. mechanics. The journal keeps its follow
- * semantics; the events feed is newest-first and needs none.
+ * The design file's Activity card, journal-first: the raw tail is the
+ * default tab (the TUI's soul — always full, even with zero decision
+ * history), Events is the derived decision feed beside it. The journal
+ * keeps its follow semantics; the events feed is newest-first and needs
+ * none.
  */
 export function ActivityPane({
   rows,
@@ -71,8 +72,8 @@ export function ActivityPane({
       <div className="flex items-center gap-3.5 border-b px-[18px] py-3">
         <p className="text-[13.5px] font-semibold">Activity</p>
         <div className="flex gap-0.5 rounded-md bg-muted p-0.5">
+          <Tab label="Journal" active={debug} onClick={() => onDebugChange(true)} />
           <Tab label="Events" active={!debug} onClick={() => onDebugChange(false)} />
-          <Tab label="Debug" active={debug} onClick={() => onDebugChange(true)} />
         </div>
         {degraded && !debug && (
           <p className="text-xs text-health-amber">history may be incomplete</p>

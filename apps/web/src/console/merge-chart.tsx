@@ -35,8 +35,15 @@ export function MergeChart({
   const max = buckets.reduce((m, b) => Math.max(m, b.count), 0);
   const mid = buckets[Math.floor(count / 2)];
 
-  if (count === 0) {
-    return <p className="text-[12.5px] text-ink-dim">no merge history in the replayed window</p>;
+  const total = buckets.reduce((sum, b) => sum + b.count, 0);
+  if (count === 0 || total === 0) {
+    // A wall of zero-stubs reads as breakage; collapse to one quiet line
+    // until there is a merge to draw.
+    return (
+      <p className="text-[12.5px] text-ink-dim">
+        no merges recorded yet — history builds as the daemon lands PRs
+      </p>
+    );
   }
 
   return (

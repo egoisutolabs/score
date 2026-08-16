@@ -17,13 +17,18 @@ const DECISION_NAMES = [
   "score.cleanup.decision",
 ].join(",");
 /**
- * Dropped at ingest: the repair phase emits one of these for every healthy
- * open PR every pass — pure scan noise at ~1.4k/day per PR that no
- * derivation consumes (historyStats gates on active repair, the fold's
- * repair state is only read through the ACTIVE_REPAIR set, and a feed of
- * "not_needed" rows would bury real decisions).
+ * Dropped at ingest: scan results that found nothing to do. Repair emits
+ * NOT_NEEDED for every healthy open PR every pass, and cleanup emits
+ * NOT_FOUND for every historical PR with no worktree — dozens of no-ops per
+ * pass that no derivation consumes (historyStats gates on active repair,
+ * folds read repair state only through ACTIVE_REPAIR), and a feed of
+ * "not found" rows reads as breakage. The console shows decisions, not
+ * scans that came back empty.
  */
-const REPAIR_NOISE = new Set(["NOT_NEEDED", "SKIPPED"]);
+const SCAN_NOISE: Readonly<Record<string, ReadonlySet<string>>> = {
+  "score.repair.decision": new Set(["NOT_NEEDED", "SKIPPED"]),
+  "score.cleanup.decision": new Set(["NOT_FOUND"]),
+};
 /**
  * After the noise filter the dominant residue is landing's per-observation
  * event (~720/day per open PR at the default 60s tick), so this holds
@@ -94,9 +99,8 @@ export function useEventStream(projectKeys: readonly string[]): {
         const record = envelope.data;
         if (record?.name === undefined || record.ts === undefined) return;
         if (
-          record.name === "score.repair.decision" &&
           typeof record.attributes?.action === "string" &&
-          REPAIR_NOISE.has(record.attributes.action)
+          SCAN_NOISE[record.name]?.has(record.attributes.action)
         ) {
           return;
         }
