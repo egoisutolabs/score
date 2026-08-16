@@ -6,7 +6,7 @@
  * poll, never by fs.watch latency.
  */
 
-import { appendFileSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { decodeCursor } from "./cursor.render";
@@ -348,6 +348,55 @@ test("idle stream: a heartbeat comment rides every 15s window", async () => {
   expect(HEARTBEAT_INTERVAL_MS).toBe(15_000);
   await gen.return(undefined);
 });
+
+test("wakes that enqueue nothing never push the heartbeat deadline", async () => {
+  fakeTimers();
+  const dir = newProjectsDir();
+  seedRecords(dir, "score", TODAY, [probe(0)]);
+  seed(dir, "score", `logs/${TODAY}.log`, "");
+  const gen = await subscribe(testDeps(dir), "projects=score&signals=event");
+  await pullUntil(gen, "score.stream.caught_up");
+  const pending = gen.next();
+  await vi.advanceTimersByTimeAsync(0);
+
+  // Log appends wake the tailer every poll but produce no envelope for a
+  // telemetry-only subscription; the 15s deadline must hold regardless.
+  for (let i = 0; i < 7; i++) {
+    appendFileSync(
+      join(dir, "score", "logs", `${TODAY}.log`),
+      logLine(`${TODAY}T12:00:0${i}.000Z`, "info", `noise ${i}`),
+    );
+    await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
+  }
+  // 14s of empty wakes so far; the heartbeat still lands at 15s.
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect((await pending).value).toBe(HEARTBEAT_FRAME);
+  await gen.return(undefined);
+});
+
+// Root reads through 0o000, so the unreadable-segment path never fires there.
+test.skipIf(process.getuid?.() === 0)(
+  "a segment turning unreadable mid-follow: one warning, then a clean close",
+  async () => {
+    fakeTimers();
+    const dir = newProjectsDir();
+    seedRecords(dir, "score", TODAY, [probe(0)]);
+    const gen = await subscribe(testDeps(dir), "projects=score&signals=event");
+    await pullUntil(gen, "score.stream.caught_up");
+    const pending = gen.next();
+    await vi.advanceTimersByTimeAsync(1);
+
+    // The file grows (so the tailer wakes and the re-plan still names the
+    // segment) but the read itself fails — retention's other race.
+    appendProbes(dir, "score", TODAY, [1]);
+    chmodSync(join(dir, "score", "telemetry", `${TODAY}.jsonl`), 0o000);
+    await vi.advanceTimersByTimeAsync(TAILER_POLL_INTERVAL_MS);
+    const warning = parseFrames((await pending).value as string)[0];
+    expect(warning?.event).toBe("score.stream.warning");
+    expect(warning?.envelope.warnings).toEqual([{ reason: "SEGMENT_UNREADABLE" }]);
+    expect((await gen.next()).done).toBe(true);
+  },
+);
 
 test("mid-stream segment deletion: one warning, then a clean close", async () => {
   fakeTimers();

@@ -115,9 +115,31 @@ export class FollowService {
             : emission.kind === "telemetry"
               ? enqueue(frameFor(TELEMETRY_RECORD_EVENTS[emission.record.signal], emission.record))
               : enqueue(frameFor(LOG_RECORD_EVENT, emission.record));
+        // Retention removed a segment out from under the live scan (after
+        // the re-plan, before the read): the same boundary as a failed
+        // re-plan — this warning is the stream's last frame, clean close.
+        if (emission.kind === "warning" && emission.reason === "SEGMENT_UNREADABLE") {
+          closing = true;
+          break;
+        }
         if (!delivered) break;
       }
       wakeLoop();
+    };
+
+    // The heartbeat deadline is anchored to the last frame actually
+    // written, never to wake-ups: a tailer wake that enqueues nothing (a
+    // change the filters exclude) must not push the deadline, or a busy
+    // filesystem could starve an idle stream of its keepalives.
+    let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeatDue = false;
+    const armHeartbeat = (): void => {
+      clearTimeout(heartbeatTimer);
+      heartbeatDue = false;
+      heartbeatTimer = setTimeout(() => {
+        heartbeatDue = true;
+        wakeLoop();
+      }, HEARTBEAT_INTERVAL_MS);
     };
 
     const releases = params.projects.map((project) =>
@@ -127,24 +149,27 @@ export class FollowService {
       // Covers appends between the replay's captured marks and the attach
       // above; everything later wakes through the tailer.
       scan();
+      armHeartbeat();
       for (;;) {
         if (overflowed) return;
         const next = queue.shift();
         if (next !== undefined) {
+          armHeartbeat();
           yield next;
           continue;
         }
         if (closing) return;
-        const woke = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), HEARTBEAT_INTERVAL_MS);
-          wakeLoop = () => {
-            clearTimeout(timer);
-            resolve(true);
-          };
+        if (heartbeatDue) {
+          armHeartbeat();
+          yield HEARTBEAT_FRAME;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          wakeLoop = resolve;
         });
-        if (!woke) yield HEARTBEAT_FRAME;
       }
     } finally {
+      clearTimeout(heartbeatTimer);
       for (const release of releases) release();
     }
   }
