@@ -136,7 +136,19 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
       if (alive) {
         throw new Error(`'${key}' is being modified by pid ${holder} — retry when it finishes`);
       }
-      await rm(lockPath, { force: true });
+      // Reclaim by renaming the stale lock aside: rename is atomic, so when
+      // two contenders both judge the same lock dead, exactly one wins here —
+      // a bare rm would let the loser delete the winner's freshly created
+      // lock and break the serialization. The loser re-loops and contends
+      // for the fresh lock like any other caller. A death after the rename
+      // leaves at most one .stale file, which nothing enumerates and the
+      // next reclaim overwrites.
+      try {
+        await rename(lockPath, `${lockPath}.stale`);
+        await rm(`${lockPath}.stale`, { force: true });
+      } catch {
+        // Lost the reclaim race — loop and contend for the fresh lock.
+      }
     }
   }
   try {
