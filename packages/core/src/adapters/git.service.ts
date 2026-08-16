@@ -180,12 +180,18 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     // persisted, so a death between the abort and the sweep converges on the
     // next startup sweep instead of leaving the primary wedged (#92).
     if (this.options.dryRun !== true) {
-      const snapshot = await this.#readStageSnapshot();
-      if (snapshot !== undefined) {
-        await this.#writeStageSnapshot({
-          ...snapshot,
-          stagedIgnored: statusPaths(await this.#statusWithIgnored(), "!!"),
-        });
+      try {
+        const snapshot = await this.#readStageSnapshot();
+        if (snapshot !== undefined) {
+          await this.#writeStageSnapshot({
+            ...snapshot,
+            stagedIgnored: statusPaths(await this.#statusWithIgnored(), "!!"),
+          });
+        }
+      } catch {
+        // Evidence capture must never block the abort itself; without the
+        // listing the sweep simply skips, leaving residue visible as dirt —
+        // the pre-#92 behavior, never worse.
       }
     }
     await this.#run(["merge", "--abort"], true);
