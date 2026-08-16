@@ -9,13 +9,11 @@
 export const HELLO_EVENT = "score.stream.hello";
 
 /**
- * The whole safe-error vocabulary: a reason from this enum is everything an
+ * The whole safe-error vocabulary: a reason from this union is everything an
  * error response says. Paths, environment values, stack traces, and raw
  * command output are never present.
  */
-export const WARNING_REASONS = ["CONFIG_UNPARSEABLE", "SEGMENT_UNREADABLE"] as const;
-
-export type WarningReason = (typeof WARNING_REASONS)[number];
+export type WarningReason = "CONFIG_UNPARSEABLE" | "SEGMENT_UNREADABLE";
 
 export interface ApiWarning {
   readonly reason: WarningReason;

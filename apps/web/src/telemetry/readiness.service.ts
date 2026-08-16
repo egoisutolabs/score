@@ -10,7 +10,7 @@
  * scans, no file-type probing, no supervisor or GitHub calls.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { scoreHome } from "@score/shared/config/layout";
 import type { WarningReason } from "./stream-envelope.interface";
@@ -39,15 +39,9 @@ export class ReadinessService {
         return { ready: false, reason: "CONFIG_UNPARSEABLE" };
       }
       const stamp = this.now().toISOString().slice(0, 10);
-      const segment = read(join(this.projectsDir, key, "telemetry", `${stamp}.jsonl`));
-      if (segment.kind === "unreadable") return { ready: false, reason: "SEGMENT_UNREADABLE" };
-      if (segment.kind === "present") {
-        const newline = segment.text.indexOf("\n");
-        // No newline yet: only an incomplete tail readers withhold — nothing
-        // complete to parse is not unreadiness.
-        if (newline !== -1 && !parses(segment.text.slice(0, newline))) {
-          return { ready: false, reason: "SEGMENT_UNREADABLE" };
-        }
+      const probe = firstLine(join(this.projectsDir, key, "telemetry", `${stamp}.jsonl`));
+      if (probe.kind === "unreadable" || (probe.kind === "line" && !parses(probe.text))) {
+        return { ready: false, reason: "SEGMENT_UNREADABLE" };
       }
     }
     return { ready: true };
@@ -78,6 +72,47 @@ function read(path: string): ReadOutcome {
     return (error as { code?: string }).code === "ENOENT"
       ? { kind: "absent" }
       : { kind: "unreadable" };
+  }
+}
+
+type FirstLineProbe =
+  // "absent" and "no complete line yet" are both ready — nothing complete
+  // exists to parse. Only "line" carries text to judge.
+  | { readonly kind: "absent" | "no-line" }
+  | { readonly kind: "unreadable" }
+  | { readonly kind: "line"; readonly text: string };
+
+/**
+ * Bytes before the segment's first newline, read chunk-by-chunk so a probe
+ * never loads a whole day's history: memory and I/O are bounded by the first
+ * line, whose length the single writer already bounds.
+ */
+function firstLine(path: string): FirstLineProbe {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (error) {
+    return (error as { code?: string }).code === "ENOENT"
+      ? { kind: "absent" }
+      : { kind: "unreadable" };
+  }
+  try {
+    const chunk = Buffer.alloc(65536);
+    const parts: Buffer[] = [];
+    for (;;) {
+      const bytes = readSync(fd, chunk, 0, chunk.length, -1);
+      if (bytes === 0) return { kind: "no-line" };
+      const view = chunk.subarray(0, bytes);
+      const newline = view.indexOf(0x0a);
+      // Copy out of the reused chunk before the next readSync overwrites it.
+      parts.push(Buffer.from(newline === -1 ? view : view.subarray(0, newline)));
+      if (newline !== -1) return { kind: "line", text: Buffer.concat(parts).toString("utf8") };
+    }
+  } catch {
+    // open() succeeding on a directory then read() failing lands here too.
+    return { kind: "unreadable" };
+  } finally {
+    closeSync(fd);
   }
 }
 

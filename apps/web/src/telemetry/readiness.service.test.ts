@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,13 +14,7 @@ const goodLine = '{"v":1,"signal":"event","name":"score.daemon.started"}\n';
 const sandboxes: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    sandboxes.splice(0).map((path) => {
-      // The unreadable-projects-dir case chmods the sandbox itself.
-      chmodSync(path, 0o700);
-      return rm(path, { recursive: true, force: true });
-    }),
-  );
+  await Promise.all(sandboxes.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 function sandbox(): string {
@@ -42,8 +36,14 @@ function seedProject(root: string, key: string, files: Record<string, string>): 
 interface MatrixCase {
   readonly name: string;
   readonly seed: (root: string) => void;
+  /** Overrides the projects dir handed to the service; defaults to the sandbox root. */
+  readonly dir?: (root: string) => string;
   readonly expected: ReadinessResult;
 }
+
+// Unreadability fixtures use wrong filesystem shapes (a directory where a
+// file belongs, a file where a directory belongs) instead of chmod 0o000,
+// which root — as in containerized CI — reads straight through.
 
 const matrix: MatrixCase[] = [
   {
@@ -62,20 +62,14 @@ const matrix: MatrixCase[] = [
   },
   {
     name: "unreadable existing config → CONFIG_UNPARSEABLE",
-    seed: (root) => {
-      seedProject(root, "alpha", { "resolved.json": goodConfig });
-      chmodSync(join(root, "alpha", "resolved.json"), 0o000);
-    },
+    seed: (root) => mkdirSync(join(root, "alpha", "resolved.json"), { recursive: true }),
     expected: { ready: false, reason: "CONFIG_UNPARSEABLE" },
   },
   {
     name: "unreadable existing segment → SEGMENT_UNREADABLE",
     seed: (root) => {
-      seedProject(root, "alpha", {
-        "resolved.json": goodConfig,
-        [`telemetry/${TODAY}.jsonl`]: goodLine,
-      });
-      chmodSync(join(root, "alpha", "telemetry", `${TODAY}.jsonl`), 0o000);
+      seedProject(root, "alpha", { "resolved.json": goodConfig });
+      mkdirSync(join(root, "alpha", "telemetry", `${TODAY}.jsonl`), { recursive: true });
     },
     expected: { ready: false, reason: "SEGMENT_UNREADABLE" },
   },
@@ -98,6 +92,15 @@ const matrix: MatrixCase[] = [
     expected: { ready: true },
   },
   {
+    name: "first line spanning multiple read chunks still parses → ready",
+    seed: (root) =>
+      seedProject(root, "alpha", {
+        "resolved.json": goodConfig,
+        [`telemetry/${TODAY}.jsonl`]: `${JSON.stringify({ v: 1, body: "x".repeat(70_000) })}\n`,
+      }),
+    expected: { ready: true },
+  },
+  {
     name: "segment holding only an incomplete tail → ready (readers withhold it)",
     seed: (root) =>
       seedProject(root, "alpha", {
@@ -112,8 +115,9 @@ const matrix: MatrixCase[] = [
     expected: { ready: false, reason: "CONFIG_UNPARSEABLE" },
   },
   {
-    name: "unreadable projects dir → CONFIG_UNPARSEABLE (enumeration failure is not absence)",
-    seed: (root) => chmodSync(root, 0o000),
+    name: "projects path that is no directory → CONFIG_UNPARSEABLE (enumeration failure is not absence)",
+    seed: (root) => writeFileSync(join(root, "projects"), ""),
+    dir: (root) => join(root, "projects"),
     expected: { ready: false, reason: "CONFIG_UNPARSEABLE" },
   },
   {
@@ -149,6 +153,6 @@ for (const entry of matrix) {
   test(`readyz matrix: ${entry.name}`, () => {
     const root = sandbox();
     entry.seed(root);
-    expect(new ReadinessService(root, now).check()).toEqual(entry.expected);
+    expect(new ReadinessService(entry.dir?.(root) ?? root, now).check()).toEqual(entry.expected);
   });
 }
