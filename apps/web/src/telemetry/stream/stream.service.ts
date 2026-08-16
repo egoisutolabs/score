@@ -43,6 +43,7 @@ export interface StreamDeps {
   readonly jobs: () => Promise<readonly JobStatus[] | null>;
   readonly now: () => Date;
   readonly streamId: () => string;
+  readonly tailers: TailerRegistry;
 }
 
 export function defaultStreamDeps(): StreamDeps {
@@ -62,12 +63,13 @@ export function defaultStreamDeps(): StreamDeps {
     jobs: () => new SupervisorJobsReader(new BunCommandRunner()).read(),
     now: () => new Date(),
     streamId: () => randomUUID(),
+    tailers: defaultTailerRegistry,
   };
 }
 
 export type StreamOutcome =
   | { readonly kind: "error"; readonly status: 400 | 410; readonly reason: WarningReason }
-  | { readonly kind: "stream"; readonly frames: () => Generator<string> };
+  | { readonly kind: "stream"; readonly frames: () => AsyncGenerator<string> };
 
 export class StreamService {
   constructor(private readonly deps: StreamDeps = defaultStreamDeps()) {}
@@ -108,7 +110,9 @@ export class StreamService {
 
     const streamId = this.deps.streamId();
     const emittedAt = readTime.toISOString();
-    let cursor = encodeCursor(initialCursor(pairs));
+    const followService = new FollowService(this.deps);
+    let components = initialCursor(pairs);
+    let cursor = encodeCursor(components);
     const wrap = <T>(data: T, warnings?: readonly ApiWarning[]): StreamEnvelope<T> => ({
       api_version: "v1",
       emitted_at: emittedAt,
@@ -128,7 +132,7 @@ export class StreamService {
       selectedKeys.includes(project.key),
     );
 
-    function* frames(): Generator<string> {
+    async function* frames(): AsyncGenerator<string> {
       const degraded = observationWarnings.length > 0 ? observationWarnings : undefined;
       yield sseFrame(HELLO_EVENT, wrap({}), cursor);
       if (wantsSignal(query, "snapshot")) {
@@ -152,11 +156,13 @@ export class StreamService {
       for (;;) {
         const step = replaying.next();
         if (step.done) {
-          cursor = encodeCursor(step.value);
+          components = step.value;
+          cursor = encodeCursor(components);
           break;
         }
         const emission = step.value;
-        cursor = encodeCursor(emission.cursor);
+        components = emission.cursor;
+        cursor = encodeCursor(components);
         if (emission.kind === "warning") {
           yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: emission.reason }]), cursor);
         } else if (emission.kind === "telemetry") {
@@ -170,9 +176,16 @@ export class StreamService {
         }
       }
       yield sseFrame(CAUGHT_UP_EVENT, wrap({}), cursor);
-      // The #82 seam: an explicit, tested close instead of a silent hang.
+      // The live half (#82): the stream stays open past caught_up, fed by
+      // the shared tailers, until the client disconnects or is disconnected.
       if (query.follow) {
-        yield sseFrame(WARNING_EVENT, wrap(null, [{ reason: "FOLLOW_NOT_IMPLEMENTED" }]), cursor);
+        yield* followService.follow({
+          streamId,
+          query,
+          projects: selectedKeys,
+          sources,
+          start: components,
+        });
       }
     }
 

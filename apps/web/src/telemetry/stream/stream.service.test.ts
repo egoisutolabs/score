@@ -67,7 +67,7 @@ async function frames(dir: string, search: string, lastEventId: string | null = 
     lastEventId,
   );
   if (outcome.kind !== "stream") throw new Error(`expected a stream, got ${outcome.reason}`);
-  return drain(outcome.frames);
+  return await drain(outcome.frames);
 }
 
 test("golden transcript: snapshots, full replay, caught_up, clean close on follow=false", async () => {
@@ -228,17 +228,6 @@ test("log-record replay: signals=log carries only the dated prose lines", async 
   ]);
 });
 
-test("follow=true reaches the #82 seam: caught_up, FOLLOW_NOT_IMPLEMENTED warning, clean close", async () => {
-  const dir = newProjectsDir();
-  seedFleet(dir);
-  const parsed = await frames(dir, "projects=score&signals=log");
-  expect(parsed.slice(-2).map((frame) => frame.event)).toEqual([
-    "score.stream.caught_up",
-    "score.stream.warning",
-  ]);
-  expect(parsed.at(-1)?.envelope.warnings).toEqual([{ reason: "FOLLOW_NOT_IMPLEMENTED" }]);
-});
-
 test("unreadable owners degrade snapshots with explicit warnings, never a crash", async () => {
   const dir = newProjectsDir();
   seedFleet(dir);
@@ -248,7 +237,7 @@ test("unreadable owners degrade snapshots with explicit warnings, never a crash"
     testDeps(dir, { readConfig: async () => null, jobs: async () => null }),
   ).open(new URLSearchParams("follow=false"), null);
   if (outcome.kind !== "stream") throw new Error("expected a stream");
-  const frames = drain(outcome.frames);
+  const frames = await drain(outcome.frames);
   const fleet = frames[1];
   expect(fleet?.event).toBe("score.snapshot.fleet");
   expect(fleet?.envelope.warnings).toEqual([

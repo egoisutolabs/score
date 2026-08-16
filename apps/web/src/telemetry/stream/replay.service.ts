@@ -113,6 +113,7 @@ export class ReplayService {
 
     for (const pair of pairs) {
       const layout = SOURCE_LAYOUT[pair.source];
+      let stalled = false;
       for (const segment of pair.segments) {
         const path = join(
           this.projectsDir,
@@ -151,6 +152,10 @@ export class ReplayService {
           if (cycle.lines.length === 0) {
             // No complete line before the mark: the remainder was an
             // in-progress record at capture — withheld, cursor stays put.
+            // Later segments must not run ahead of it (#82 rotation order):
+            // the writer completes the line before rolling, so a follow
+            // scan clears the stall on its next wake.
+            stalled = true;
             break;
           }
           for (const line of cycle.lines) {
@@ -173,6 +178,7 @@ export class ReplayService {
           }
           offset = cycle.lines[cycle.lines.length - 1]?.end ?? offset;
         }
+        if (stalled) break;
       }
     }
     return composite();

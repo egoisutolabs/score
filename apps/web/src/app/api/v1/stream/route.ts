@@ -20,14 +20,24 @@ export async function GET(request: Request): Promise<Response> {
   }
   const frames = outcome.frames();
   const encoder = new TextEncoder();
-  // A closing stream is the clean close: the body ends after the last frame
-  // (caught_up, or the follow seam's warning). #82 keeps it open.
+  let cancelled = false;
+  // The generator ends only on a clean close (follow=false's caught_up, a
+  // mid-stream deletion warning, or a slow-consumer disconnect); follow
+  // streams otherwise stay open, heartbeats included (#82).
   return new Response(
     new ReadableStream({
-      pull(controller) {
-        const next = frames.next();
+      async pull(controller) {
+        const next = await frames.next();
+        if (cancelled) return;
         if (next.done) controller.close();
         else controller.enqueue(encoder.encode(next.value));
+      },
+      async cancel() {
+        // Client went away: run the generator's cleanup so its shared
+        // tailer refs release. A pending idle wait settles within one
+        // heartbeat interval.
+        cancelled = true;
+        await frames.return(undefined);
       },
     }),
     {
