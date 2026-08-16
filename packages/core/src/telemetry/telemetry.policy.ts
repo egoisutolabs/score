@@ -24,8 +24,9 @@ function isRfc3339(ts: string): boolean {
   // Date.UTC(y, m, 0) is the last day of month m — leap years included.
   const daysInMonth = new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
   if (Number(day) < 1 || Number(day) > daysInMonth) return false;
-  // Second 60 stays valid: RFC 3339 admits leap seconds.
-  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 60) return false;
+  // Second 60 rejected: our producers never emit leap seconds, and RFC 3339
+  // only admits :60 at an actual leap-second instant we won't validate.
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return false;
   return offsetHour === undefined || (Number(offsetHour) <= 23 && Number(offsetMinute) <= 59);
 }
 
@@ -42,8 +43,12 @@ const SECRET_VALUE_SHAPES: readonly RegExp[] = [
   /\bgithub_pat_/, // GitHub fine-grained PATs
   /\bsk-[A-Za-z0-9]{20,}\b/, // API secret keys
   /\bBearer\s+\S+/, // Authorization header values
-  // env/query-shaped assignment pairs; [^a-z] (not \b) so api_key= matches but monkey= doesn't
-  /(^|[^a-z])(key|token|password|secret)=\S+/i,
+  // env/query-shaped assignment pairs; explicit [^A-Za-z] (never a folded
+  // [^a-z], /i case-folds negated classes) so api_key=/KEY= match but monkey= doesn't
+  /(^|[^A-Za-z])(key|token|password|secret)=\S+/i,
+  // camelCase pairs: an uppercase-initial keyword is its own word (MyToken=,
+  // APIKey=). Ceiling: an all-caps run (APIKEY=) is lexically a DONKEY= and passes.
+  /(Key|Token|Password|Secret)=\S+/,
 ];
 
 /** Keys whose values are categorically secrets regardless of shape. */
@@ -109,11 +114,22 @@ export function recordViolations(record: TelemetryRecord): string[] {
   if (!SIGNALS.has(record.signal)) violations.push(`unknown signal "${String(record.signal)}"`);
   if (!isValidTelemetryName(record.name)) violations.push(`invalid name "${record.name}"`);
   if (!record.project) violations.push("missing project");
-  if (record.body !== undefined && new TextEncoder().encode(record.body).length > MAX_BODY_BYTES)
-    // boundBody owns truncation; a body past the ceiling means it was skipped.
-    violations.push(`body exceeds ${MAX_BODY_BYTES} bytes; apply boundBody first`);
+  const body = record.body;
+  if (body !== undefined) {
+    if (new TextEncoder().encode(body).length > MAX_BODY_BYTES)
+      // boundBody owns truncation; a body past the ceiling means it was skipped.
+      violations.push(`body exceeds ${MAX_BODY_BYTES} bytes; apply boundBody first`);
+    // Free detail is the likeliest place a dumped error or request leaks a
+    // credential — the redaction table gates it the same as attribute values.
+    if (SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
+      violations.push("secret-shaped value in body");
+  }
   if (record.attributes !== undefined) violations.push(...attributeViolations(record.attributes));
-  if (record.signal === "metric" && record.labels !== undefined)
-    violations.push(...metricLabelViolations(record.labels));
+  if (record.signal === "metric") {
+    if (!Number.isFinite(record.value))
+      // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
+      violations.push("non-finite metric value");
+    if (record.labels !== undefined) violations.push(...metricLabelViolations(record.labels));
+  }
   return violations;
 }

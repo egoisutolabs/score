@@ -60,6 +60,7 @@ test("a record needs v: 1, an RFC 3339 ts, a signal, a score-namespaced name, an
     [{ ts: "2026-13-01T00:00:00Z" }, "ts month"],
     [{ ts: "2026-02-30T12:00:00Z" }, "ts day"],
     [{ ts: "2026-08-15T24:00:00Z" }, "ts hour"],
+    [{ ts: "2026-08-15T12:00:60Z" }, "ts leap second — producers never emit :60"],
     [{ ts: "2026-08-15T12:00:00+24:00" }, "ts offset"],
     [{ signal: "log" as never }, "signal"],
     [{ name: "dispatch.blocked" }, "name"],
@@ -101,6 +102,25 @@ test("a body at the ceiling passes untouched; past it, truncated at the boundary
   expect(recordViolations({ ...valid, body, truncated })).toEqual([]);
 });
 
+test("the redaction table gates body text the same as attribute values", () => {
+  for (const leak of [
+    "request failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.p.s",
+    "retrying with token=ghs_abc123",
+    "creds AKIAIOSFODNN7EXAMPLE in dumped env",
+  ]) {
+    expect(recordViolations({ ...valid, body: leak }), leak).not.toEqual([]);
+  }
+  expect(recordViolations({ ...valid, body: "plain stack trace, no credentials" })).toEqual([]);
+});
+
+test("a metric value must be finite — NaN/Infinity would serialize as null", () => {
+  const metric = { ...valid, signal: "metric", name: "score.landing.duration_ms" } as const;
+  expect(recordViolations({ ...metric, value: 12.5 })).toEqual([]);
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    expect(recordViolations({ ...metric, value }), String(value)).not.toEqual([]);
+  }
+});
+
 // --- secret shapes: this table IS the spec ---
 
 test("secret-shaped attribute values are rejected", () => {
@@ -117,6 +137,9 @@ test("secret-shaped attribute values are rejected", () => {
     "secret=s3cr3t",
     "api_key=abc", // *_key= pair
     "GITHUB_TOKEN=ghp_x", // *_token= pair
+    "MyToken=abc123def456", // camelCase pair — uppercase-initial keyword is its own word
+    "APIKey=abc123",
+    "DBPassword=hunter2",
   ];
   for (const value of rejected) {
     expect(attributeViolations({ detail: value }), value).not.toEqual([]);
@@ -132,6 +155,7 @@ test("near-miss values stay admitted — no entropy scanning past the declared s
     "task-abcdefghijklmnopqrstuvwxyz", // contains "sk-" only inside another word
     "Bearer", // no token follows
     "monkey=banana", // "key=" only inside another word
+    "Monkey=banana", // still one word — the keyword itself is lowercase mid-word
     "0123456789abcdef0123456789abcdef01234567", // a bare SHA is legitimate event identity
     identity.branch,
   ];
