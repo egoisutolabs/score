@@ -15,6 +15,7 @@ export * from "./daemon/index";
 export * from "./dispatch/index";
 export * from "./landing/index";
 export * from "./maintenance/index";
+export * from "./observation/index";
 export * from "./repair/index";
 export * from "./supervisor/index";
 export * from "./telemetry/index";
