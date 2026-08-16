@@ -35,6 +35,10 @@ class FakeWorkspace implements LandingWorkspace {
   async fetchOrigin(): Promise<void> {
     this.effects.push("fetch");
   }
+  async sweepStageResidue(): Promise<readonly string[]> {
+    this.effects.push("sweep");
+    return [];
+  }
   async stageMerge(commit: string): Promise<boolean> {
     this.effects.push(`stage:${commit}`);
     return true;
@@ -114,10 +118,12 @@ test("landing re-stages and gates until soakTicks consecutive green ticks, then 
   // Staging targets the observed SHA, never the mutable branch name.
   expect(workspace.effects).toEqual([
     "fetch",
+    "sweep",
     "fetch",
     "stage:aaa111",
     "abort",
     "fetch",
+    "sweep",
     "fetch",
     "stage:aaa111",
     "commit",
@@ -266,7 +272,7 @@ test("dirty main skips the PR before host checks or merge effects", async () => 
   );
   expect((await service.runTick())[0]?.tag).toBe("skipped");
   expect(threadCalls).toBe(0);
-  expect(workspace.effects).toEqual(["fetch"]);
+  expect(workspace.effects).toEqual(["fetch", "sweep"]);
 });
 
 test("a cheap conflict blocker wins before the review-thread query", async () => {

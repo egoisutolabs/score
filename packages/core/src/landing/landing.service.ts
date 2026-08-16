@@ -58,6 +58,9 @@ export class LandingService {
   async runTick(): Promise<readonly LandingResult[]> {
     this.#pushFailedThisTick = false;
     await this.workspace.fetchOrigin();
+    // Before readiness, not after: a sweep interrupted last tick left dirt
+    // that readiness would refuse — the retry here is what unwedges it (#92).
+    await this.workspace.sweepStageResidue();
     const canMerge = this.options.dryRun || (await this.#mainCheckoutReady());
     const changes = listLandingCandidates(await this.changes.observeOpenChanges(), this.options);
     const live = new Set(changes.map((change) => change.number));
