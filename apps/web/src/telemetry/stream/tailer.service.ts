@@ -117,5 +117,5 @@ export class TailerRegistry {
   }
 }
 
-/** The process-wide registry: every route subscription shares these loops. */
+/** The process-wide registry: every live subscription shares these loops. */
 export const defaultTailerRegistry = new TailerRegistry();
