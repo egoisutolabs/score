@@ -35,6 +35,12 @@ export function plan(
   const desiredKeys = new Set(desired.map((project) => project.key));
   const desiredByKey = new Map(desired.map((project) => [project.key, project]));
   const loaded = new Set(actual.filter((job) => job.loaded).map((job) => job.key));
+  // A stopping job's registration dies with its process, so its project needs
+  // a fresh install (start, never unchanged/restart). It stays in `loaded`:
+  // the process is still alive on its checkout, so its collision claim holds.
+  const stopping = new Set(
+    actual.filter((job) => job.loaded && job.stopping === true).map((job) => job.key),
+  );
   // canonical mainLocation → owning key: running jobs claim first, then each
   // project we decide to run — so a copy-pasted second project on one checkout
   // is refused even when neither is running yet (the double-dispatch edge
@@ -66,7 +72,7 @@ export function plan(
       continue;
     }
     claims.set(canonical, project.key);
-    if (!loaded.has(project.key)) result.start.push(project);
+    if (!loaded.has(project.key) || stopping.has(project.key)) result.start.push(project);
     else if (existing.get(project.key)?.configHash === project.configHash) {
       result.unchanged.push(project);
     } else result.restart.push(project);

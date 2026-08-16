@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
+import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
 import {
   type DefinitionRenderer,
@@ -104,16 +104,37 @@ function installedDefinitionPath(key: string): string {
  * holding it costs at most the one retried command.
  * ponytail: pid-liveness staleness check — a reused pid could pin a stale
  * lock; switch to timestamp+timeout if that ever bites.
+ *
+ * The lock lives BESIDE the project dir, not inside it: /readyz reads every
+ * projects/ subdirectory as a project that must carry resolved.json, so a
+ * lock-created dir for a stateless key (down of a ghost) would wedge
+ * readiness — and a death while holding the lock leaves only a file
+ * readiness ignores and the next command breaks as stale. Keys match
+ * [a-z0-9-], so `<key>.mutate.lock` cannot collide with a project dir.
  */
 async function withProjectLock<T>(key: string, action: () => Promise<T>): Promise<T> {
-  const lockPath = join(projectDir(key), "mutate.lock");
-  await mkdir(projectDir(key), { recursive: true });
+  const lockPath = `${projectDir(key)}.mutate.lock`;
+  await mkdir(join(scoreHome(), "projects"), { recursive: true });
   for (;;) {
     try {
       await writeFile(lockPath, String(process.pid), { flag: "wx" });
       break;
-    } catch {
-      const holder = Number(await readFile(lockPath, "utf8").catch(() => ""));
+    } catch (error) {
+      // Only EEXIST is contention. Anything else (EACCES, ENOSPC) would spin
+      // forever through the break-stale-lock path — fail promptly instead.
+      if ((error as { code?: string }).code !== "EEXIST") throw error;
+      let holderText: string | null;
+      try {
+        holderText = await readFile(lockPath, "utf8");
+      } catch (readError) {
+        // Only a lock that vanished between EEXIST and this read re-contends;
+        // an unreadable lock (EACCES, I/O error) would loop forever here, so
+        // it fails the command instead.
+        if ((readError as { code?: string }).code !== "ENOENT") throw readError;
+        holderText = null;
+      }
+      if (holderText === null) continue;
+      const holder = Number(holderText);
       let alive = false;
       if (Number.isInteger(holder) && holder > 0) {
         try {
@@ -126,13 +147,39 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
       if (alive) {
         throw new Error(`'${key}' is being modified by pid ${holder} — retry when it finishes`);
       }
-      await rm(lockPath, { force: true });
+      // Reclaim in two guarded steps: rename the lock aside to a name only
+      // this pid uses, then verify the captured file still carries the dead
+      // holder we inspected — rename addresses the pathname, not the file we
+      // read, so a contender that reclaimed and re-acquired between our read
+      // and rename would otherwise have its live lock stolen. A mistakenly
+      // captured live lock is restored via link, which cannot clobber a
+      // newer lock at the path. Persistent rename failures (EACCES, EROFS)
+      // propagate so a read-only store fails loudly instead of spinning.
+      const stalePath = `${lockPath}.${process.pid}.stale`;
+      try {
+        await rename(lockPath, stalePath);
+      } catch (error) {
+        // ENOENT: another contender won this reclaim — contend again.
+        if ((error as { code?: string }).code !== "ENOENT") throw error;
+        continue;
+      }
+      const captured = await readFile(stalePath, "utf8").catch(() => null);
+      if (captured !== holderText) {
+        await link(stalePath, lockPath).catch(() => {});
+        await rm(stalePath, { force: true });
+        throw new Error(`'${key}' is being modified — retry when it finishes`);
+      }
+      await rm(stalePath, { force: true });
     }
   }
   try {
     return await action();
   } finally {
-    await rm(lockPath, { force: true });
+    // Guarded release: only remove a lock that is still ours, never a
+    // successor's (reachable only through the reclaim edge cases above).
+    if ((await readFile(lockPath, "utf8").catch(() => null)) === String(process.pid)) {
+      await rm(lockPath, { force: true });
+    }
   }
 }
 
@@ -141,7 +188,13 @@ export interface UpDependencies {
   readonly invocationFor: (key: string) => readonly string[];
   /** Defaults to renderPlist — the injected-adapter tests are launchd-shaped. */
   readonly renderDefinition?: DefinitionRenderer;
+  /** Teardown-wait pacing; tests inject an instant sleep. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
+
+/** launchd SIGKILLs at ExitTimeOut, so a drain never legitimately outlasts it. */
+const TEARDOWN_WAIT_MS = (EXIT_TIMEOUT_SECONDS + 30) * 1000;
+const TEARDOWN_POLL_MS = 2000;
 
 export async function runUp(args: readonly string[], deps?: UpDependencies): Promise<void> {
   const only = parseSingleKey(args, "up");
@@ -153,6 +206,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
           invocationFor: deps.invocationFor,
           render: deps.renderDefinition ?? renderPlist,
         };
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const renderFor = (project: ResolvedProject): string =>
     render(project, invocationFor(project.key), jobEnvironment());
 
@@ -217,6 +271,40 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     else restarts.push(project);
   }
 
+  // Bootstrapping over a still-draining registration fails (launchd returns
+  // EIO until the booted-out process exits), so a start planned for a
+  // stopping job waits the drain out first. Waiting mutates nothing: a death
+  // or timeout here leaves the teardown untouched and the next `up` retries.
+  const stopping = new Set(
+    actual.filter((job) => job.loaded && job.stopping === true).map((job) => job.key),
+  );
+  const waitForTeardown = async (key: string): Promise<void> => {
+    const deadline = Date.now() + TEARDOWN_WAIT_MS;
+    for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
+      const job = (await adapter.status()).find((entry) => entry.key === key);
+      if (job === undefined || !job.loaded) return;
+      // Re-registered: a concurrent command finished the drain and
+      // re-installed the job while we queued for the lock. This command's
+      // plan is stale — installing over the live registration would tear
+      // plist/record apart, so fail before any mutation and let a re-run
+      // re-plan against the fresh state.
+      if (job.stopping !== true) {
+        throw new Error(`re-registered by a concurrent command — re-run: score up ${key}`);
+      }
+      if (elapsed === 0) {
+        console.log(`'${key}' is still stopping — waiting for the old process to exit`);
+      }
+      // Two bounds: the nominal poll count, plus wall clock so slow status
+      // calls cannot stretch the wait — the project lock is held throughout.
+      if (elapsed >= TEARDOWN_WAIT_MS || Date.now() >= deadline) {
+        throw new Error(
+          `still stopping after ${Math.round(TEARDOWN_WAIT_MS / 1000)}s — retry: score up ${key}`,
+        );
+      }
+      await sleep(TEARDOWN_POLL_MS);
+    }
+  };
+
   let started = 0;
   let restarted = 0;
   const apply = async (project: ResolvedProject, restart: boolean): Promise<void> => {
@@ -224,6 +312,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
       await withProjectLock(project.key, async () => {
         const definition = renderFor(project);
         if (restart) await adapter.stop(project.key);
+        if (!restart && stopping.has(project.key)) await waitForTeardown(project.key);
         await writeResolvedJson(project);
         await adapter.install(project.key, definition);
         await writeFile(installedDefinitionPath(project.key), definition, "utf8");
@@ -299,7 +388,10 @@ export async function runDown(
     // Per-job isolation: one failing bootout must not leave the remaining
     // jobs silently running.
     try {
-      await adapter.uninstall(key);
+      // The same per-project lock `up`/`restart` hold: a down issued while an
+      // up is waiting out a teardown drain would otherwise report "stopped"
+      // and then lose to that up's install once the drain ends.
+      await withProjectLock(key, () => adapter.uninstall(key));
       console.log(`stopped '${key}'`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

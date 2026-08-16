@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { LaunchdSupervisor } from "@score/core/supervisor/launchd.service";
@@ -11,6 +11,8 @@ import { runDown, runRestart, runUp, type UpDependencies } from "./supervisor.ru
 class RecordingRunner implements CommandRunner {
   readonly calls: string[][] = [];
   listOutput = "";
+  /** Per-call `list` outputs, consumed first — models a drain ending mid-run. */
+  readonly listQueue: string[] = [];
   failBootstrapMatching: string | undefined;
   failBootoutMatching: string | undefined;
   failKickstartMatching: string | undefined;
@@ -27,7 +29,7 @@ class RecordingRunner implements CommandRunner {
       command: [...command],
       cwd: options.cwd,
       exitCode: failed ? 5 : 0,
-      stdout: command[1] === "list" ? this.listOutput : "",
+      stdout: command[1] === "list" ? (this.listQueue.shift() ?? this.listOutput) : "",
       stderr: failed ? "Bootstrap failed: 5: Input/output error" : "",
       timedOut: false,
       dryRun: false,
@@ -63,6 +65,7 @@ beforeEach(async () => {
       key,
       "--managed",
     ],
+    sleep: async () => {},
   };
   logs = [];
   errors = [];
@@ -525,13 +528,13 @@ test("restart racing a config-changing up: the lock refuses the interleaving, th
   );
 });
 
-test("a live holder's lock blocks restart and up without touching the supervisor", async () => {
+test("a live holder's lock blocks restart, up, and down without touching the supervisor", async () => {
   await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
   await runUp([], deps);
   runner.calls.length = 0;
   runner.listOutput = "1\t0\tdev.score.alpha";
   // This test process holds the lock — a provably live pid.
-  await writeFile(join(home, "projects", "alpha", "mutate.lock"), String(process.pid));
+  await writeFile(join(home, "projects", "alpha.mutate.lock"), String(process.pid));
 
   await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow("is being modified by pid");
   expect(runner.mutations()).toEqual([]);
@@ -541,6 +544,16 @@ test("a live holder's lock blocks restart and up without touching the supervisor
   await runUp([], deps);
   expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
   expect(runner.mutations()).toEqual([]);
+
+  // down is serialized by the same lock: while an up converges the project
+  // (e.g. waiting out a teardown drain), a concurrent down must refuse
+  // loudly instead of reporting "stopped" and then losing to the install.
+  errors = [];
+  await runDown(["alpha"], deps.adapter);
+  expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+  expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
 });
 
 test("a stale lock (dead holder or garbage) is broken and the command proceeds", async () => {
@@ -549,7 +562,7 @@ test("a stale lock (dead holder or garbage) is broken and the command proceeds",
   runner.calls.length = 0;
   runner.listOutput = "1\t0\tdev.score.alpha";
   logs = [];
-  const lockPath = join(home, "projects", "alpha", "mutate.lock");
+  const lockPath = join(home, "projects", "alpha.mutate.lock");
 
   await writeFile(lockPath, "not-a-pid");
   await runRestart(["alpha"], deps.adapter);
@@ -582,6 +595,198 @@ test("a deregistered job with its definition kept: `up` re-installs and starts (
   ]);
   expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=1 removed=0");
 });
+
+test("down then keyed up during the bootout drain waits it out and starts (#93)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // launchd's bootout is asynchronous: the booted-out job stays listed (plist
+  // gone) at plan time and for the first wait poll, then the process exits.
+  runner.listQueue.push("1\t0\tdev.score.alpha", "1\t0\tdev.score.alpha");
+  runner.listOutput = "";
+  runner.calls.length = 0;
+  logs = [];
+
+  await runUp(["alpha"], deps);
+  expect(logs).toContain("'alpha' is still stopping — waiting for the old process to exit");
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+  expect(errors).toEqual([]);
+});
+
+test("a drain outlasting the wait fails loudly with nothing mutated; the next up converges (RETRIED)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // The drain never ends: every status call keeps showing the booted-out job.
+  runner.calls.length = 0;
+  logs = [];
+
+  await runUp(["alpha"], deps);
+  expect(
+    errors.some((line) => line.includes("failed to start 'alpha'") && line.includes("stopping")),
+  ).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
+
+  // The wait mutated nothing, so once the process exits the retried command
+  // converges to a running job.
+  process.exitCode = 0;
+  runner.listOutput = "";
+  runner.calls.length = 0;
+  logs = [];
+  errors = [];
+  await runUp(["alpha"], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
+test("a job re-registered while up waits fails fast without mutating, not the full timeout", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // The old pid stays listed throughout, but a concurrent command re-installs
+  // the plist right after the plan's status snapshot. The wait must read that
+  // as "this plan is stale" and refuse before any mutation — installing over
+  // the live registration would tear plist and record apart.
+  const real = deps.adapter;
+  let statusCalls = 0;
+  const racing: typeof real = {
+    install: (key, definition) => real.install(key, definition),
+    uninstall: (key) => real.uninstall(key),
+    start: (key) => real.start(key),
+    stop: (key) => real.stop(key),
+    status: async () => {
+      statusCalls++;
+      if (statusCalls === 2) await writeFile(join(agentsDir, "dev.score.alpha.plist"), "<plist/>");
+      return real.status();
+    },
+  };
+  runner.calls.length = 0;
+  logs = [];
+  await runUp(["alpha"], { ...deps, adapter: racing });
+  expect(errors.filter((line) => line.includes("still stopping"))).toEqual([]);
+  expect(errors.some((line) => line.includes("re-registered by a concurrent command"))).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
+});
+
+test("start after a drain that fails at install: the next up re-installs and starts (RETRIED)", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // Drain ends at the first wait poll; bootstrap then fails — leaving the
+  // same partial state as a process death after writeResolvedJson, before
+  // install: resolved.json rewritten, no registration, no record update.
+  runner.listQueue.push("1\t0\tdev.score.alpha", "1\t0\tdev.score.alpha");
+  runner.listOutput = "";
+  runner.failBootstrapMatching = "dev.score.alpha";
+  runner.calls.length = 0;
+  await runUp(["alpha"], deps);
+  expect(errors.some((line) => line.includes("failed to start 'alpha'"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+
+  // The next command plans the definition-only job as a start and converges.
+  runner.failBootstrapMatching = undefined;
+  runner.calls.length = 0;
+  logs = [];
+  errors = [];
+  process.exitCode = 0;
+  await runUp(["alpha"], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score.alpha.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score.alpha"],
+  ]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
+test("down of a key with no project state leaves no empty state dir behind (#99 review)", async () => {
+  // /readyz reads every project dir as a project that must carry a parseable
+  // resolved.json — an empty dir left by down's lock would wedge readiness.
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runDown(["ghost"], deps.adapter);
+  expect(logs).toContain("stopped 'ghost'");
+  await expect(stat(join(home, "projects", "ghost"))).rejects.toThrow();
+});
+
+// Root ignores file modes, so the EACCES this test relies on never fires there.
+test.skipIf(process.getuid?.() === 0)(
+  "an unreadable lock file fails promptly instead of retrying forever",
+  async () => {
+    await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+    await runUp([], deps);
+    runner.calls.length = 0;
+    runner.listOutput = "1\t0\tdev.score.alpha";
+    const lockPath = join(home, "projects", "alpha.mutate.lock");
+    await writeFile(lockPath, "whatever");
+    // Mode 000: creation reports EEXIST, every read reports EACCES — that
+    // must surface, not loop forever.
+    await chmod(lockPath, 0o000);
+    try {
+      await runDown(["alpha"], deps.adapter);
+    } finally {
+      await chmod(lockPath, 0o644);
+    }
+    expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+    expect(runner.mutations()).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  },
+);
+
+// Root ignores file modes, so the EACCES this test relies on never fires there.
+test.skipIf(process.getuid?.() === 0)(
+  "a stale lock that cannot be reclaimed (read-only store) fails promptly instead of spinning",
+  async () => {
+    await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+    await runUp([], deps);
+    runner.calls.length = 0;
+    runner.listOutput = "1\t0\tdev.score.alpha";
+    // A dead-holder lock exists, but the store is read-only: creation reports
+    // EEXIST while every reclaim rename reports EACCES — that must surface,
+    // not loop forever.
+    await writeFile(join(home, "projects", "alpha.mutate.lock"), "not-a-pid");
+    await chmod(join(home, "projects"), 0o555);
+    try {
+      await runDown(["alpha"], deps.adapter);
+    } finally {
+      await chmod(join(home, "projects"), 0o755);
+    }
+    expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+    expect(runner.mutations()).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  },
+);
+
+// Root ignores file modes, so the EACCES this test relies on never fires there.
+test.skipIf(process.getuid?.() === 0)(
+  "an uncreatable lock fails down promptly instead of spinning",
+  async () => {
+    await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+    await runUp([], deps);
+    runner.calls.length = 0;
+    runner.listOutput = "1\t0\tdev.score.alpha";
+    // The lock lives in the projects root — make that unwritable.
+    await chmod(join(home, "projects"), 0o555);
+    try {
+      await runDown(["alpha"], deps.adapter);
+    } finally {
+      await chmod(join(home, "projects"), 0o755);
+    }
+    expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+    expect(runner.mutations()).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  },
+);
 
 test("no lifecycle HTTP route: web/server sources touching routes or fetch carry no lifecycle verbs", async () => {
   // The control half of decision 6/7 (#58): lifecycle authority stays in the
