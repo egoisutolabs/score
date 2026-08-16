@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { LaunchdSupervisor } from "@score/core/supervisor/launchd.service";
@@ -648,6 +648,54 @@ test("a drain outlasting the wait fails loudly with nothing mutated; the next up
   ]);
   expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
 });
+
+test("a job re-registered while up waits ends the wait instead of timing out", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runUp([], deps);
+  runner.listOutput = "1\t0\tdev.score.alpha";
+  await runDown(["alpha"], deps.adapter);
+  // The old pid stays listed throughout, but a concurrent command re-installs
+  // the plist right after the plan's status snapshot — the wait must read
+  // that as "teardown over", not poll the replacement until the timeout.
+  const real = deps.adapter;
+  let statusCalls = 0;
+  const racing: typeof real = {
+    install: (key, definition) => real.install(key, definition),
+    uninstall: (key) => real.uninstall(key),
+    start: (key) => real.start(key),
+    stop: (key) => real.stop(key),
+    status: async () => {
+      statusCalls++;
+      if (statusCalls === 2) await writeFile(join(agentsDir, "dev.score.alpha.plist"), "<plist/>");
+      return real.status();
+    },
+  };
+  runner.calls.length = 0;
+  logs = [];
+  await runUp(["alpha"], { ...deps, adapter: racing });
+  expect(errors.filter((line) => line.includes("still stopping"))).toEqual([]);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+});
+
+// Root ignores file modes, so the EACCES this test relies on never fires there.
+test.skipIf(process.getuid?.() === 0)(
+  "an uncreatable lock fails down promptly instead of spinning",
+  async () => {
+    await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+    await runUp([], deps);
+    runner.calls.length = 0;
+    runner.listOutput = "1\t0\tdev.score.alpha";
+    await chmod(join(home, "projects", "alpha"), 0o555);
+    try {
+      await runDown(["alpha"], deps.adapter);
+    } finally {
+      await chmod(join(home, "projects", "alpha"), 0o755);
+    }
+    expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+    expect(runner.mutations()).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  },
+);
 
 test("no lifecycle HTTP route: web/server sources touching routes or fetch carry no lifecycle verbs", async () => {
   // The control half of decision 6/7 (#58): lifecycle authority stays in the

@@ -112,7 +112,10 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
     try {
       await writeFile(lockPath, String(process.pid), { flag: "wx" });
       break;
-    } catch {
+    } catch (error) {
+      // Only EEXIST is contention. Anything else (EACCES, ENOSPC) would spin
+      // forever through the break-stale-lock path — fail promptly instead.
+      if ((error as { code?: string }).code !== "EEXIST") throw error;
       const holder = Number(await readFile(lockPath, "utf8").catch(() => ""));
       let alive = false;
       if (Number.isInteger(holder) && holder > 0) {
@@ -232,13 +235,19 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     actual.filter((job) => job.loaded && job.stopping === true).map((job) => job.key),
   );
   const waitForTeardown = async (key: string): Promise<void> => {
+    const deadline = Date.now() + TEARDOWN_WAIT_MS;
     for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
       const job = (await adapter.status()).find((entry) => entry.key === key);
-      if (job === undefined || !job.loaded) return;
+      // Gone, deregistered, or re-registered (a concurrent command
+      // re-installed the definition while we queued for the lock): either
+      // way the teardown this wait guards is over.
+      if (job === undefined || !job.loaded || job.stopping !== true) return;
       if (elapsed === 0) {
         console.log(`'${key}' is still stopping — waiting for the old process to exit`);
       }
-      if (elapsed >= TEARDOWN_WAIT_MS) {
+      // Two bounds: the nominal poll count, plus wall clock so slow status
+      // calls cannot stretch the wait — the project lock is held throughout.
+      if (elapsed >= TEARDOWN_WAIT_MS || Date.now() >= deadline) {
         throw new Error(
           `still stopping after ${Math.round(TEARDOWN_WAIT_MS / 1000)}s — retry: score up ${key}`,
         );
