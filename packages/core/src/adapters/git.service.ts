@@ -230,7 +230,15 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     const swept: string[] = [];
     if (snapshot.stagedIgnored !== undefined) {
       const dirt = statusPaths(await this.#statusWithIgnored(), "??");
-      for (const path of stageResidue(snapshot.before, snapshot.stagedIgnored, dirt)) {
+      const residue = stageResidue(snapshot.before, snapshot.stagedIgnored, dirt);
+      // Delete the untracked dirt under each residue entry, never the entry
+      // directory itself: the abort can restore a tracked file into a
+      // directory the staged tree wholly ignored (PR deleted its last
+      // tracked file AND ignored it), and removing the directory would take
+      // that restored file with it. Empty directories left behind are
+      // invisible to git — no dirt, no wedge.
+      for (const path of dirt) {
+        if (!residue.some((entry) => path === entry || path.startsWith(`${entry}/`))) continue;
         // Status paths are repo-relative, but never feed rm without the same
         // escape check worktree paths get.
         const fromRoot = relative(

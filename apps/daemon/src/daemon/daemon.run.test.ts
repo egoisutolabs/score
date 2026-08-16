@@ -1028,11 +1028,11 @@ test("self-heal finishes a residue sweep a death interrupted, and logs it (#92)"
 
   await selfHealStagedMerge(git, log, false, "main");
 
-  expect(existsSync(join(repo, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repo, "apps", "web", ".next", "chunk.js"))).toBe(false);
   expect(log.logged).toEqual([
     {
       level: "warn",
-      text: "swept staged-merge build residue left by a previous run: apps/web/.next",
+      text: "swept staged-merge build residue left by a previous run: apps/web/.next/chunk.js",
     },
   ]);
 });

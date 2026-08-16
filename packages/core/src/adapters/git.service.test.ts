@@ -308,7 +308,7 @@ test("abortMerge sweeps gate build residue the staged tree ignored; operator fil
   await writeFile(join(repo, "mid-gate-note.md"), "keep too\n");
   await git.abortMerge();
 
-  expect(existsSync(join(repo, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repo, "apps", "web", ".next", "static", "chunk.js"))).toBe(false);
   expect(existsSync(join(repo, "operator-note.md"))).toBe(true);
   expect(existsSync(join(repo, "mid-gate-note.md"))).toBe(true);
   expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
@@ -343,9 +343,9 @@ test("sweepStageResidue converges from a persisted snapshot after a death mid-sw
     JSON.stringify({ before: [], stagedIgnored: ["apps/web/.next/"] }),
   );
 
-  expect(await git.sweepStageResidue()).toEqual(["apps/web/.next"]);
+  expect(await git.sweepStageResidue()).toEqual(["apps/web/.next/chunk.js"]);
 
-  expect(existsSync(join(repo, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repo, "apps", "web", ".next", "chunk.js"))).toBe(false);
   expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
   // Re-entry after the snapshot is retired is a no-op.
   expect(await git.sweepStageResidue()).toEqual([]);
@@ -423,7 +423,7 @@ test("a failed abort keeps the snapshot so the eventual successful abort still s
 
   abortWorks = true;
   await git.abortMerge();
-  expect(existsSync(join(repositoryPath, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repositoryPath, "apps", "web", ".next", "chunk.js"))).toBe(false);
   expect(existsSync(join(repositoryPath, ".git", "score-stage-snapshot.json"))).toBe(false);
 });
 
@@ -503,6 +503,36 @@ test("a pre-stage operator file with a quotable name keeps its directory out of 
   // the operator's file.
   expect(existsSync(join(repo, "apps", "web", ".next", "operator note.txt"))).toBe(true);
   expect(existsSync(join(repo, "apps", "web", ".next", "chunk.js"))).toBe(true);
+});
+
+test("a tracked file the abort restores survives the sweep of its wholly-ignored directory (#92)", async () => {
+  const { repo, git, gitCli } = await residueFixture();
+  // main tracks out/keep.txt; the PR deletes it AND ignores out/ — while
+  // staged, git reports the whole directory as one "!! out/" entry.
+  await mkdir(join(repo, "out"), { recursive: true });
+  await writeFile(join(repo, "out", "keep.txt"), "tracked\n");
+  gitCli("add", "out/keep.txt");
+  gitCli("commit", "-m", "track out/keep.txt");
+  gitCli("checkout", "-b", "drop-out");
+  gitCli("rm", "-q", "out/keep.txt");
+  await writeFile(join(repo, ".gitignore"), "out/\n");
+  gitCli("add", ".gitignore");
+  gitCli("commit", "-m", "drop out/ and ignore it");
+  const dropSha = gitCli("rev-parse", "HEAD");
+  gitCli("checkout", "main");
+
+  expect(await git.stageMerge(dropSha)).toBe(true);
+  // Staging emptied out/ so git pruned it; the gate build recreates it.
+  await mkdir(join(repo, "out"), { recursive: true });
+  await writeFile(join(repo, "out", "artifact.bin"), "built\n");
+  await git.abortMerge();
+
+  // The abort restored keep.txt into the swept directory: only the gate's
+  // untracked artifact is deleted, never the directory holding it.
+  expect(existsSync(join(repo, "out", "keep.txt"))).toBe(true);
+  expect(existsSync(join(repo, "out", "artifact.bin"))).toBe(false);
+  const { status } = await git.observePrimaryCheckout();
+  expect(status.trim()).toBe("");
 });
 
 test("a failed evidence capture blocks the abort so the staged merge stays recoverable (#92)", async () => {
