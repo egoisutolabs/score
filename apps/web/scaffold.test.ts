@@ -24,7 +24,7 @@ describe("API-only", () => {
   const files = walk(webRoot).map((f) => relative(webRoot, f));
 
   it("has no page.tsx, CSS framework, static export, or custom server", () => {
-    expect(files.filter((f) => /(^|\/)page\.tsx$/.test(f))).toEqual([]);
+    expect(files.filter((f) => /(^|\/)page\.[cm]?[jt]sx?$/.test(f))).toEqual([]);
     expect(files.filter((f) => f.endsWith(".css"))).toEqual([]);
     expect(files.filter((f) => /(^|\/)(tailwind|postcss)\.config\./.test(f))).toEqual([]);
     expect(files.filter((f) => /^server\.(ts|js|mjs)$/.test(f))).toEqual([]);
@@ -62,6 +62,7 @@ describe("stub gone", () => {
       join(repoRoot, "package.json"),
       join(repoRoot, "turbo.json"),
       join(repoRoot, "README.md"),
+      join(repoRoot, "AGENTS.md"),
     ].filter((f) => f !== self);
     const offenders = targets.filter((f) => stub.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
