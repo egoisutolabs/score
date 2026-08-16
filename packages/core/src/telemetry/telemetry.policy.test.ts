@@ -137,6 +137,13 @@ test("span identifiers are non-empty and durations finite, non-negative", () => 
   const span = { ...valid, signal: "span", name: "score.landing.tick", span_id: "s1" } as const;
   expect(recordViolations({ ...span, parent_span_id: "s0", duration_ms: 42 })).toEqual([]);
   expect(recordViolations({ ...span, span_id: "" })).not.toEqual([]);
+  // Untrusted JSON can carry null or a number where the type says string.
+  for (const span_id of [null, 42, undefined]) {
+    expect(recordViolations({ ...span, span_id: span_id as never }), String(span_id)).not.toEqual(
+      [],
+    );
+  }
+  expect(recordViolations({ ...span, parent_span_id: 7 as never })).not.toEqual([]);
   // Absence of a parent is an omitted field, never an empty string.
   expect(recordViolations({ ...span, parent_span_id: "" })).not.toEqual([]);
   for (const duration_ms of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
@@ -206,6 +213,12 @@ test("attributes whose final segment names a credential are rejected whatever th
   }
   // NaN/Infinity would serialize as null, outside the declared value types.
   expect(attributeViolations({ duration_ms: Number.NaN })).not.toEqual([]);
+  // Non-scalar values reject — a nested object could smuggle a credential
+  // past the string-shape scan.
+  for (const value of [{ token: "ghp_x" }, ["ghp_x"], null]) {
+    expect(attributeViolations({ detail: value as never }), JSON.stringify(value)).not.toEqual([]);
+  }
+  expect(attributeViolations({ ok: true, count: 3 })).toEqual([]);
   // Attributes are dimensions, not payloads — free detail belongs in body.
   expect(attributeViolations({ detail: "a".repeat(256) })).toEqual([]);
   expect(attributeViolations({ detail: "a".repeat(257) })).not.toEqual([]);

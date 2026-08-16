@@ -89,10 +89,19 @@ export function attributeViolations(attributes: TelemetryAttributes): string[] {
   const violations: string[] = [];
   for (const [key, value] of Object.entries(attributes)) {
     if (SECRET_KEY_NAME.test(key)) violations.push(`secret-named attribute "${key}"`);
-    if (typeof value === "number" && !Number.isFinite(value))
-      // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
-      violations.push(`non-finite value for attribute "${key}"`);
-    if (typeof value !== "string") continue;
+    if (typeof value === "boolean") continue;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value))
+        // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
+        violations.push(`non-finite value for attribute "${key}"`);
+      continue;
+    }
+    if (typeof value !== "string") {
+      // Untyped producers can nest objects — a credential inside one would
+      // ride straight past the string-shape scan below.
+      violations.push(`non-scalar value for attribute "${key}"`);
+      continue;
+    }
     if (value.length > MAX_ATTRIBUTE_VALUE_LENGTH)
       violations.push(`attribute "${key}" exceeds ${MAX_ATTRIBUTE_VALUE_LENGTH} chars`);
     if (SECRET_VALUE_SHAPES.some((shape) => shape.test(value)))
@@ -152,9 +161,16 @@ export function recordViolations(record: TelemetryRecord): string[] {
   )
     violations.push("non-finite subject pull_request_number");
   if (record.signal === "span") {
-    if (record.span_id === "") violations.push("empty span_id");
-    if (record.parent_span_id === "")
-      violations.push("empty parent_span_id — omit the field when there is no parent");
+    // Untrusted JSON can carry null or a number where the type says string.
+    if (typeof record.span_id !== "string" || record.span_id === "")
+      violations.push("span_id must be a non-empty string");
+    if (
+      record.parent_span_id !== undefined &&
+      (typeof record.parent_span_id !== "string" || record.parent_span_id === "")
+    )
+      violations.push(
+        "parent_span_id must be a non-empty string — omit it when there is no parent",
+      );
     if (
       record.duration_ms !== undefined &&
       (!Number.isFinite(record.duration_ms) || record.duration_ms < 0)
