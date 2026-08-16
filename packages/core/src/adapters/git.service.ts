@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type {
@@ -61,6 +61,8 @@ export interface CommitObservation {
 export class GitService implements WorktreeProvisioner, LandingWorkspace {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
+  /** Cached rev-parse --absolute-git-dir; the checkout's git dir never moves. */
+  #gitDir: string | undefined;
 
   constructor(
     private readonly runner: CommandRunner,
@@ -161,6 +163,11 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     // anything that predates the stage. Written before the merge so a death
     // at any later step still finds it on disk.
     if (this.options.dryRun !== true) {
+      // A pending sweep (an earlier abort succeeded but its sweep died or
+      // threw) must finish first: overwriting would fold that gate's residue
+      // into `before` and make it permanently unsweepable.
+      const pending = await this.#readStageSnapshot();
+      if (pending?.stagedIgnored !== undefined) await this.sweepStageResidue();
       await this.#writeStageSnapshot({ before: statusPaths(await this.#statusWithIgnored()) });
     }
     // The exact commit, never origin/<branch>: a branch can move between
@@ -195,7 +202,10 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
       }
     }
     await this.#run(["merge", "--abort"], true);
-    await this.sweepStageResidue();
+    // A failed abort leaves the merge staged and the residue still ignored:
+    // the sweep would see no ?? dirt yet retire the evidence, wedging the
+    // eventual successful abort. Only a confirmed-gone merge sweeps.
+    if (!(await this.mergeInProgress())) await this.sweepStageResidue();
   }
 
   /**
@@ -229,7 +239,7 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
       }
     }
     // Retired only after the deletes: a death mid-sweep re-enters here.
-    await rm(this.#stageSnapshotPath(), { force: true });
+    await rm(await this.#stageSnapshotPath(), { force: true });
     return swept;
   }
 
@@ -246,8 +256,15 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     );
     // A committed merge's build outputs are ignored by the merged tree, so
     // the snapshot is retired: a later abort must not sweep from stale
-    // evidence. force tolerates a snapshot that was never written (dry-run).
-    await rm(this.#stageSnapshotPath(), { force: true });
+    // evidence. Best-effort: a stale {before}-only snapshot is inert (a later
+    // defensive abort adds current ignore rules, and no path is both ignored
+    // and plain-untracked at once), while throwing here would misreport a
+    // committed merge as build-red and skip D1's push-failure guard.
+    try {
+      await rm(await this.#stageSnapshotPath(), { force: true });
+    } catch {
+      // Ignore: see above.
+    }
   }
 
   async pushDefaultBranch(defaultBranch: string): Promise<void> {
@@ -355,20 +372,32 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     ).stdout;
   }
 
-  #stageSnapshotPath(): string {
-    // Beside MERGE_HEAD, sharing its lifetime. The primary is the main
-    // checkout (worktrees live under workspaceRoot), so .git is a directory.
-    return join(this.options.repositoryPath, ".git", "score-stage-snapshot.json");
+  async #stageSnapshotPath(): Promise<string> {
+    // Beside MERGE_HEAD, sharing its lifetime. Resolved through git, not
+    // <root>/.git: a primary configured on a linked worktree or a
+    // separate-git-dir layout has a .git *file*, and --absolute-git-dir is
+    // exactly the directory holding that checkout's MERGE_HEAD.
+    this.#gitDir ??= requireSuccess(
+      await this.#run(["rev-parse", "--absolute-git-dir"]),
+    ).stdout.trim();
+    if (this.#gitDir === "") throw new Error("cannot resolve the repository's git directory");
+    return join(this.#gitDir, "score-stage-snapshot.json");
   }
 
   async #writeStageSnapshot(snapshot: StageSnapshot): Promise<void> {
-    await writeFile(this.#stageSnapshotPath(), JSON.stringify(snapshot), "utf8");
+    // tmp+rename: a death mid-write must never leave truncated JSON where
+    // valid evidence stood — an unreadable snapshot reads as "no evidence"
+    // and would silently disarm the sweep.
+    const path = await this.#stageSnapshotPath();
+    const temporary = `${path}.tmp`;
+    await writeFile(temporary, JSON.stringify(snapshot), "utf8");
+    await rename(temporary, path);
   }
 
   async #readStageSnapshot(): Promise<StageSnapshot | undefined> {
     // Missing or corrupt reads as "no evidence": the sweep deletes nothing.
     try {
-      return JSON.parse(await readFile(this.#stageSnapshotPath(), "utf8")) as StageSnapshot;
+      return JSON.parse(await readFile(await this.#stageSnapshotPath(), "utf8")) as StageSnapshot;
     } catch {
       return undefined;
     }

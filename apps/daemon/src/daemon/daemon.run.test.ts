@@ -1467,9 +1467,9 @@ test("a push failure inside one pass is reconciled by a later pass of the same d
   // — a startup-only recovery would never fire here, which is exactly the
   // regression this test pins.
   const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
-  // Git commands are faked, but stageMerge persists its residue-sweep
-  // snapshot (#92) into a real .git/ directory.
-  await mkdir(join(repo, ".git"), { recursive: true });
+  // Git commands are faked (the generic rev-parse answer doubles as the
+  // --absolute-git-dir the #92 snapshot resolves through), but stageMerge
+  // persists that snapshot with real filesystem writes under `repo`.
   const { home } = await managedFixture(repo, undefined, 25);
   await withEnv({ SCORE_HOME: home }, async () => {
     const prJson = JSON.stringify({
