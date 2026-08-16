@@ -94,6 +94,25 @@ test("claude briefings carry the ordered workflow; tool steps are capability-con
   );
 });
 
+test("commit-as-you-go rule sits inside the workflow section, before the push step", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
+  const workflow = markdown.slice(
+    markdown.indexOf("## Workflow"),
+    markdown.indexOf("## Required Verification"),
+  );
+
+  const unwrapped = workflow.replace(/\s+/g, " ");
+  const rule = unwrapped.indexOf(
+    "Commit locally at each workflow boundary — after exploration notes, after implementation, after each review-fix round — with concise messages.",
+  );
+  const push = unwrapped.indexOf("push");
+  expect(rule).toBeGreaterThan(-1);
+  expect(push).toBeGreaterThan(rule);
+  // Push stays end-only — the rule defers to Completion Instructions, not a new push cadence.
+  expect(unwrapped).toContain("Push remains end-only, per Completion Instructions.");
+});
+
 test("non-claude briefings carry no workflow section", () => {
   const identity = createWorkIdentity("/worktrees", issue());
   const markdown = new TaskBriefingService().render(issue(), identity, opencode);
