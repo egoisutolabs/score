@@ -158,10 +158,11 @@ export class ReplayService {
             }
             // A closed segment (a newer one exists, so its writer moved on)
             // ending mid-line is a torn record from a writer death — it
-            // will never be completed. Name the shortfall and move on
-            // rather than hiding every newer segment behind it (#82).
-            yield* warn("RECORD_UNPARSEABLE");
+            // will never be completed. Advance past it first so the
+            // warning's cursor resumes beyond the fragment, then name the
+            // shortfall and move on rather than hiding newer segments (#82).
             advance(segment.mark);
+            yield* warn("RECORD_UNPARSEABLE");
             break;
           }
           for (const line of cycle.lines) {
