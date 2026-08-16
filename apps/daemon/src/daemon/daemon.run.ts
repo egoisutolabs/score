@@ -26,6 +26,7 @@ import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.rende
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
+import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import {
   BunCommandRunner,
   LoggingCommandRunner,
@@ -34,7 +35,7 @@ import {
 import { agentConfigFromCommand } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/config.interface";
-import { logsDir, promptsDir, statusPath } from "@score/shared/config/layout";
+import { logsDir, promptsDir, statusPath, telemetryDir } from "@score/shared/config/layout";
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
@@ -50,6 +51,12 @@ import { createLogger } from "@score/shared/log";
 import { GitHubService } from "@score/tracker/github.service";
 import { renderRepairRun } from "../repair/repair.run";
 import { proveLandingAuthorship } from "./recovery.policy";
+import {
+  PassTelemetry,
+  renderLandingTelemetry,
+  renderMaintenanceTickTelemetry,
+  renderRepairTelemetry,
+} from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
 const VALUE_FLAGS = ["--project", "--config"] as const;
@@ -501,6 +508,8 @@ interface DaemonLoopOverrides {
   readonly createOpencodeServer?: () => StartableOpencodeServer;
   /** Overrides the command runner. Defaults to the real Bun-backed one. */
   readonly runner?: CommandRunner;
+  /** Overrides the telemetry sink. Defaults to the project's append-only log. */
+  readonly telemetrySink?: Pick<TelemetryLogService, "append">;
 }
 
 export async function runDaemon(args: readonly string[]): Promise<void> {
@@ -568,6 +577,31 @@ export async function runDaemonLoop(
   if (managedRuntime && logRetentionDays !== undefined) {
     managedRuntime.fileLog.enableRetention(logRetentionDays);
   }
+  // #79: instrumentation is project-scoped — segments live under the project
+  // dir, so unmanaged discovery mode (no key, out of scope) stays untraced.
+  let sweepTelemetryRetention: (() => void) | undefined;
+  const telemetry = (() => {
+    const project = parsed.project;
+    if (project === undefined) return undefined;
+    let sink = overrides?.telemetrySink;
+    if (sink === undefined) {
+      const telemetryLog = new TelemetryLogService(telemetryDir(project), { project });
+      if (logRetentionDays !== undefined) {
+        // Same boundary as file-log retention: segments strictly older than
+        // the configured days are swept, now and once per pass — one readdir
+        // instead of midnight bookkeeping. A sweep failure is telemetry's to
+        // eat, never the pass's (locked decision 9).
+        sweepTelemetryRetention = () => {
+          try {
+            telemetryLog.sweepRetention(logRetentionDays);
+          } catch {}
+        };
+        sweepTelemetryRetention();
+      }
+      sink = telemetryLog;
+    }
+    return new PassTelemetry(sink, project, dryRun, log);
+  })();
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
   const tuning = (name: string): string | undefined => (managed ? undefined : process.env[name]);
@@ -761,6 +795,7 @@ export async function runDaemonLoop(
         run: async () => {
           const result = await maintenance.runMaintenanceTick(dryRun);
           log.lines(renderMaintenanceTick(result));
+          telemetry?.decisions((ctx) => renderMaintenanceTickTelemetry(result, ctx));
           pass.cleaned += result.cleanup.filter(
             (cleanup) =>
               cleanup.action === "CLEANED" ||
@@ -786,6 +821,9 @@ export async function runDaemonLoop(
           if (gateVerdict !== undefined) lastGateFailure = gateVerdict;
           applyGateVerdicts(gateVerdicts, results);
           log.lines(renderLandingTick(results));
+          telemetry?.decisions((ctx) =>
+            results.flatMap((result) => renderLandingTelemetry(result, ctx)),
+          );
           pass.merged += results.filter(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
@@ -806,14 +844,38 @@ export async function runDaemonLoop(
           // is noise, so a tick with nothing to fix stays at debug.
           if (acted > 0) log.lines(renderRepairRun(results));
           else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
+          telemetry?.decisions((ctx) =>
+            results.flatMap((result) => renderRepairTelemetry(result, ctx)),
+          );
           pass.repaired += acted;
           pass.working += results.filter((result) => result.action === "WORKING").length;
         },
       },
     ];
 
+    // The span wraps the whole run, so the decisions appended inside the
+    // bodies above ride the live phase span. Every PassTelemetry method is
+    // throw-free by construction (locked decision 9), so this wrapper cannot
+    // turn a green phase red or hide a red one.
+    const tracedPhases: readonly DaemonPhase[] =
+      telemetry === undefined
+        ? phases
+        : phases.map((phase) => ({
+            ...phase,
+            run: async () => {
+              telemetry.beginPhase();
+              try {
+                await phase.run();
+              } catch (error) {
+                telemetry.endPhase(phase.name, "error");
+                throw error;
+              }
+              telemetry.endPhase(phase.name, "ok");
+            },
+          }));
+
     const daemon = new DaemonService(
-      phases,
+      tracedPhases,
       (name, error) => {
         const message = error instanceof Error ? error.message : String(error);
         log.warn(`✗ phase ${name} failed: ${message}`);
@@ -840,54 +902,70 @@ export async function runDaemonLoop(
         });
         observations.startPass();
         for (const key of Object.keys(pass) as (keyof typeof pass)[]) pass[key] = 0;
-
-        // D1 reconciliation runs before the phases of every pass, not only at
-        // startup (the first pass runs immediately, so this is the startup
-        // check too): a caught pushDefaultBranch failure strands a committed
-        // merge while the daemon lives, and landing must see the recovered
-        // checkout, never stage on top of the wedge. Unconditional, not
-        // managed-only: every mode that runs this loop lands merges on this
-        // checkout, so every mode owns the recovery of its own wedge.
-        // Transient git failures (a fetch blip, say) degrade to a warning
-        // like any phase error — but they also block landing this pass, and
-        // only failed post-reset verification may crash the daemon.
+        telemetry?.openTick(currentTick);
+        sweepTelemetryRetention?.();
         try {
-          landingBlocked =
-            (await reconcileUnpushedLandingMerge(git, log, {
-              dryRun,
-              defaultBranch: runtime.defaultBranch,
-              repositoryOwner: runtime.repository.split("/")[0] as string,
-            })) === "blocked";
+          // D1 reconciliation runs before the phases of every pass, not only at
+          // startup (the first pass runs immediately, so this is the startup
+          // check too): a caught pushDefaultBranch failure strands a committed
+          // merge while the daemon lives, and landing must see the recovered
+          // checkout, never stage on top of the wedge. Unconditional, not
+          // managed-only: every mode that runs this loop lands merges on this
+          // checkout, so every mode owns the recovery of its own wedge.
+          // Transient git failures (a fetch blip, say) degrade to a warning
+          // like any phase error — but they also block landing this pass, and
+          // only failed post-reset verification may crash the daemon.
+          try {
+            landingBlocked =
+              (await reconcileUnpushedLandingMerge(git, log, {
+                dryRun,
+                defaultBranch: runtime.defaultBranch,
+                repositoryOwner: runtime.repository.split("/")[0] as string,
+              })) === "blocked";
+          } catch (error) {
+            if (error instanceof RecoveryVerificationError) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            log.warn(`✗ reconciliation failed: ${message}`);
+            passError = `reconcile: ${message}`;
+            landingBlocked = true;
+          }
+
+          await daemon.runPass();
+
+          const elapsedMs = Date.now() - startedAt;
+          const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
+          log.lines([
+            {
+              level: changed > 0 ? "info" : "debug",
+              text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
+            },
+          ]);
+          // Phases are sequential by design; a pass longer than the tick just
+          // delays the next one. Say so instead of trying to catch up.
+          if (elapsedMs > tickIntervalMs) {
+            log.warn(
+              `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
+            );
+          }
+          await status?.write({
+            last_pass_completed_at: new Date().toISOString(),
+            last_error: passError,
+            last_gate_failure: lastGateFailure,
+          });
+          // An unexpected child exit truncates the pass (stopping is set, the
+          // remaining phases are skipped) but surfaces as childError only
+          // AFTER the loop — the root span must not claim "ok" for a pass the
+          // dying child cut short. A normal signal shutdown truncates the same
+          // way yet stays "ok": the operator asked for it.
+          telemetry?.closeTick(passError === null && childError === undefined ? "ok" : "error");
         } catch (error) {
-          if (error instanceof RecoveryVerificationError) throw error;
-          const message = error instanceof Error ? error.message : String(error);
-          log.warn(`✗ reconciliation failed: ${message}`);
-          passError = `reconcile: ${message}`;
-          landingBlocked = true;
+          // A fatal pass exit (RecoveryVerificationError, a rejecting status
+          // write) must still close the root span: phase records already
+          // appended would otherwise be orphans, and a pass that died before
+          // any phase would be invisible in the trace stream.
+          telemetry?.closeTick("error");
+          throw error;
         }
-
-        await daemon.runPass();
-
-        const elapsedMs = Date.now() - startedAt;
-        const changed = pass.cleaned + pass.started + pass.merged + pass.repaired;
-        log.lines([
-          {
-            level: changed > 0 ? "info" : "debug",
-            text: `pass ${currentTick} summary: cleaned=${pass.cleaned} started=${pass.started} merged=${pass.merged} soaking=${pass.soaking} repaired=${pass.repaired} working=${pass.working} (${Math.round(elapsedMs / 1_000)}s)`,
-          },
-        ]);
-        // Phases are sequential by design; a pass longer than the tick just
-        // delays the next one. Say so instead of trying to catch up.
-        if (elapsedMs > tickIntervalMs) {
-          log.warn(
-            `pass ${currentTick} took ${Math.round(elapsedMs / 1_000)}s, longer than the ${Math.round(tickIntervalMs / 1_000)}s tick`,
-          );
-        }
-        await status?.write({
-          last_pass_completed_at: new Date().toISOString(),
-          last_error: passError,
-          last_gate_failure: lastGateFailure,
-        });
       },
       parsed.once,
       tickIntervalMs,

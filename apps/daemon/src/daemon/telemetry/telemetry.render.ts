@@ -140,6 +140,9 @@ export function renderDispatchTelemetry(
           { decision: "blocked", reason },
         ),
       );
+  // failure.message is omitted on purpose: adapter errors embed absolute
+  // worktree paths, and paths never enter telemetry (epic attribute-safety
+  // rule) — the prose log keeps the full message.
   for (const failure of result.failed)
     records.push(
       decisionEvent(
@@ -147,7 +150,6 @@ export function renderDispatchTelemetry(
         "score.dispatch.decision",
         { issue_number: failure.issueNumber },
         { decision: "failed" },
-        failure.message,
       ),
     );
   return records;
@@ -158,13 +160,16 @@ export function renderLandingTelemetry(
   ctx: TelemetryRenderContext,
 ): readonly TelemetryEvent[] {
   const name = LANDING_TAGS.has(result.tag) ? "score.landing.decision" : "score.landing.unknown";
+  // result.note is omitted on purpose: build-red notes carry raw gate output
+  // and several tags interpolate error messages, both of which embed absolute
+  // paths that never enter telemetry (epic attribute-safety rule) — the prose
+  // log keeps the full note.
   return [
     decisionEvent(
       ctx,
       name,
       { pull_request_number: result.pullRequestNumber },
       { tag: result.tag },
-      result.note,
     ),
   ];
 }
