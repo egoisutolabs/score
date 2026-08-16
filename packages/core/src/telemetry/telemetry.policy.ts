@@ -3,7 +3,8 @@
  * check rejects, never mutates — an invalid record is dropped whole, so a
  * stored line is always a line the policy accepted. The one sanctioned
  * mutation is boundBody, which cuts the free-detail field at its byte
- * ceiling before validation.
+ * ceiling AFTER the gate accepted the record — gate first, truncate second,
+ * so redaction always sees the full body.
  */
 
 import type { TelemetryAttributes, TelemetryRecord } from "./telemetry.interface";
@@ -63,7 +64,9 @@ export function isValidTelemetryName(name: string): boolean {
 
 /**
  * Truncates a body at MAX_BODY_BYTES and marks the cut. The cut backs off
- * past UTF-8 continuation bytes so it never tears a code point.
+ * past UTF-8 continuation bytes so it never tears a code point. Runs after
+ * recordViolations accepted the record, never before — truncation can tear
+ * a secret shape the gate would otherwise catch.
  */
 export function boundBody(body: string): { body: string; truncated: boolean } {
   const bytes = new TextEncoder().encode(body);
@@ -114,17 +117,21 @@ export function recordViolations(record: TelemetryRecord): string[] {
   if (!SIGNALS.has(record.signal)) violations.push(`unknown signal "${String(record.signal)}"`);
   if (!isValidTelemetryName(record.name)) violations.push(`invalid name "${record.name}"`);
   if (!record.project) violations.push("missing project");
+  // The gate runs on the record as produced — body length is NOT a violation
+  // here, because the full body must be scanned before boundBody truncates
+  // for storage: a credential torn at the byte ceiling no longer matches its
+  // shape, so a truncate-first order would store 35/36 chars of a secret.
   const body = record.body;
-  if (body !== undefined) {
-    if (new TextEncoder().encode(body).length > MAX_BODY_BYTES)
-      // boundBody owns truncation; a body past the ceiling means it was skipped.
-      violations.push(`body exceeds ${MAX_BODY_BYTES} bytes; apply boundBody first`);
-    // Free detail is the likeliest place a dumped error or request leaks a
-    // credential — the redaction table gates it the same as attribute values.
-    if (SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
-      violations.push("secret-shaped value in body");
-  }
+  if (body !== undefined && SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
+    violations.push("secret-shaped value in body");
   if (record.attributes !== undefined) violations.push(...attributeViolations(record.attributes));
+  if (record.signal === "span") {
+    if (record.span_id === "") violations.push("empty span_id");
+    if (record.parent_span_id === "")
+      violations.push("empty parent_span_id — omit the field when there is no parent");
+    if (record.duration_ms !== undefined && !Number.isFinite(record.duration_ms))
+      violations.push("non-finite duration_ms");
+  }
   if (record.signal === "metric") {
     if (!Number.isFinite(record.value))
       // JSON.stringify would store NaN/Infinity as null, outside the declared contract.

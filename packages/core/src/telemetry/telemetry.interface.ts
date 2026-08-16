@@ -51,7 +51,9 @@ export interface TelemetryEvent extends TelemetryRecordBase {
 
 export interface TelemetrySpan extends TelemetryRecordBase {
   readonly signal: "span";
+  /** Non-empty; the policy rejects "". */
   readonly span_id: string;
+  /** Omit when there is no parent — never empty. */
   readonly parent_span_id?: string;
   readonly duration_ms?: number;
   readonly status?: "ok" | "error";

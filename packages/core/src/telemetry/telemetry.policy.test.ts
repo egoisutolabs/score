@@ -96,10 +96,16 @@ test("a body at the ceiling passes untouched; past it, truncated at the boundary
   expect(utf8Bytes(multibyte.body)).toBeLessThanOrEqual(MAX_BODY_BYTES);
   expect(multibyte.body).not.toContain("�");
 
-  // The gate rejects an unbounded body outright — boundBody owns truncation.
-  expect(recordViolations({ ...valid, body: "a".repeat(MAX_BODY_BYTES + 1) })).not.toEqual([]);
+  // Gate first, truncate second: an over-long body is not itself a violation
+  // (boundBody bounds it for storage after acceptance)…
+  expect(recordViolations({ ...valid, body: "a".repeat(MAX_BODY_BYTES + 1) })).toEqual([]);
   const { body, truncated } = bounded;
   expect(recordViolations({ ...valid, body, truncated })).toEqual([]);
+
+  // …and the gate sees the FULL body, so a credential the truncation would
+  // tear at the byte ceiling (leaving 35/36 secret chars stored) still rejects.
+  const tornCredential = `${"a".repeat(MAX_BODY_BYTES - 21)} ghp_${"B".repeat(36)}`;
+  expect(recordViolations({ ...valid, body: tornCredential })).not.toEqual([]);
 });
 
 test("the redaction table gates body text the same as attribute values", () => {
@@ -118,6 +124,17 @@ test("a metric value must be finite — NaN/Infinity would serialize as null", (
   expect(recordViolations({ ...metric, value: 12.5 })).toEqual([]);
   for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
     expect(recordViolations({ ...metric, value }), String(value)).not.toEqual([]);
+  }
+});
+
+test("span identifiers are non-empty and durations finite", () => {
+  const span = { ...valid, signal: "span", name: "score.landing.tick", span_id: "s1" } as const;
+  expect(recordViolations({ ...span, parent_span_id: "s0", duration_ms: 42 })).toEqual([]);
+  expect(recordViolations({ ...span, span_id: "" })).not.toEqual([]);
+  // Absence of a parent is an omitted field, never an empty string.
+  expect(recordViolations({ ...span, parent_span_id: "" })).not.toEqual([]);
+  for (const duration_ms of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(recordViolations({ ...span, duration_ms }), String(duration_ms)).not.toEqual([]);
   }
 });
 
