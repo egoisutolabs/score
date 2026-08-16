@@ -68,9 +68,13 @@ test("a record needs v: 1, an RFC 3339 ts, a signal, a score-namespaced name, an
     [{ name: "dispatch.blocked" }, "name"],
     [{ project: "" }, "project"],
     [{ project: 123 as never }, "truthy non-string project"],
-    // Parsed, untrusted JSON can carry null where the type says object —
-    // rejected as a violation, never a crash.
+    // Parsed, untrusted JSON can carry any shape where the type says object —
+    // rejected as a violation, never a crash or a silent pass.
     [{ attributes: null as never }, "null attributes"],
+    [{ attributes: "foo" as never }, "string attributes"],
+    [{ attributes: 42 as never }, "number attributes"],
+    [{ attributes: true as never }, "boolean attributes"],
+    [{ attributes: ["a", "b"] as never }, "array attributes"],
   ];
   for (const [patch, why] of rejected) {
     expect(recordViolations({ ...valid, ...patch } as TelemetryRecord), why).not.toEqual([]);
@@ -259,9 +263,14 @@ test("a metric carries labels only — attributes would smuggle identity past th
   expect(recordViolations(metric)).toEqual([]);
   const smuggled = { ...metric, attributes: { session: identity.sessionName } };
   expect(recordViolations(smuggled as unknown as TelemetryRecord)).not.toEqual([]);
-  // null labels from untrusted JSON reject, never crash.
-  const nullLabels = { ...metric, labels: null };
-  expect(recordViolations(nullLabels as unknown as TelemetryRecord)).not.toEqual([]);
+  // Non-object labels from untrusted JSON reject, never crash or pass silently.
+  for (const labels of [null, 42, true, ["ok"]]) {
+    const malformed = { ...metric, labels };
+    expect(
+      recordViolations(malformed as unknown as TelemetryRecord),
+      JSON.stringify(labels),
+    ).not.toEqual([]);
+  }
 });
 
 // --- identity ---

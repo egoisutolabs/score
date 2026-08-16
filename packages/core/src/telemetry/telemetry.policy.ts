@@ -33,6 +33,11 @@ function isRfc3339(ts: string): boolean {
 
 const SIGNALS = new Set(["event", "span", "metric"]);
 
+/** The declared attribute/label carriers are plain objects — not null, not arrays. */
+function isPlainObject(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * Redaction table — the accompanying test table IS the spec. Exactly these
  * shapes; ceiling: no entropy scanning, no ML detection. New shapes are
@@ -146,11 +151,14 @@ export function recordViolations(record: TelemetryRecord): string[] {
   const body = record.body;
   if (body !== undefined && SECRET_VALUE_SHAPES.some((shape) => shape.test(body)))
     violations.push("secret-shaped value in body");
-  // The gate also runs on parsed, untrusted JSON in #77 — a null field is
-  // malformed input to reject, never a crash (Object.entries(null) throws).
-  const attributes = record.attributes as TelemetryAttributes | null | undefined;
-  if (attributes === null) violations.push("attributes must be an object");
-  else if (attributes !== undefined) violations.push(...attributeViolations(attributes));
+  // The gate also runs on parsed, untrusted JSON in #77 — any non-object
+  // shape here is malformed input to reject, never a crash or a silent pass
+  // (Object.entries(null) throws; on a string/number/array it walks junk).
+  const attributes = record.attributes as unknown;
+  if (attributes !== undefined) {
+    if (!isPlainObject(attributes)) violations.push("attributes must be an object");
+    else violations.push(...attributeViolations(attributes as TelemetryAttributes));
+  }
   // Subject strings pass through untouched (identity is dispatch's), but the
   // numbers must survive JSON — NaN/Infinity would serialize as null.
   if (record.subject?.issue_number !== undefined && !Number.isFinite(record.subject.issue_number))
@@ -185,9 +193,11 @@ export function recordViolations(record: TelemetryRecord): string[] {
     if (!Number.isFinite(record.value))
       // JSON.stringify would store NaN/Infinity as null, outside the declared contract.
       violations.push("non-finite metric value");
-    const labels = record.labels as Readonly<Record<string, string>> | null | undefined;
-    if (labels === null) violations.push("labels must be an object");
-    else if (labels !== undefined) violations.push(...metricLabelViolations(labels));
+    const labels = record.labels as unknown;
+    if (labels !== undefined) {
+      if (!isPlainObject(labels)) violations.push("labels must be an object");
+      else violations.push(...metricLabelViolations(labels as Readonly<Record<string, string>>));
+    }
   }
   return violations;
 }
