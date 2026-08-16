@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,11 +6,14 @@ import {
   GitService,
   LANDING_COMMITTER,
   parseWorktreePorcelain,
+  stageResidue,
+  statusPaths,
 } from "@score/core/adapters/git.service";
 import type { WorkIdentity } from "@score/core/dispatch/work.interface";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import { afterEach, expect, test } from "vitest";
+import { ExecRunner, stagedMergeFixture } from "./fixtures";
 
 const sandboxes: string[] = [];
 
@@ -281,6 +285,108 @@ test("observeCommit reports a root commit as parentless, not as one empty parent
   }).observeCommit("main");
 
   expect(commit.parents).toEqual([]);
+});
+
+test("abortMerge sweeps gate build residue the staged tree ignored; operator files survive (#92)", async () => {
+  const { repo, git, webBranchSha } = await stagedMergeFixture();
+  // Untracked operator file present before the stage — must survive.
+  await writeFile(join(repo, "operator-note.md"), "keep\n");
+
+  expect(await git.stageMerge(webBranchSha)).toBe(true);
+  // The verify gate's build writes outputs only the staged tree ignores —
+  // exactly how PR #68's next build left apps/web/.next in the primary.
+  await mkdir(join(repo, "apps", "web", ".next", "static"), { recursive: true });
+  await writeFile(join(repo, "apps", "web", ".next", "static", "chunk.js"), "built\n");
+  // Operator file dropped mid-gate, not ignored — must survive too.
+  await writeFile(join(repo, "mid-gate-note.md"), "keep too\n");
+  await git.abortMerge();
+
+  expect(existsSync(join(repo, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repo, "operator-note.md"))).toBe(true);
+  expect(existsSync(join(repo, "mid-gate-note.md"))).toBe(true);
+  expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
+  // The #92 wedge: without the sweep these lines carried apps/web/.next dirt
+  // that silently blocked mainCheckoutReady and cleanup's auto-pull.
+  const { status } = await git.observePrimaryCheckout();
+  expect(status).not.toContain(".next");
+});
+
+test("a pre-stage ignored path is never swept, even when the staged tree also ignores it (#92)", async () => {
+  const { repo, git, webBranchSha, gitCli } = await stagedMergeFixture();
+  await writeFile(join(repo, ".gitignore"), ".env\n");
+  gitCli("add", ".gitignore");
+  gitCli("commit", "-m", "ignore env");
+  // An operator secret, ignored on main and by the staged tree alike.
+  await writeFile(join(repo, ".env"), "SECRET=1\n");
+
+  expect(await git.stageMerge(webBranchSha)).toBe(true);
+  await git.abortMerge();
+
+  expect(existsSync(join(repo, ".env"))).toBe(true);
+});
+
+test("sweepStageResidue converges from a persisted snapshot after a death mid-sweep (#92)", async () => {
+  const { repo, git } = await stagedMergeFixture();
+  // As left by a death between landing's abort and its sweep: no MERGE_HEAD,
+  // the persisted snapshot, and the aborted gate's dirt.
+  await mkdir(join(repo, "apps", "web", ".next"), { recursive: true });
+  await writeFile(join(repo, "apps", "web", ".next", "chunk.js"), "built\n");
+  await writeFile(
+    join(repo, ".git", "score-stage-snapshot.json"),
+    JSON.stringify({ before: [], stagedIgnored: ["apps/web/.next/"] }),
+  );
+
+  expect(await git.sweepStageResidue()).toEqual(["apps/web/.next"]);
+
+  expect(existsSync(join(repo, "apps", "web", ".next"))).toBe(false);
+  expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
+  // Re-entry after the snapshot is retired is a no-op.
+  expect(await git.sweepStageResidue()).toEqual([]);
+});
+
+test("commitMerge retires the stage snapshot so a later abort cannot sweep stale evidence (#92)", async () => {
+  const { repo, git, webBranchSha } = await stagedMergeFixture();
+
+  expect(await git.stageMerge(webBranchSha)).toBe(true);
+  expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(true);
+  await git.commitMerge("Merge branch 'web-app'");
+
+  expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
+});
+
+test("dry-run writes no stage snapshot and sweeps nothing (#92)", async () => {
+  const { repo, webBranchSha } = await stagedMergeFixture();
+  // ExecRunner ignores the dryRun flag (it has no mutation gate), so the
+  // merge itself still runs; the assertion is that GitService writes and
+  // deletes no residue evidence of its own in dry-run.
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+    dryRun: true,
+  });
+
+  await git.stageMerge(webBranchSha);
+
+  expect(existsSync(join(repo, ".git", "score-stage-snapshot.json"))).toBe(false);
+  expect(await git.sweepStageResidue()).toEqual([]);
+});
+
+test("stageResidue: only staged-ignored entries that are new and now plain dirt qualify", () => {
+  expect(
+    stageResidue(
+      ["operator-note.md", ".env", "logs/"],
+      ["apps/web/.next/", "apps/web/.turbo/", ".env", "logs/"],
+      ["apps/web/.next/static/chunk.js", "operator-note.md", "mid-gate-note.md"],
+    ),
+    // .turbo: still ignored after the abort (never ?? dirt) — left alone.
+    // .env and logs/: predate the stage — left alone.
+  ).toEqual(["apps/web/.next"]);
+});
+
+test("statusPaths filters by code and refuses git's C-quoted paths", () => {
+  const status = '?? plain.md\n!! dir/\n?? "with space.md"\n';
+  expect(statusPaths(status)).toEqual(["plain.md", "dir/"]);
+  expect(statusPaths(status, "??")).toEqual(["plain.md"]);
 });
 
 test("seedClaudeDirectory: false leaves the worktree without a copied .claude", async () => {

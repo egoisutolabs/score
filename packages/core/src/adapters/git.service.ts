@@ -175,7 +175,56 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
   }
 
   async abortMerge(): Promise<void> {
+    // The staged tree's ignore rules vanish with the abort, so the sweep's
+    // "ignored by the staged tree" evidence must be captured first — and
+    // persisted, so a death between the abort and the sweep converges on the
+    // next startup sweep instead of leaving the primary wedged (#92).
+    if (this.options.dryRun !== true) {
+      const snapshot = await this.#readStageSnapshot();
+      if (snapshot !== undefined) {
+        await this.#writeStageSnapshot({
+          ...snapshot,
+          stagedIgnored: statusPaths(await this.#statusWithIgnored(), "!!"),
+        });
+      }
+    }
     await this.#run(["merge", "--abort"], true);
+    await this.sweepStageResidue();
+  }
+
+  /**
+   * Delete build residue a staged-merge gate left behind (#92: PR #68's
+   * verify gate wrote apps/web/.next into the primary; merge --abort restores
+   * tracked state only, and under a HEAD without that PR's .gitignore the
+   * leftovers were bare untracked dirt that silently wedged landing and
+   * auto-pull for hours). Only paths meeting all three of: ignored by the
+   * staged tree, absent from the pre-stage snapshot, and currently plain
+   * untracked dirt — so tracked files, operator files, and anything git still
+   * ignores (.env, .turbo) can never qualify. Idempotent and a no-op without
+   * a snapshot; startup calls it to finish a sweep a death interrupted.
+   */
+  async sweepStageResidue(): Promise<readonly string[]> {
+    if (this.options.dryRun === true) return [];
+    const snapshot = await this.#readStageSnapshot();
+    if (snapshot === undefined) return [];
+    const swept: string[] = [];
+    if (snapshot.stagedIgnored !== undefined) {
+      const dirt = statusPaths(await this.#statusWithIgnored(), "??");
+      for (const path of stageResidue(snapshot.before, snapshot.stagedIgnored, dirt)) {
+        // Status paths are repo-relative, but never feed rm without the same
+        // escape check worktree paths get.
+        const fromRoot = relative(
+          this.options.repositoryPath,
+          join(this.options.repositoryPath, path),
+        );
+        if (fromRoot === "" || fromRoot.startsWith("..") || isAbsolute(fromRoot)) continue;
+        await rm(join(this.options.repositoryPath, fromRoot), { recursive: true, force: true });
+        swept.push(fromRoot);
+      }
+    }
+    // Retired only after the deletes: a death mid-sweep re-enters here.
+    await rm(this.#stageSnapshotPath(), { force: true });
+    return swept;
   }
 
   async commitMerge(message: string): Promise<void> {
@@ -189,6 +238,10 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
         GIT_COMMITTER_EMAIL: LANDING_COMMITTER.email,
       }),
     );
+    // A committed merge's build outputs are ignored by the merged tree, so
+    // the snapshot is retired: a later abort must not sweep from stale
+    // evidence. force tolerates a snapshot that was never written (dry-run).
+    await rm(this.#stageSnapshotPath(), { force: true });
   }
 
   async pushDefaultBranch(defaultBranch: string): Promise<void> {
@@ -288,6 +341,33 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
     throw new Error("Could not resolve base branch (no origin/HEAD, no main, no master).");
   }
 
+  async #statusWithIgnored(): Promise<string> {
+    // --ignored=matching: an ignored directory collapses to one "!! dir/"
+    // entry, the unit the sweep deletes; -uall keeps plain dirt per-file.
+    return requireSuccess(
+      await this.#run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"]),
+    ).stdout;
+  }
+
+  #stageSnapshotPath(): string {
+    // Beside MERGE_HEAD, sharing its lifetime. The primary is the main
+    // checkout (worktrees live under workspaceRoot), so .git is a directory.
+    return join(this.options.repositoryPath, ".git", "score-stage-snapshot.json");
+  }
+
+  async #writeStageSnapshot(snapshot: StageSnapshot): Promise<void> {
+    await writeFile(this.#stageSnapshotPath(), JSON.stringify(snapshot), "utf8");
+  }
+
+  async #readStageSnapshot(): Promise<StageSnapshot | undefined> {
+    // Missing or corrupt reads as "no evidence": the sweep deletes nothing.
+    try {
+      return JSON.parse(await readFile(this.#stageSnapshotPath(), "utf8")) as StageSnapshot;
+    } catch {
+      return undefined;
+    }
+  }
+
   #run(args: readonly string[], mutates = false, env?: Readonly<Record<string, string>>) {
     return this.runner.run([this.#executable, ...args], {
       cwd: this.options.repositoryPath,
@@ -306,6 +386,47 @@ async function isDirectory(path: string): Promise<boolean> {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
     throw error;
   }
+}
+
+/**
+ * Paths from porcelain status lines, optionally only those with the given XY
+ * code. Git C-quotes paths with special characters; those are skipped rather
+ * than dequoted — a wrong literal must never reach rm, and build outputs
+ * don't carry quotable names.
+ */
+export function statusPaths(status: string, code?: string): readonly string[] {
+  return status
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "")
+    .filter((line) => code === undefined || line.startsWith(`${code} `))
+    .map((line) => line.slice(3))
+    .filter((path) => !path.startsWith('"'));
+}
+
+/** Equal, or one inside the other (porcelain directory entries end in "/"). */
+function overlaps(a: string, b: string): boolean {
+  const left = a.replace(/\/$/, "");
+  const right = b.replace(/\/$/, "");
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+/**
+ * Gate residue of an aborted staged merge (#92): staged-tree-ignored entries
+ * that overlap nothing from before the stage and now cover plain untracked
+ * dirt. Requiring current ?? dirt is the safety keystone — anything git still
+ * ignores or tracks can never qualify. ponytail: an entry overlapping any
+ * pre-stage path is skipped wholesale (its dirt stays, loudly) instead of
+ * swept file-by-file.
+ */
+export function stageResidue(
+  before: readonly string[],
+  stagedIgnored: readonly string[],
+  dirtAfter: readonly string[],
+): readonly string[] {
+  return stagedIgnored
+    .map((entry) => entry.replace(/\/$/, ""))
+    .filter((entry) => !before.some((path) => overlaps(entry, path)))
+    .filter((entry) => dirtAfter.some((path) => overlaps(entry, path)));
 }
 
 export function parseWorktreePorcelain(output: string): readonly WorktreeObservation[] {
