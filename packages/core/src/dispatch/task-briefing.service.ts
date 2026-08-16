@@ -29,6 +29,11 @@ export class TaskBriefingService implements TaskBriefingWriter {
         ? `
 ## Workflow
 
+Commit locally at each workflow boundary — after exploration notes, after
+implementation, after each review-fix round — with concise messages. Local
+commits are the liveness signal the fleet reads; a long quiet stretch with no
+commits looks stranded. Push remains end-only, per Completion Instructions.
+
 Work in this order:
 
 1. **Explore before writing.** Map the code this task touches: similar
