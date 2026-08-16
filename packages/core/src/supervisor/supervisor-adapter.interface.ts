@@ -10,6 +10,14 @@ export interface JobStatus {
   readonly key: string;
   readonly loaded: boolean;
   readonly pid?: number;
+  /**
+   * Loaded in the runtime but its installed definition is gone: an
+   * asynchronous stop still draining (launchd's bootout returns before the
+   * process exits, up to ExitTimeOut later). The registration dies with the
+   * process, so reconciliation must treat this as a job to re-install, not a
+   * supervised one (#93). systemd stops synchronously and never reports it.
+   */
+  readonly stopping?: true;
 }
 
 /**

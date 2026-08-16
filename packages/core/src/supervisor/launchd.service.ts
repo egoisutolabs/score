@@ -79,6 +79,17 @@ export class LaunchdSupervisor implements SupervisorAdapter {
 
   async status(): Promise<JobStatus[]> {
     const list = requireSuccess(await this.launchctl(["list"], false));
+    let files: string[] = [];
+    try {
+      files = await readdir(this.agentsDir);
+    } catch {
+      // No LaunchAgents dir yet — nothing installed.
+    }
+    const installed = new Set(
+      files
+        .filter((file) => file.startsWith(LABEL_PREFIX) && file.endsWith(PLIST_SUFFIX))
+        .map((file) => file.slice(LABEL_PREFIX.length, -PLIST_SUFFIX.length)),
+    );
     const jobs = new Map<string, JobStatus>();
     // `launchctl list` lines: PID (or -), last exit status, label.
     for (const line of list.stdout.split("\n")) {
@@ -86,17 +97,16 @@ export class LaunchdSupervisor implements SupervisorAdapter {
       if (label === undefined || !label.startsWith(LABEL_PREFIX)) continue;
       const key = label.slice(LABEL_PREFIX.length);
       const parsedPid = Number(pid);
-      jobs.set(key, { key, loaded: true, ...(Number.isInteger(parsedPid) && { pid: parsedPid }) });
+      jobs.set(key, {
+        key,
+        loaded: true,
+        ...(Number.isInteger(parsedPid) && { pid: parsedPid }),
+        // bootout is asynchronous: a booted-out job stays listed until its
+        // process exits. Listed with no plist = a teardown in progress (#93).
+        ...(!installed.has(key) && { stopping: true as const }),
+      });
     }
-    let files: string[] = [];
-    try {
-      files = await readdir(this.agentsDir);
-    } catch {
-      // No LaunchAgents dir yet — nothing installed.
-    }
-    for (const file of files) {
-      if (!file.startsWith(LABEL_PREFIX) || !file.endsWith(PLIST_SUFFIX)) continue;
-      const key = file.slice(LABEL_PREFIX.length, -PLIST_SUFFIX.length);
+    for (const key of installed) {
       if (!jobs.has(key)) jobs.set(key, { key, loaded: false });
     }
     return [...jobs.values()];
