@@ -32,6 +32,81 @@ test("dry-run safe cleanup still plans the legacy pull-main observation", async 
   expect(workspace.fastForwards).toBe(1);
 });
 
+test("a dirty primary reports the auto-pull refusal with the blocking paths, every pass (#91)", async () => {
+  const workspace = new CleanupWorkspace();
+  workspace.primaryStatus = "?? apps/web/.next/cache/a\n?? apps/web/.turbo/b\n";
+  const service = new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: true,
+      agent: { harness: "claude" },
+    },
+    mergedHost,
+    workspace,
+    makeAgents(),
+  );
+  const first = await service.run(false);
+  // The merged-PR pass is unaffected by the refusal.
+  expect(first[0]?.action).toBe("CLEANED");
+  expect(first).toContainEqual({
+    action: "AUTO_PULL_REFUSED",
+    message: "primary checkout is not clean: apps/web/.next/cache/a, apps/web/.turbo/b",
+  });
+  // A refusal that fires once and goes quiet is the four-hour silent-stale bug.
+  const second = await service.run(false);
+  expect(second.filter((result) => result.action === "AUTO_PULL_REFUSED")).toHaveLength(1);
+});
+
+test("a pull that throws surfaces as a refusal instead of killing the pass (#91)", async () => {
+  class ThrowingPullWorkspace extends CleanupWorkspace {
+    override async fastForwardDefaultBranch(): Promise<boolean> {
+      throw new Error("fatal: Not possible to fast-forward, aborting.");
+    }
+  }
+  const results = await new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: true,
+      agent: { harness: "claude" },
+    },
+    mergedHost,
+    new ThrowingPullWorkspace(),
+    makeAgents(),
+  ).run(false);
+  expect(results[0]?.action).toBe("CLEANED");
+  expect(results).toContainEqual({
+    action: "AUTO_PULL_REFUSED",
+    message: "fatal: Not possible to fast-forward, aborting.",
+  });
+});
+
+test("a clean primary still fast-forwards when the pass cleaned nothing (#91)", async () => {
+  class NoWorktreeWorkspace extends CleanupWorkspace {
+    override async observeWorktrees(): Promise<readonly WorktreeObservation[]> {
+      return [];
+    }
+  }
+  const workspace = new NoWorktreeWorkspace();
+  const results = await new CleanupService(
+    {
+      defaultBranch: "main",
+      workspaceRoot: "/wt",
+      harnessOwnedPaths: ["TASK.md", ".claude/"],
+      autoPullMain: true,
+      agent: { harness: "claude" },
+    },
+    emptyHost,
+    workspace,
+    makeAgents(),
+  ).run(false);
+  expect(results).toEqual([]);
+  expect(workspace.fastForwards).toBe(1);
+});
+
 test("local branch deletion failure remains nonfatal after worktree removal", async () => {
   const workspace = new CleanupWorkspace();
   const agents = makeAgents();
