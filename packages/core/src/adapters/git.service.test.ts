@@ -535,6 +535,31 @@ test("a tracked file the abort restores survives the sweep of its wholly-ignored
   expect(status.trim()).toBe("");
 });
 
+test("a snapshot-path resolution failure blocks the abort instead of reading as no-evidence (#92)", async () => {
+  const root = await sandbox();
+  const repositoryPath = join(root, "repo");
+  await mkdir(join(repositoryPath, ".git"), { recursive: true });
+  await writeFile(
+    join(repositoryPath, ".git", "score-stage-snapshot.json"),
+    JSON.stringify({ before: [] }),
+  );
+  const runner = new ScriptRunner((command, options) => {
+    const args = command.slice(1);
+    // The one-time git-dir resolution fails (e.g. a transient lock right
+    // after a supervisor restart); it must propagate, not read as "no
+    // snapshot" — that would skip evidence capture and still abort.
+    if (args[0] === "rev-parse" && args.includes("--absolute-git-dir")) {
+      return result(command, options, 128);
+    }
+    return result(command, options);
+  });
+  const git = new GitService(runner, { repositoryPath, workspaceRoot: join(root, "wt") });
+
+  await expect(git.abortMerge()).rejects.toThrow();
+  expect(runner.commands.some((command) => command[1] === "merge")).toBe(false);
+  expect(existsSync(join(repositoryPath, ".git", "score-stage-snapshot.json"))).toBe(true);
+});
+
 test("a failed evidence capture blocks the abort so the staged merge stays recoverable (#92)", async () => {
   const root = await sandbox();
   const repositoryPath = join(root, "repo");

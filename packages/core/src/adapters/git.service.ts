@@ -415,9 +415,13 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
   }
 
   async #readStageSnapshot(): Promise<StageSnapshot | undefined> {
+    // Path resolution stays OUTSIDE the catch: a failed rev-parse conflated
+    // with "file missing" would silently skip abortMerge's evidence capture
+    // and stageMerge's pending-sweep guard — evidence lost, not deferred.
+    const path = await this.#stageSnapshotPath();
     // Missing or corrupt reads as "no evidence": the sweep deletes nothing.
     try {
-      return JSON.parse(await readFile(await this.#stageSnapshotPath(), "utf8")) as StageSnapshot;
+      return JSON.parse(await readFile(path, "utf8")) as StageSnapshot;
     } catch {
       return undefined;
     }
