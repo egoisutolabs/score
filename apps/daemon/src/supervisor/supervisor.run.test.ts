@@ -649,14 +649,15 @@ test("a drain outlasting the wait fails loudly with nothing mutated; the next up
   expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
 });
 
-test("a job re-registered while up waits ends the wait instead of timing out", async () => {
+test("a job re-registered while up waits fails fast without mutating, not the full timeout", async () => {
   await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
   await runUp([], deps);
   runner.listOutput = "1\t0\tdev.score.alpha";
   await runDown(["alpha"], deps.adapter);
   // The old pid stays listed throughout, but a concurrent command re-installs
-  // the plist right after the plan's status snapshot — the wait must read
-  // that as "teardown over", not poll the replacement until the timeout.
+  // the plist right after the plan's status snapshot. The wait must read that
+  // as "this plan is stale" and refuse before any mutation — installing over
+  // the live registration would tear plist and record apart.
   const real = deps.adapter;
   let statusCalls = 0;
   const racing: typeof real = {
@@ -674,7 +675,18 @@ test("a job re-registered while up waits ends the wait instead of timing out", a
   logs = [];
   await runUp(["alpha"], { ...deps, adapter: racing });
   expect(errors.filter((line) => line.includes("still stopping"))).toEqual([]);
-  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0");
+  expect(errors.some((line) => line.includes("re-registered by a concurrent command"))).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
+});
+
+test("down of a key with no project state leaves no empty state dir behind (#99 review)", async () => {
+  // /readyz reads every project dir as a project that must carry a parseable
+  // resolved.json — an empty dir left by down's lock would wedge readiness.
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await runDown(["ghost"], deps.adapter);
+  expect(logs).toContain("stopped 'ghost'");
+  await expect(stat(join(home, "projects", "ghost"))).rejects.toThrow();
 });
 
 // Root ignores file modes, so the EACCES this test relies on never fires there.

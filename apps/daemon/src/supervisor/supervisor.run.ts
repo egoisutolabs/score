@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
@@ -238,10 +238,15 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     const deadline = Date.now() + TEARDOWN_WAIT_MS;
     for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
       const job = (await adapter.status()).find((entry) => entry.key === key);
-      // Gone, deregistered, or re-registered (a concurrent command
-      // re-installed the definition while we queued for the lock): either
-      // way the teardown this wait guards is over.
-      if (job === undefined || !job.loaded || job.stopping !== true) return;
+      if (job === undefined || !job.loaded) return;
+      // Re-registered: a concurrent command finished the drain and
+      // re-installed the job while we queued for the lock. This command's
+      // plan is stale — installing over the live registration would tear
+      // plist/record apart, so fail before any mutation and let a re-run
+      // re-plan against the fresh state.
+      if (job.stopping !== true) {
+        throw new Error(`re-registered by a concurrent command — re-run: score up ${key}`);
+      }
       if (elapsed === 0) {
         console.log(`'${key}' is still stopping — waiting for the old process to exit`);
       }
@@ -349,6 +354,11 @@ export async function runDown(
       console.error(`failed to stop '${key}': ${message}`);
       process.exitCode = 1;
     }
+    // Locking mkdirs the project dir; downing a key that had no state must
+    // not leave an empty dir behind — /readyz reads every project dir as a
+    // project that needs a parseable resolved.json. rmdir only removes an
+    // empty dir, so real state is never touched.
+    await rmdir(projectDir(key)).catch(() => {});
   }
   if (keys.length === 0) console.log("no score jobs");
 }
