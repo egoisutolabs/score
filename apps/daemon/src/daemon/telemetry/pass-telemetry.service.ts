@@ -46,7 +46,7 @@ export class PassTelemetry {
     this.traceId = hexId();
     this.tickSpanId = hexId();
     this.tickNumber = tick;
-    this.tickStartedAt = Date.now();
+    this.tickStartedAt = performance.now();
     this.warnedThisPass = false;
   }
 
@@ -60,7 +60,7 @@ export class PassTelemetry {
 
   beginPhase(): void {
     this.phaseSpanId = hexId();
-    this.phaseStartedAt = Date.now();
+    this.phaseStartedAt = performance.now();
   }
 
   endPhase(name: string, status: "ok" | "error"): void {
@@ -115,7 +115,9 @@ export class PassTelemetry {
         name,
         span_id: spanId,
         ...(parentSpanId === undefined ? {} : { parent_span_id: parentSpanId }),
-        duration_ms: Date.now() - startedAt,
+        // Monotonic, not wall clock: an NTP step mid-span would make a
+        // Date.now() difference negative, and the policy rejects the record.
+        duration_ms: Math.round(performance.now() - startedAt),
         status,
         attributes,
       },
@@ -124,41 +126,46 @@ export class PassTelemetry {
   }
 
   private append(record: TelemetryRecord, spanId: string): void {
-    // TelemetryLogService.append never throws by contract, but the sink is a
-    // seam — a throwing substitute must degrade to FAILED, never reach a phase.
-    let outcome: "APPENDED" | "FAILED";
-    try {
-      outcome = this.sink.append(record);
-    } catch {
-      outcome = "FAILED";
-    }
-    if (outcome === "FAILED") {
+    if (this.tryAppend(record) === "FAILED") {
       this.recordFailure(`append FAILED: ${record.name}`, spanId);
       return;
     }
     if (this.lost > 0) {
-      const lost = this.lost;
-      // Reset before the gap append: a FAILED gap re-enters recordFailure and
-      // is itself counted, so the next success reports it — bounded, no loop.
-      this.lost = 0;
-      this.append(
-        {
-          v: TELEMETRY_VERSION,
-          ts: new Date().toISOString(),
-          project: this.project,
-          signal: "event",
-          name: GAP_RECORD_NAME,
-          attributes: { lost, trace_id: this.traceId, dry_run: this.dryRun },
-        },
-        spanId,
-      );
+      const gap: TelemetryRecord = {
+        v: TELEMETRY_VERSION,
+        ts: new Date().toISOString(),
+        project: this.project,
+        signal: "event",
+        name: GAP_RECORD_NAME,
+        attributes: { lost: this.lost, trace_id: this.traceId, dry_run: this.dryRun },
+      };
+      if (this.tryAppend(gap) === "APPENDED") this.lost = 0;
+      // A FAILED gap keeps the count untouched: the loss evidence must
+      // survive until a gap actually lands. The gap itself is regenerable
+      // metadata, never counted as a lost record — the next success retries
+      // it with the same total.
+      else this.reportFailure(`append FAILED: ${GAP_RECORD_NAME}`, spanId);
+    }
+  }
+
+  /** TelemetryLogService.append never throws by contract, but the sink is a
+   * seam — a throwing substitute must degrade to FAILED, never reach a phase. */
+  private tryAppend(record: TelemetryRecord): "APPENDED" | "FAILED" {
+    try {
+      return this.sink.append(record);
+    } catch {
+      return "FAILED";
     }
   }
 
   private recordFailure(reason: string, spanId: string): void {
     this.lost += 1;
+    this.reportFailure(reason, spanId);
+  }
+
+  private reportFailure(reason: string, spanId: string): void {
     // The logger is only the reporting channel and can share the failing disk
-    // with the sink; the loss is already counted above, so a throw from either
+    // with the sink; the loss is already accounted for, so a throw from either
     // log call must die here, not fail the phase (locked decision 9).
     try {
       this.log.debug(`telemetry ${reason} (trace_id=${this.traceId} span_id=${spanId})`);

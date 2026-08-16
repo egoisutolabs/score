@@ -140,6 +140,9 @@ export function renderDispatchTelemetry(
           { decision: "blocked", reason },
         ),
       );
+  // failure.message is omitted on purpose: adapter errors embed absolute
+  // worktree paths, and paths never enter telemetry (epic attribute-safety
+  // rule) — the prose log keeps the full message.
   for (const failure of result.failed)
     records.push(
       decisionEvent(
@@ -147,7 +150,6 @@ export function renderDispatchTelemetry(
         "score.dispatch.decision",
         { issue_number: failure.issueNumber },
         { decision: "failed" },
-        failure.message,
       ),
     );
   return records;

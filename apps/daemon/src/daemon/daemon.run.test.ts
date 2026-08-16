@@ -1859,6 +1859,26 @@ test("a throwing logger during telemetry failure still cannot fail the pass", as
   expect(status.last_error).toBeNull();
 }, 20_000);
 
+test("a failing gap append keeps the loss count until a gap actually lands", async () => {
+  // Script per append call: two records lost, a record lands, the gap for
+  // them FAILS, then everything lands — the retried gap must still carry the
+  // full evidence (2), not just the failed gap attempt.
+  const outcomes: TelemetryAppendOutcome[] = ["FAILED", "FAILED", "APPENDED", "FAILED"];
+  const stored: TelemetryRecord[] = [];
+  const sink = {
+    append: (record: TelemetryRecord): TelemetryAppendOutcome => {
+      const outcome = outcomes.shift() ?? "APPENDED";
+      if (outcome === "APPENDED") stored.push(record);
+      return outcome;
+    },
+  };
+  await runTracedLoop(await tracedFixture(), false, { telemetrySink: sink });
+
+  const gaps = stored.filter((record) => record.name === "score.telemetry.gap");
+  expect(gaps).toHaveLength(1);
+  expect(gaps[0]?.attributes?.lost).toBe(2);
+}, 20_000);
+
 test("a pass truncated by an unexpected child exit closes its tick as error", async () => {
   // The child "dies" before the loop starts, so the first pass is truncated
   // (stopping set, phases skipped) and runDaemonLoop rejects with childError

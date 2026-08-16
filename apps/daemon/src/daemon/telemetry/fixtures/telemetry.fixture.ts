@@ -225,13 +225,17 @@ export const dispatchRows: readonly MappingRow<DispatchResult>[] = [
   },
   {
     label: "failed",
-    input: { ...emptyDispatch, failed: [{ issueNumber: 36, message: "spawn refused" }] },
+    // The adapter message can embed absolute worktree paths, so the mapper
+    // drops it — a path-bearing input proving no body is stored is the point.
+    input: {
+      ...emptyDispatch,
+      failed: [{ issueNumber: 36, message: "worktree not found: /Users/op/wt/demo/some-branch" }],
+    },
     expected: [
       {
         name: "score.dispatch.decision",
         subject: { issue_number: 36 },
         attributes: { decision: "failed" },
-        body: "spawn refused",
       },
     ],
   },
