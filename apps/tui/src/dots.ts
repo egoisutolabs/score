@@ -1,42 +1,21 @@
-import type { StatusFile } from "@score/core/daemon/status.service";
-import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
+import {
+  type HealthInput,
+  type HealthState,
+  healthFor,
+} from "@score/core/observation/health.policy";
 
 export type Dot = "green" | "amber" | "gray" | "red";
 
-export interface DotInput {
-  /** Supervisor's view of the job; undefined = not installed at all. */
-  readonly job: JobStatus | undefined;
-  /** Parsed status.json; null = missing, unreadable, or partial. */
-  readonly status: StatusFile | null;
-  readonly tickIntervalMs: number;
-  readonly nowMs: number;
-}
+export type DotInput = HealthInput;
 
-/** Heartbeat older than ~2 ticks means the daemon stopped writing. */
-const STALE_TICKS = 2;
+const DOT_FOR: Record<HealthState, Dot> = {
+  healthy: "green",
+  stale: "amber",
+  crashed: "red",
+  stopped: "gray",
+};
 
-/**
- * Dot semantics per the epic's lifecycle diagram: the adapter says the process
- * exists, heartbeat age says it's healthy, state/last_error distinguish
- * stopping from crashed. A registered job with no live pid crashed (launchd
- * keeps crashed jobs loaded); a booted-out job (not loaded) was deliberately
- * stopped, so it's gray even if the last snapshot still says "running".
- */
-export function deriveDot({ job, status, tickIntervalMs, nowMs }: DotInput): Dot {
-  if (job?.pid === undefined) {
-    if (job?.loaded === true && status?.state !== "stopping") return "red";
-    return "gray";
-  }
-  // Unreadable/partial status is stale, never a crash — atomic writes are
-  // issue 4's guarantee; this is belt-and-braces.
-  if (status === null) return "amber";
-  // A heartbeat certifies only the process that wrote it: after a restart the
-  // predecessor's fresh status must not color the replacement green.
-  if (status.pid !== job.pid) return "amber";
-  if (status.last_error !== null) return "red";
-  if (status.state === "stopping") return "gray";
-  const age = nowMs - Date.parse(status.updated_at);
-  // NaN age compares false and lands amber.
-  if (age <= STALE_TICKS * tickIntervalMs) return "green";
-  return "amber";
+/** The TUI's color vocabulary over core's reason-coded health decision. */
+export function deriveDot(input: DotInput): Dot {
+  return DOT_FOR[healthFor(input).state];
 }
