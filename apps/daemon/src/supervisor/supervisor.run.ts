@@ -330,7 +330,10 @@ export async function runDown(
     // Per-job isolation: one failing bootout must not leave the remaining
     // jobs silently running.
     try {
-      await adapter.uninstall(key);
+      // The same per-project lock `up`/`restart` hold: a down issued while an
+      // up is waiting out a teardown drain would otherwise report "stopped"
+      // and then lose to that up's install once the drain ends.
+      await withProjectLock(key, () => adapter.uninstall(key));
       console.log(`stopped '${key}'`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -528,7 +528,7 @@ test("restart racing a config-changing up: the lock refuses the interleaving, th
   );
 });
 
-test("a live holder's lock blocks restart and up without touching the supervisor", async () => {
+test("a live holder's lock blocks restart, up, and down without touching the supervisor", async () => {
   await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
   await runUp([], deps);
   runner.calls.length = 0;
@@ -544,6 +544,16 @@ test("a live holder's lock blocks restart and up without touching the supervisor
   await runUp([], deps);
   expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
   expect(runner.mutations()).toEqual([]);
+
+  // down is serialized by the same lock: while an up converges the project
+  // (e.g. waiting out a teardown drain), a concurrent down must refuse
+  // loudly instead of reporting "stopped" and then losing to the install.
+  errors = [];
+  await runDown(["alpha"], deps.adapter);
+  expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+  expect(errors.some((line) => line.includes("is being modified by pid"))).toBe(true);
+  expect(runner.mutations()).toEqual([]);
+  expect(process.exitCode).toBe(1);
 });
 
 test("a stale lock (dead holder or garbage) is broken and the command proceeds", async () => {

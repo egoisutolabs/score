@@ -88,6 +88,19 @@ test("status merges launchctl list with definition-only plists, score namespace 
   expect(runner.calls).toEqual([["launchctl", "list"]]);
 });
 
+test("status propagates a LaunchAgents read failure that is not missing-directory", async () => {
+  // A transient I/O or permission failure must not be read as "nothing
+  // installed": that would report every listed job as stopping (#93).
+  const broken = new LaunchdSupervisor(runner, {
+    uid: 501,
+    // A file where the directory should be: readdir fails with ENOTDIR.
+    launchAgentsDir: join(agentsDir, "not-a-dir"),
+  });
+  await writeFile(join(agentsDir, "not-a-dir"), "");
+  runner.listOutput = "123\t0\tdev.score.alpha";
+  await expect(broken.status()).rejects.toThrow();
+});
+
 test("launchctl never runs from the agents dir — it may not exist before install", async () => {
   const missing = new LaunchdSupervisor(runner, {
     uid: 501,

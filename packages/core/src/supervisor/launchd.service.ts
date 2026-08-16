@@ -82,8 +82,11 @@ export class LaunchdSupervisor implements SupervisorAdapter {
     let files: string[] = [];
     try {
       files = await readdir(this.agentsDir);
-    } catch {
-      // No LaunchAgents dir yet — nothing installed.
+    } catch (error) {
+      // Only a missing dir means "nothing installed". Any other read failure
+      // must propagate: an empty set here would report every listed job as
+      // stopping and send `up` into a pointless teardown wait.
+      if ((error as { code?: string }).code !== "ENOENT") throw error;
     }
     const installed = new Set(
       files
