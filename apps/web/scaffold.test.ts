@@ -30,6 +30,10 @@ describe("API-only", () => {
 
   it("has no page.tsx, CSS framework, static export, or custom server", () => {
     expect(files.filter((f) => /(^|\/)page\.[cm]?[jt]sx?$/.test(f))).toEqual([]);
+    // Pages Router serves UI from any module under pages/ — reject the
+    // directories themselves, not just app-router page.* filenames.
+    expect(existsSync(join(webRoot, "pages"))).toBe(false);
+    expect(existsSync(join(webRoot, "src", "pages"))).toBe(false);
     expect(files.filter((f) => f.endsWith(".css"))).toEqual([]);
     expect(files.filter((f) => /(^|\/)(tailwind|postcss)\.config\./.test(f))).toEqual([]);
     expect(files.filter((f) => /(^|\/)server\.[cm]?[jt]s$/.test(f))).toEqual([]);
@@ -74,7 +78,9 @@ describe("healthz route location", () => {
 });
 
 describe("stub gone", () => {
-  const stub = new RegExp(`@score/${"server"}|apps/${"server"}`);
+  // Third alternative catches brace-form workspace notation like
+  // apps/{daemon,tui,server} — the exact stale spelling this PR scrubbed.
+  const stub = new RegExp(`@score/${"server"}|apps/${"server"}|apps/\\{[^}]*${"server"}[^}]*\\}`);
   // This file necessarily spells the pattern it hunts (test names, comments) —
   // exempt it, like rg exempting its own invocation.
   const self = fileURLToPath(import.meta.url);
