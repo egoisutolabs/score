@@ -691,6 +691,30 @@ test("down of a key with no project state leaves no empty state dir behind (#99 
 
 // Root ignores file modes, so the EACCES this test relies on never fires there.
 test.skipIf(process.getuid?.() === 0)(
+  "a stale lock that cannot be reclaimed (read-only store) fails promptly instead of spinning",
+  async () => {
+    await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+    await runUp([], deps);
+    runner.calls.length = 0;
+    runner.listOutput = "1\t0\tdev.score.alpha";
+    // A dead-holder lock exists, but the store is read-only: creation reports
+    // EEXIST while every reclaim rename reports EACCES — that must surface,
+    // not loop forever.
+    await writeFile(join(home, "projects", "alpha.mutate.lock"), "not-a-pid");
+    await chmod(join(home, "projects"), 0o555);
+    try {
+      await runDown(["alpha"], deps.adapter);
+    } finally {
+      await chmod(join(home, "projects"), 0o755);
+    }
+    expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
+    expect(runner.mutations()).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  },
+);
+
+// Root ignores file modes, so the EACCES this test relies on never fires there.
+test.skipIf(process.getuid?.() === 0)(
   "an uncreatable lock fails down promptly instead of spinning",
   async () => {
     await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);

@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
@@ -123,7 +123,10 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
       // Only EEXIST is contention. Anything else (EACCES, ENOSPC) would spin
       // forever through the break-stale-lock path — fail promptly instead.
       if ((error as { code?: string }).code !== "EEXIST") throw error;
-      const holder = Number(await readFile(lockPath, "utf8").catch(() => ""));
+      const holderText = await readFile(lockPath, "utf8").catch(() => null);
+      // Vanished between EEXIST and the read — contend for the fresh path.
+      if (holderText === null) continue;
+      const holder = Number(holderText);
       let alive = false;
       if (Number.isInteger(holder) && holder > 0) {
         try {
@@ -136,25 +139,39 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
       if (alive) {
         throw new Error(`'${key}' is being modified by pid ${holder} — retry when it finishes`);
       }
-      // Reclaim by renaming the stale lock aside: rename is atomic, so when
-      // two contenders both judge the same lock dead, exactly one wins here —
-      // a bare rm would let the loser delete the winner's freshly created
-      // lock and break the serialization. The loser re-loops and contends
-      // for the fresh lock like any other caller. A death after the rename
-      // leaves at most one .stale file, which nothing enumerates and the
-      // next reclaim overwrites.
+      // Reclaim in two guarded steps: rename the lock aside to a name only
+      // this pid uses, then verify the captured file still carries the dead
+      // holder we inspected — rename addresses the pathname, not the file we
+      // read, so a contender that reclaimed and re-acquired between our read
+      // and rename would otherwise have its live lock stolen. A mistakenly
+      // captured live lock is restored via link, which cannot clobber a
+      // newer lock at the path. Persistent rename failures (EACCES, EROFS)
+      // propagate so a read-only store fails loudly instead of spinning.
+      const stalePath = `${lockPath}.${process.pid}.stale`;
       try {
-        await rename(lockPath, `${lockPath}.stale`);
-        await rm(`${lockPath}.stale`, { force: true });
-      } catch {
-        // Lost the reclaim race — loop and contend for the fresh lock.
+        await rename(lockPath, stalePath);
+      } catch (error) {
+        // ENOENT: another contender won this reclaim — contend again.
+        if ((error as { code?: string }).code !== "ENOENT") throw error;
+        continue;
       }
+      const captured = await readFile(stalePath, "utf8").catch(() => null);
+      if (captured !== holderText) {
+        await link(stalePath, lockPath).catch(() => {});
+        await rm(stalePath, { force: true });
+        throw new Error(`'${key}' is being modified — retry when it finishes`);
+      }
+      await rm(stalePath, { force: true });
     }
   }
   try {
     return await action();
   } finally {
-    await rm(lockPath, { force: true });
+    // Guarded release: only remove a lock that is still ours, never a
+    // successor's (reachable only through the reclaim edge cases above).
+    if ((await readFile(lockPath, "utf8").catch(() => null)) === String(process.pid)) {
+      await rm(lockPath, { force: true });
+    }
   }
 }
 
