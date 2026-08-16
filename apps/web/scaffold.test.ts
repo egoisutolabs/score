@@ -34,15 +34,18 @@ describe("API-only", () => {
     // directories themselves, not just app-router page.* filenames.
     expect(existsSync(join(webRoot, "pages"))).toBe(false);
     expect(existsSync(join(webRoot, "src", "pages"))).toBe(false);
-    expect(files.filter((f) => f.endsWith(".css"))).toEqual([]);
+    expect(files.filter((f) => /\.(css|s[ac]ss)$/.test(f))).toEqual([]);
+    // public/ files are served verbatim by URL — a public/index.html is a UI.
+    expect(existsSync(join(webRoot, "public"))).toBe(false);
     expect(files.filter((f) => /(^|\/)(tailwind|postcss)\.config\./.test(f))).toEqual([]);
     expect(files.filter((f) => /(^|\/)server\.[cm]?[jt]s$/.test(f))).toEqual([]);
-    // The scripts must invoke the Next CLI itself — a custom entrypoint under
-    // any filename would otherwise slip past the basename glob above.
+    // Exact script text: the Next CLI is the sole command — no custom
+    // entrypoint, no smuggled second command behind & or &&. Changing a
+    // script means consciously updating this contract.
     const pkg = JSON.parse(readFileSync(join(webRoot, "package.json"), "utf8"));
-    expect(pkg.scripts.dev).toMatch(/^next dev\b/);
-    expect(pkg.scripts.start).toMatch(/^next start\b/);
-    expect(pkg.scripts.build).toMatch(/^next build\b/);
+    expect(pkg.scripts.dev).toBe("next dev --hostname 127.0.0.1");
+    expect(pkg.scripts.start).toBe("next start --hostname 127.0.0.1");
+    expect(pkg.scripts.build).toBe("next build");
     // Resolved config value, not source text — any spelling of a static
     // export would break `next start` serving /healthz dynamically.
     expect(nextConfig.output).not.toBe("export");
