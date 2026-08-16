@@ -1,12 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { OpencodeServerHandle } from "@score/agents/opencode-server.service";
 import { GitService, LANDING_COMMITTER } from "@score/core/adapters/git.service";
 import { StatusWriter } from "@score/core/daemon/status.service";
+import type { TelemetryRecord, TelemetrySpan } from "@score/core/telemetry/telemetry.interface";
+import { recordViolations } from "@score/core/telemetry/telemetry.policy";
+import type {
+  TelemetryAppendOutcome,
+  TelemetryLogService,
+} from "@score/core/telemetry/telemetry-log.service";
 import type { CommandResult } from "@score/shared/command.interface";
 import type { CommandRunner, RunCommandOptions } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ScoreConfig } from "@score/shared/config/config.interface";
@@ -1595,4 +1602,240 @@ test("a transient reconcile failure warns and the pass continues — only reset 
       true,
     );
   });
+});
+
+/** repo + SCORE_HOME with the seeded opencode issue, reusable across runs. */
+interface TracedFixture {
+  readonly repo: string;
+  readonly home: string;
+}
+
+async function tracedFixture(): Promise<TracedFixture> {
+  const repo = await mkdtemp(join(tmpdir(), "score-repo-"));
+  const { home, worktree } = await managedFixture(repo, {
+    harness: "opencode",
+    model: "anthropic/claude-sonnet-5",
+  });
+  await mkdir(join(worktree, SEEDED_ISSUE_BRANCH), { recursive: true });
+  return { repo, home };
+}
+
+/** Every record stored under the project's telemetry dir, in append order. */
+function readStoredTelemetry(home: string): TelemetryRecord[] {
+  const dir = join(home, "projects", "demo", "telemetry");
+  if (!existsSync(dir)) return [];
+  const records: TelemetryRecord[] = [];
+  for (const segment of readdirSync(dir).sort()) {
+    for (const line of readFileSync(join(dir, segment), "utf8").split("\n")) {
+      if (line !== "") records.push(JSON.parse(line));
+    }
+  }
+  return records;
+}
+
+/**
+ * One managed opencode pass through the real runDaemonLoop with telemetry
+ * observed. The fixture comes from the caller so the failure-isolation test
+ * can run byte-identical inputs twice with different sinks.
+ */
+async function runTracedLoop(
+  fixture: TracedFixture,
+  dryRun: boolean,
+  telemetrySink?: Pick<TelemetryLogService, "append">,
+): Promise<{
+  requests: { method: string; path: string }[];
+  records: TelemetryRecord[];
+  logged: LogLine[];
+  status: Record<string, unknown>;
+}> {
+  let result!: Awaited<ReturnType<typeof runTracedLoop>>;
+  await withEnv({ SCORE_HOME: fixture.home }, async () => {
+    const stub = await startFakeOpencodeServer();
+    try {
+      const handle: OpencodeServerHandle = {
+        baseUrl: stub.baseUrl,
+        unexpectedExit: new Promise(() => {}),
+        stop: async () => {},
+      };
+      const createOpencodeServer = () => ({ start: async () => handle, stop: () => handle.stop() });
+      const runsDir = await mkdtemp(join(tmpdir(), "score-runs-"));
+      const fileLog = createFileLogger(join(runsDir, "logs"), false);
+      const statusFile = join(runsDir, "status.json");
+      const status = new StatusWriter(statusFile);
+      const runner = new FakeRunner(managedResponsesOpencode(fixture.repo));
+      const log = new CaptureLogger();
+      const parsed = parseDaemonArguments(
+        dryRun ? ["--project", "demo", "--once", "--dry-run"] : ["--project", "demo", "--once"],
+      );
+
+      await runDaemonLoop(
+        parsed,
+        log,
+        { fileLog, status },
+        {
+          createOpencodeServer,
+          runner,
+          ...(telemetrySink === undefined ? {} : { telemetrySink }),
+        },
+      );
+
+      result = {
+        requests: stub.requests,
+        records: readStoredTelemetry(fixture.home),
+        logged: log.logged,
+        status: JSON.parse(await readFile(statusFile, "utf8")),
+      };
+    } finally {
+      stub.close();
+    }
+  });
+  return result;
+}
+
+const HEX_ID = /^[0-9a-f]{32}$/;
+
+test("a managed pass appends one correlated tick trace with ordered phase children", async () => {
+  const { records } = await runTracedLoop(await tracedFixture(), false);
+  for (const record of records) expect(recordViolations(record)).toEqual([]);
+
+  const ticks = records.filter((record): record is TelemetrySpan => record.name === "score.tick");
+  expect(ticks).toHaveLength(1);
+  const tick = ticks[0] as TelemetrySpan;
+  expect(tick.signal).toBe("span");
+  expect(tick.status).toBe("ok");
+  const traceId = tick.attributes?.trace_id;
+  expect(String(traceId)).toMatch(HEX_ID);
+  expect(tick.attributes).toMatchObject({ tick: 0, dry_run: false });
+
+  const phases = records.filter((record): record is TelemetrySpan => record.name === "score.phase");
+  expect(phases.map((phase) => phase.attributes?.phase)).toEqual([
+    "cleanup+dispatch",
+    "landing",
+    "repair",
+  ]);
+  for (const phase of phases) {
+    expect(phase.attributes?.trace_id).toBe(traceId);
+    expect(phase.parent_span_id).toBe(tick.span_id);
+    expect(phase.span_id).toMatch(HEX_ID);
+    expect(phase.status).toBe("ok");
+  }
+  // The root closes the trace: appended after its last phase child.
+  expect(records.indexOf(tick)).toBeGreaterThan(records.indexOf(phases[2] as TelemetrySpan));
+
+  // Decision records carry both IDs; the seeded issue guarantees at least one.
+  const decisions = records.filter((record) => record.name.endsWith(".decision"));
+  expect(decisions.length).toBeGreaterThan(0);
+  const phaseSpanIds = new Set(phases.map((phase) => phase.span_id));
+  for (const decision of decisions) {
+    expect(decision.attributes?.trace_id).toBe(traceId);
+    expect(phaseSpanIds.has(String(decision.attributes?.span_id))).toBe(true);
+  }
+}, 20_000);
+
+test("a dry-run pass stamps dry_run: true on every stored record", async () => {
+  const { records } = await runTracedLoop(await tracedFixture(), true);
+  expect(records.length).toBeGreaterThan(0);
+  for (const record of records) expect(record.attributes?.dry_run).toBe(true);
+}, 20_000);
+
+test("failure isolation: a pass with every append failing matches the control pass", async () => {
+  const fixture = await tracedFixture();
+  // Failing run first: the control run writes real segments into the shared
+  // home, and this order proves the failing pass stored nothing at all.
+  const failing = await runTracedLoop(fixture, false, { append: () => "FAILED" });
+  expect(failing.records).toEqual([]);
+  const control = await runTracedLoop(fixture, false);
+
+  // Telemetry's own prose is the only permitted difference between the runs.
+  // The summary's wall-clock suffix is measurement, not behavior — normalized
+  // like the status timestamps below so a slow run cannot flake the identity.
+  const prose = (lines: readonly LogLine[]) =>
+    lines
+      .filter((line) => !line.text.startsWith("telemetry"))
+      .map((line) => ({ ...line, text: line.text.replace(/\(\d+s\)$/, "(0s)") }));
+  expect(prose(failing.logged)).toEqual(prose(control.logged));
+  // Byte-identical phase behavior: the same mutations reached the agent runtime.
+  expect(failing.requests).toEqual(control.requests);
+  const scrub = ({
+    last_pass_started_at: _started,
+    last_pass_completed_at: _completed,
+    updated_at: _updated,
+    ...rest
+  }: Record<string, unknown>) => rest;
+  expect(scrub(failing.status)).toEqual(scrub(control.status));
+  expect(failing.status.last_error).toBeNull();
+  // Rate limit: however many appends failed, exactly one warn, each at debug.
+  const telemetryLines = failing.logged.filter((line) => line.text.startsWith("telemetry"));
+  expect(telemetryLines.filter((line) => line.level === "warn")).toHaveLength(1);
+  expect(telemetryLines.filter((line) => line.level === "debug").length).toBeGreaterThan(1);
+  // New prose lines carry the correlation IDs of the span they fired inside.
+  for (const line of telemetryLines) expect(line.text).toMatch(/trace_id=[0-9a-f]{32} span_id=/);
+}, 40_000);
+
+test("the first append after failures records one gap counting the loss", async () => {
+  const stored: TelemetryRecord[] = [];
+  let failuresLeft = 2;
+  const sink = {
+    append: (record: TelemetryRecord): TelemetryAppendOutcome => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        return "FAILED";
+      }
+      stored.push(record);
+      return "APPENDED";
+    },
+  };
+  const { logged } = await runTracedLoop(await tracedFixture(), false, sink);
+
+  const gaps = stored.filter((record) => record.name === "score.telemetry.gap");
+  expect(gaps).toHaveLength(1);
+  expect(gaps[0]?.attributes?.lost).toBe(2);
+  // The gap rides the first APPENDED record immediately, then the count resets.
+  expect(stored[1]?.name).toBe("score.telemetry.gap");
+  const telemetryLines = logged.filter((line) => line.text.startsWith("telemetry"));
+  expect(telemetryLines.filter((line) => line.level === "warn")).toHaveLength(1);
+  expect(telemetryLines.filter((line) => line.level === "debug")).toHaveLength(2);
+}, 20_000);
+
+const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
+
+function sourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...sourceFiles(full));
+    else if (name.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+test("telemetry-blind phases: no core phase module imports the telemetry feature or the mapper", () => {
+  for (const feature of ["cleanup", "dispatch", "landing", "repair", "maintenance"]) {
+    const files = sourceFiles(join(repoRoot, "packages", "core", "src", feature));
+    // An empty walk would mean this grep no longer sees what it guards.
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
+      expect(source).not.toMatch(/(?:import|export)[^;]*?from\s*["'][^"']*telemetry[^"']*["']/);
+      expect(source).not.toMatch(/import\s*["'][^"']*telemetry[^"']*["']/);
+    }
+  }
+});
+
+test("no package depends on @opentelemetry/*", () => {
+  const manifests: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (["node_modules", ".git", ".next", ".turbo", "dist"].includes(name)) continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name === "package.json") manifests.push(full);
+    }
+  };
+  walk(repoRoot);
+  // Root plus every app and package — a shrunk walk would gut the assertion.
+  expect(manifests.length).toBeGreaterThanOrEqual(6);
+  for (const manifest of manifests) {
+    expect(readFileSync(manifest, "utf8")).not.toContain("@opentelemetry/");
+  }
 });
