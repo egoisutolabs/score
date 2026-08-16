@@ -123,8 +123,16 @@ async function withProjectLock<T>(key: string, action: () => Promise<T>): Promis
       // Only EEXIST is contention. Anything else (EACCES, ENOSPC) would spin
       // forever through the break-stale-lock path — fail promptly instead.
       if ((error as { code?: string }).code !== "EEXIST") throw error;
-      const holderText = await readFile(lockPath, "utf8").catch(() => null);
-      // Vanished between EEXIST and the read — contend for the fresh path.
+      let holderText: string | null;
+      try {
+        holderText = await readFile(lockPath, "utf8");
+      } catch (readError) {
+        // Only a lock that vanished between EEXIST and this read re-contends;
+        // an unreadable lock (EACCES, I/O error) would loop forever here, so
+        // it fails the command instead.
+        if ((readError as { code?: string }).code !== "ENOENT") throw readError;
+        holderText = null;
+      }
       if (holderText === null) continue;
       const holder = Number(holderText);
       let alive = false;
