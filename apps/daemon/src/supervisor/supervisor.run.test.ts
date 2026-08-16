@@ -534,7 +534,7 @@ test("a live holder's lock blocks restart, up, and down without touching the sup
   runner.calls.length = 0;
   runner.listOutput = "1\t0\tdev.score.alpha";
   // This test process holds the lock — a provably live pid.
-  await writeFile(join(home, "projects", "alpha", "mutate.lock"), String(process.pid));
+  await writeFile(join(home, "projects", "alpha.mutate.lock"), String(process.pid));
 
   await expect(runRestart(["alpha"], deps.adapter)).rejects.toThrow("is being modified by pid");
   expect(runner.mutations()).toEqual([]);
@@ -562,7 +562,7 @@ test("a stale lock (dead holder or garbage) is broken and the command proceeds",
   runner.calls.length = 0;
   runner.listOutput = "1\t0\tdev.score.alpha";
   logs = [];
-  const lockPath = join(home, "projects", "alpha", "mutate.lock");
+  const lockPath = join(home, "projects", "alpha.mutate.lock");
 
   await writeFile(lockPath, "not-a-pid");
   await runRestart(["alpha"], deps.adapter);
@@ -697,11 +697,12 @@ test.skipIf(process.getuid?.() === 0)(
     await runUp([], deps);
     runner.calls.length = 0;
     runner.listOutput = "1\t0\tdev.score.alpha";
-    await chmod(join(home, "projects", "alpha"), 0o555);
+    // The lock lives in the projects root — make that unwritable.
+    await chmod(join(home, "projects"), 0o555);
     try {
       await runDown(["alpha"], deps.adapter);
     } finally {
-      await chmod(join(home, "projects", "alpha"), 0o755);
+      await chmod(join(home, "projects"), 0o755);
     }
     expect(errors.some((line) => line.includes("failed to stop 'alpha'"))).toBe(true);
     expect(runner.mutations()).toEqual([]);

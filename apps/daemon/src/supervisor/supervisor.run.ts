@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
@@ -104,10 +104,17 @@ function installedDefinitionPath(key: string): string {
  * holding it costs at most the one retried command.
  * ponytail: pid-liveness staleness check — a reused pid could pin a stale
  * lock; switch to timestamp+timeout if that ever bites.
+ *
+ * The lock lives BESIDE the project dir, not inside it: /readyz reads every
+ * projects/ subdirectory as a project that must carry resolved.json, so a
+ * lock-created dir for a stateless key (down of a ghost) would wedge
+ * readiness — and a death while holding the lock leaves only a file
+ * readiness ignores and the next command breaks as stale. Keys match
+ * [a-z0-9-], so `<key>.mutate.lock` cannot collide with a project dir.
  */
 async function withProjectLock<T>(key: string, action: () => Promise<T>): Promise<T> {
-  const lockPath = join(projectDir(key), "mutate.lock");
-  await mkdir(projectDir(key), { recursive: true });
+  const lockPath = `${projectDir(key)}.mutate.lock`;
+  await mkdir(join(scoreHome(), "projects"), { recursive: true });
   for (;;) {
     try {
       await writeFile(lockPath, String(process.pid), { flag: "wx" });
@@ -354,11 +361,6 @@ export async function runDown(
       console.error(`failed to stop '${key}': ${message}`);
       process.exitCode = 1;
     }
-    // Locking mkdirs the project dir; downing a key that had no state must
-    // not leave an empty dir behind — /readyz reads every project dir as a
-    // project that needs a parseable resolved.json. rmdir only removes an
-    // empty dir, so real state is never touched.
-    await rmdir(projectDir(key)).catch(() => {});
   }
   if (keys.length === 0) console.log("no score jobs");
 }
