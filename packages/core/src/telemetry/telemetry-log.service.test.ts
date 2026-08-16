@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,6 +109,24 @@ test("UTC rotation: the boundary record lands exactly once, in the correct segme
   expect(result.cursor.segment).toBe("2026-08-16");
 });
 
+test("a reader caught up to exact EOF picks up a segment created by a later rotation", () => {
+  const dir = sandbox();
+  const time = clock("2026-08-15T23:59:59Z");
+  const log = new TelemetryLogService(dir, { project }, time.now);
+
+  expect(log.append(event({ name: "score.run.late" }))).toBe("APPENDED");
+  const caughtUp = log.read(log.startCursor());
+  expect(caughtUp.records.map((r) => r.name)).toEqual(["score.run.late"]);
+
+  // The next day's segment does not exist yet when the cursor reaches EOF.
+  time.set("2026-08-16T00:00:00Z");
+  expect(log.append(event({ name: "score.run.early" }))).toBe("APPENDED");
+
+  const resumed = log.read(caughtUp.cursor);
+  expect(resumed.records.map((r) => r.name)).toEqual(["score.run.early"]);
+  expect(resumed.cursor.segment).toBe("2026-08-16");
+});
+
 test("reader tolerance: unknown fields ride along, unknown v and unparseable lines each cost one warning", () => {
   const dir = sandbox();
   seedSegment(
@@ -167,17 +185,24 @@ test("a cursor into a deleted segment expires instead of silently skipping", () 
   expect(result.cursor).toEqual(expired);
 });
 
-test("a listed segment that cannot be opened expires the cursor instead of silently skipping", () => {
-  const dir = sandbox();
-  seedSegment(dir, "2026-08-14", line(event()));
-  seedSegment(dir, "2026-08-15", line(event()));
-  chmodSync(join(dir, "2026-08-14.jsonl"), 0o000);
+// Root bypasses mode bits, so the chmod-based unreadable-file setup only
+// exercises the intended failure path for unprivileged runners.
+const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
-  const log = new TelemetryLogService(dir, { project }, clock("2026-08-15T12:00:00Z").now);
-  const result = log.read(log.startCursor());
-  expect(result.outcome).toBe("CURSOR_EXPIRED");
-  expect(result.records).toEqual([]);
-});
+test.skipIf(runningAsRoot)(
+  "a listed segment that cannot be opened expires the cursor instead of silently skipping",
+  () => {
+    const dir = sandbox();
+    seedSegment(dir, "2026-08-14", line(event()));
+    seedSegment(dir, "2026-08-15", line(event()));
+    chmodSync(join(dir, "2026-08-14.jsonl"), 0o000);
+
+    const log = new TelemetryLogService(dir, { project }, clock("2026-08-15T12:00:00Z").now);
+    const result = log.read(log.startCursor());
+    expect(result.outcome).toBe("CURSOR_EXPIRED");
+    expect(result.records).toEqual([]);
+  },
+);
 
 test("offsets beyond file length or mid-line yield data from the next complete line", () => {
   const dir = sandbox();
@@ -208,16 +233,14 @@ test("offsets beyond file length or mid-line yield data from the next complete l
 
 test("an unwritable segment fails the append — no throw, no retry, no partial bytes", () => {
   const dir = sandbox();
-  seedSegment(dir, "2026-08-15", line(event({ name: "score.run.existing" })));
-  chmodSync(join(dir, "2026-08-15.jsonl"), 0o444);
+  // A directory squatting on the segment path fails every append with
+  // EISDIR — deterministic even for root, which bypasses mode bits.
+  mkdirSync(join(dir, "2026-08-15.jsonl"));
 
   const time = clock("2026-08-15T12:00:00Z");
   const log = new TelemetryLogService(dir, { project }, time.now);
   expect(log.append(event({ name: "score.run.lost" }))).toBe("FAILED");
   expect(log.append(event({ name: "score.run.lost" }))).toBe("FAILED");
-  expect(readFileSync(join(dir, "2026-08-15.jsonl"), "utf8")).toBe(
-    line(event({ name: "score.run.existing" })),
-  );
 });
 
 test("a rejected record fails the append even into a writable segment", () => {

@@ -123,15 +123,19 @@ export class TelemetryLogService {
         const pending = buffer.subarray(start);
         const lastNewline = pending.lastIndexOf(NEWLINE);
         if (lastNewline === -1) {
-          // Incomplete tail: withheld until the writer completes or terminates it.
           offset = start;
-          break;
+          // Unterminated bytes are the incomplete tail: withheld until the
+          // writer completes or terminates them. An empty remainder is just
+          // a fully consumed segment — fall through, or a caught-up reader
+          // would never advance into a segment created by a later rotation.
+          if (pending.length > 0) break;
+        } else {
+          for (const line of pending.subarray(0, lastNewline).toString("utf8").split("\n")) {
+            this.parseLine(line, segment, records, warnings);
+          }
+          offset = start + lastNewline + 1;
+          if (offset < buffer.length) break;
         }
-        for (const line of pending.subarray(0, lastNewline).toString("utf8").split("\n")) {
-          this.parseLine(line, segment, records, warnings);
-        }
-        offset = start + lastNewline + 1;
-        if (offset < buffer.length) break;
       }
       const next = segments.find((candidate) => candidate > segment);
       if (next === undefined) break;
