@@ -11,6 +11,7 @@ interface TestServer {
 function dependencies(overrides: Partial<ServerDependencies> = {}): ServerDependencies {
   return {
     checkReadiness: () => ({ ready: true }),
+    observeHistory: async () => ({ kind: "ok", merges: [], warnings: [] }),
     openStream: async () => ({
       kind: "error",
       status: 400,
@@ -29,7 +30,9 @@ test("real HTTP serves liveness without touching readiness or stream dependencie
   const fail = (): never => {
     throw new Error("dependency must remain unreachable");
   };
-  const server = await listen(createServer({ checkReadiness: fail, openStream: fail }));
+  const server = await listen(
+    createServer({ checkReadiness: fail, observeHistory: fail, openStream: fail }),
+  );
   try {
     const response = await fetch(`${server.url}/healthz`);
     expect(response.status).toBe(200);
@@ -164,6 +167,80 @@ test("stream mutators and HEAD are explicitly 405 with Allow GET", async () => {
       expect(await response.text(), method).toBe("");
     }
     expect(opened).toBe(0);
+  } finally {
+    await stopServer(server.running);
+  }
+});
+
+test("history returns GitHub merges through a bounded read-only route", async () => {
+  let since = 0;
+  const server = await listen(
+    createServer(
+      dependencies({
+        observeHistory: async (sinceMs) => {
+          since = sinceMs;
+          return {
+            kind: "ok",
+            merges: [
+              {
+                project: "score",
+                pull_request_number: 103,
+                title: "Port API to Express",
+                merged_at: "2026-08-18T01:25:50Z",
+              },
+            ],
+            warnings: [],
+          };
+        },
+      }),
+    ),
+  );
+  try {
+    const response = await fetch(`${server.url}/api/v1/history?since=2026-08-18T00%3A00%3A00.000Z`);
+    expect(response.status).toBe(200);
+    expect(since).toBe(Date.parse("2026-08-18T00:00:00.000Z"));
+    const body = (await response.json()) as { readonly data: unknown };
+    expect(body.data).toEqual([
+      {
+        project: "score",
+        pull_request_number: 103,
+        title: "Port API to Express",
+        merged_at: "2026-08-18T01:25:50Z",
+      },
+    ]);
+
+    for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
+      const denied = await fetch(`${server.url}/api/v1/history`, { method });
+      expect(denied.status, method).toBe(405);
+      expect(denied.headers.get("allow"), method).toBe("GET");
+    }
+  } finally {
+    await stopServer(server.running);
+  }
+});
+
+test("history rejects unknown and malformed query parameters before GitHub", async () => {
+  let observations = 0;
+  const server = await listen(
+    createServer(
+      dependencies({
+        observeHistory: async () => {
+          observations += 1;
+          return { kind: "ok", merges: [], warnings: [] };
+        },
+      }),
+    ),
+  );
+  try {
+    const unknown = await fetch(`${server.url}/api/v1/history?range=30d`);
+    expect(unknown.status).toBe(400);
+    const unknownBody = (await unknown.json()) as { readonly warnings: unknown };
+    expect(unknownBody.warnings).toEqual([{ reason: "FILTER_UNKNOWN" }]);
+    const malformed = await fetch(`${server.url}/api/v1/history?since=yesterday`);
+    expect(malformed.status).toBe(400);
+    const malformedBody = (await malformed.json()) as { readonly warnings: unknown };
+    expect(malformedBody.warnings).toEqual([{ reason: "FILTER_INVALID" }]);
+    expect(observations).toBe(0);
   } finally {
     await stopServer(server.running);
   }

@@ -6,5 +6,7 @@
 export * from "./actions";
 export * from "./app";
 export * from "./dots";
+export * from "./history";
 export * from "./server-client.interface";
 export * from "./server-client.service";
+export * from "./tui.service";

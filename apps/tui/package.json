@@ -4,6 +4,8 @@
   "type": "module",
   "license": "AGPL-3.0-only",
   "exports": {
+    "./app": "./src/app.tsx",
+    "./history": "./src/history/index.ts",
     "./*": "./src/*.ts"
   },
   "scripts": {
@@ -11,8 +13,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@opentui/core": "^0.4.5",
     "@score/core": "workspace:*",
-    "@score/shared": "workspace:*"
+    "@score/shared": "workspace:*",
+    "ink": "^7.1.1",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "ink-testing-library": "^4.0.0"
   }
 }

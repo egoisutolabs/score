@@ -13,6 +13,7 @@
   "dependencies": {
     "@score/core": "workspace:*",
     "@score/shared": "workspace:*",
+    "@score/tracker": "workspace:*",
     "express": "^5.1.0"
   },
   "devDependencies": {
