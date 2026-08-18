@@ -1,5 +1,6 @@
 import type { JobStatus } from "@score/core/supervisor/supervisor-adapter.interface";
 import type { Dot } from "./dots";
+import type { GitHubMerge, HistoryEvent } from "./history";
 
 /** The resolved project values rendered by the TUI's config pane. */
 export interface ResolvedView {
@@ -22,6 +23,8 @@ export interface TuiPoll {
   readonly projects: readonly ProjectView[];
   readonly logs: ReadonlyMap<string, readonly string[]>;
   readonly logFile: string;
+  readonly history: readonly HistoryEvent[];
+  readonly githubMerges: readonly GitHubMerge[];
   readonly warnings: readonly string[];
 }
 

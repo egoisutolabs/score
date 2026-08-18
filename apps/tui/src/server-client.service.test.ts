@@ -34,10 +34,27 @@ function project(
   };
 }
 
-function transcript(cursor: string, lines: readonly string[] = []): string {
+function decision(pullRequest: number, ts = "2026-08-17T11:58:00.000Z", tag = "merged"): unknown {
+  return {
+    v: 1,
+    signal: "event",
+    project: "alpha",
+    ts,
+    name: "score.landing.decision",
+    subject: { pull_request_number: pullRequest },
+    attributes: { tag, dry_run: false },
+  };
+}
+
+function transcript(
+  cursor: string,
+  lines: readonly string[] = [],
+  events: readonly unknown[] = [],
+): string {
   return (
     frame("score.stream.hello", {}, "") +
     frame("score.snapshot.project", project("alpha"), "") +
+    events.map((event) => frame("score.telemetry.event", event, cursor)).join("") +
     lines
       .map((body) =>
         frame(
@@ -56,6 +73,27 @@ function transcript(cursor: string, lines: readonly string[] = []): string {
   );
 }
 
+function history(merges: readonly unknown[] = [], warnings: readonly string[] = []): Response {
+  return new Response(
+    JSON.stringify({
+      api_version: "v1",
+      emitted_at: NOW.toISOString(),
+      stream_id: "history-1",
+      cursor: "",
+      data: merges,
+      ...(warnings.length > 0 && { warnings: warnings.map((reason) => ({ reason })) }),
+    }),
+    { status: 200 },
+  );
+}
+
+const githubMerge = (pullRequest: number, mergedAt = "2026-08-17T11:58:30.000Z") => ({
+  project: "alpha",
+  pull_request_number: pullRequest,
+  title: `Merge ${pullRequest}`,
+  merged_at: mergedAt,
+});
+
 function fakeFetch(responses: Response[]): {
   readonly request: typeof fetch;
   readonly calls: { readonly url: URL; readonly headers: Headers }[];
@@ -73,10 +111,12 @@ function fakeFetch(responses: Response[]): {
   return { request: request as typeof fetch, calls };
 }
 
-test("poll maps server snapshots and logs, then resumes from caught_up", async () => {
+test("poll maps snapshots, history, and logs, then resumes from caught_up", async () => {
   const http = fakeFetch([
-    new Response(transcript("cursor-1", ["tick started"]), { status: 200 }),
+    new Response(transcript("cursor-1", ["tick started"], [decision(41)]), { status: 200 }),
+    history([githubMerge(103)]),
     new Response(transcript("cursor-2", ["tick complete"]), { status: 200 }),
+    history([githubMerge(103)]),
   ]);
   const client = new TuiServerClient("http://127.0.0.1:3000", http.request, () => NOW);
 
@@ -96,13 +136,32 @@ test("poll maps server snapshots and logs, then resumes from caught_up", async (
     },
   ]);
   expect(first.logs.get("alpha")).toEqual(["[2026-08-17T11:59:00.000Z] [info] tick started"]);
-  expect(http.calls[0]?.url.searchParams.get("signals")).toBe("snapshot,log");
+  expect(first.history).toEqual([
+    {
+      project: "alpha",
+      ts: "2026-08-17T11:58:00.000Z",
+      name: "score.landing.decision",
+      subject: { pull_request_number: 41 },
+      attributes: { tag: "merged", dry_run: false },
+    },
+  ]);
+  expect(http.calls[0]?.url.searchParams.get("signals")).toBe("snapshot,event,log");
   expect(http.calls[0]?.url.searchParams.get("follow")).toBe("false");
   expect(http.calls[0]?.url.searchParams.get("since")).toBe("2026-08-17T00:00:00.000Z");
   expect(http.calls[0]?.headers.get("last-event-id")).toBeNull();
+  expect(http.calls[1]?.url.pathname).toBe("/api/v1/history");
+  expect(http.calls[1]?.url.searchParams.get("since")).toBe("2026-07-19T00:00:00.000Z");
+  expect(first.githubMerges).toEqual([
+    {
+      project: "alpha",
+      pullRequest: 103,
+      title: "Merge 103",
+      mergedTs: "2026-08-17T11:58:30.000Z",
+    },
+  ]);
 
   const second = await client.poll();
-  expect(http.calls[1]?.headers.get("last-event-id")).toBe("cursor-1");
+  expect(http.calls[2]?.headers.get("last-event-id")).toBe("cursor-1");
   expect(second.logs.get("alpha")).toEqual([
     "[2026-08-17T11:59:00.000Z] [info] tick started",
     "[2026-08-17T11:59:00.000Z] [info] tick complete",
@@ -113,14 +172,25 @@ test("snapshot warnings stay explicit while usable data still renders", async ()
   const body =
     frame("score.snapshot.project", project("alpha", "stale"), "", ["SUPERVISOR_UNREADABLE"]) +
     frame("score.stream.caught_up", {}, "cursor-1");
-  const http = fakeFetch([new Response(body, { status: 200 })]);
+  const http = fakeFetch([new Response(body, { status: 200 }), history()]);
   const state = await new TuiServerClient("http://score.test", http.request, () => NOW).poll();
 
   expect(state.projects[0]?.dot).toBe("amber");
   expect(state.warnings).toEqual(["SUPERVISOR_UNREADABLE"]);
 });
 
-test("an expired cursor clears buffered logs and retries without Last-Event-ID", async () => {
+test("an older server without the history route is identified precisely", async () => {
+  const http = fakeFetch([
+    new Response(transcript("cursor-1"), { status: 200 }),
+    new Response("Cannot GET /api/v1/history", { status: 404 }),
+  ]);
+  const state = await new TuiServerClient("http://score.test", http.request, () => NOW).poll();
+
+  expect(state.githubMerges).toEqual([]);
+  expect(state.warnings).toEqual(["SERVER_HISTORY_UNAVAILABLE"]);
+});
+
+test("an expired cursor clears buffered telemetry and retries without Last-Event-ID", async () => {
   const expired = JSON.stringify({
     api_version: "v1",
     cursor: "",
@@ -128,23 +198,27 @@ test("an expired cursor clears buffered logs and retries without Last-Event-ID",
     warnings: [{ reason: "CURSOR_EXPIRED" }],
   });
   const http = fakeFetch([
-    new Response(transcript("cursor-1", ["old"]), { status: 200 }),
+    new Response(transcript("cursor-1", ["old"], [decision(40)]), { status: 200 }),
+    history([githubMerge(40)]),
     new Response(expired, { status: 410 }),
-    new Response(transcript("cursor-2", ["fresh"]), { status: 200 }),
+    new Response(transcript("cursor-2", ["fresh"], [decision(41)]), { status: 200 }),
+    history([githubMerge(41)]),
   ]);
   const client = new TuiServerClient("http://score.test", http.request, () => NOW);
   await client.poll();
   const recovered = await client.poll();
 
-  expect(http.calls[1]?.headers.get("last-event-id")).toBe("cursor-1");
-  expect(http.calls[2]?.headers.get("last-event-id")).toBeNull();
+  expect(http.calls[2]?.headers.get("last-event-id")).toBe("cursor-1");
+  expect(http.calls[3]?.headers.get("last-event-id")).toBeNull();
   expect(recovered.logs.get("alpha")).toEqual(["[2026-08-17T11:59:00.000Z] [info] fresh"]);
+  expect(recovered.history.map((event) => event.subject?.pull_request_number)).toEqual([41]);
 });
 
 test("a response without caught_up is rejected without advancing the cursor", async () => {
   const http = fakeFetch([
     new Response(
       frame("score.snapshot.project", project("alpha"), "cursor-bad") +
+        frame("score.telemetry.event", decision(40), "cursor-bad") +
         frame(
           "score.log.record",
           {
@@ -158,6 +232,7 @@ test("a response without caught_up is rejected without advancing the cursor", as
       { status: 200 },
     ),
     new Response(transcript("cursor-good", ["committed"]), { status: 200 }),
+    history(),
   ]);
   const client = new TuiServerClient("http://score.test", http.request, () => NOW);
 
@@ -165,6 +240,7 @@ test("a response without caught_up is rejected without advancing the cursor", as
   const recovered = await client.poll();
   expect(http.calls[1]?.headers.get("last-event-id")).toBeNull();
   expect(recovered.logs.get("alpha")).toEqual(["[2026-08-17T11:59:00.000Z] [info] committed"]);
+  expect(recovered.history).toEqual([]);
 });
 
 test("log buffers retain the latest 200 initially and never exceed 2000", async () => {
@@ -172,7 +248,9 @@ test("log buffers retain the latest 200 initially and never exceed 2000", async 
   const additions = Array.from({ length: 1905 }, (_, index) => `next-${index}`);
   const http = fakeFetch([
     new Response(transcript("cursor-1", initial), { status: 200 }),
+    history(),
     new Response(transcript("cursor-2", additions), { status: 200 }),
+    history(),
   ]);
   const client = new TuiServerClient("http://score.test", http.request, () => NOW);
 
@@ -188,8 +266,12 @@ test("log buffers retain the latest 200 initially and never exceed 2000", async 
 test("UTC date rollover clears yesterday's display and advances the since bound", async () => {
   let now = NOW;
   const http = fakeFetch([
-    new Response(transcript("cursor-1", ["yesterday"]), { status: 200 }),
-    new Response(transcript("cursor-2", ["today"]), { status: 200 }),
+    new Response(transcript("cursor-1", ["yesterday"], [decision(40)]), { status: 200 }),
+    history([githubMerge(40)]),
+    new Response(transcript("cursor-2", ["today"], [decision(41, "2026-08-18T00:00:00.500Z")]), {
+      status: 200,
+    }),
+    history([githubMerge(41, "2026-08-18T00:00:01.000Z")]),
   ]);
   const client = new TuiServerClient("http://score.test", http.request, () => now);
   await client.poll();
@@ -197,6 +279,8 @@ test("UTC date rollover clears yesterday's display and advances the since bound"
   const today = await client.poll();
 
   expect(today.logs.get("alpha")).toEqual(["[2026-08-17T11:59:00.000Z] [info] today"]);
-  expect(http.calls[1]?.url.searchParams.get("since")).toBe("2026-08-18T00:00:00.000Z");
+  expect(http.calls[2]?.url.searchParams.get("since")).toBe("2026-08-18T00:00:00.000Z");
+  expect(http.calls[3]?.url.searchParams.get("since")).toBe("2026-07-20T00:00:00.000Z");
   expect(today.logFile).toBe("2026-08-18.log");
+  expect(today.history.map((event) => event.subject?.pull_request_number)).toEqual([41]);
 });

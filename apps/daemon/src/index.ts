@@ -15,7 +15,7 @@ try {
   else if (command === "down") await runDown(args);
   else if (command === "restart") await runRestart(args);
   else if (command === "doctor") await runDoctor();
-  // Dynamic import keeps OpenTUI out of the daemon/supervisor code paths.
+  // Dynamic import keeps the terminal renderer out of daemon/supervisor code paths.
   else if (command === "tui") await (await import("@score/tui/app")).runTui(args);
   else if (command === "config") {
     if (args[0] !== "init" || args.length > 1) throw new Error("usage: score config init");

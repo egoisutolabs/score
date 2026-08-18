@@ -40,6 +40,14 @@ interface GitHubServiceOptions {
   readonly timeoutMs?: number;
 }
 
+/** Provider facts used by read-only history views, independent of Score ownership. */
+export interface GitHubMergeHistory {
+  readonly number: number;
+  readonly title: string;
+  readonly headRefName: string;
+  readonly mergedAt: string;
+}
+
 /** Validated GitHub observation adapter; it does not make scheduling or landing decisions. */
 export class GitHubService implements WorkSource, ChangeHost {
   readonly #executable: string;
@@ -150,6 +158,31 @@ export class GitHubService implements WorkSource, ChangeHost {
   async observeMergedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {
     const changes = await this.#observeChangeIdentities("merged", "number,headRefName,mergedAt");
     return changes.filter((change) => isIssueBranch(change.headRefName));
+  }
+
+  async observeMergeHistory(sinceDay?: string): Promise<readonly GitHubMergeHistory[]> {
+    const raw = await this.#listComplete(
+      [
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        ...(sinceDay === undefined ? [] : ["--search", `merged:>=${sinceDay}`]),
+      ],
+      "number,title,headRefName,mergedAt",
+      100,
+      "github.mergeHistory",
+    );
+    return raw.map((item, index) => {
+      const path = `github.mergeHistory[${index}]`;
+      const value = objectValue(item, path);
+      return {
+        number: positiveIntegerValue(value.number, `${path}.number`),
+        title: stringValue(value.title, `${path}.title`),
+        headRefName: stringValue(value.headRefName, `${path}.headRefName`),
+        mergedAt: stringValue(value.mergedAt, `${path}.mergedAt`),
+      };
+    });
   }
 
   // gh's "closed" state is GraphQL CLOSED — closed without merging — so this

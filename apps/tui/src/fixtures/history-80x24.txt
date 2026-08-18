@@ -1,0 +1,24 @@
+  ■ score   1 OVERVIEW   2 HISTORY                       ● 2 running  ● 0 down
+
+  HISTORY / 30d / Jun 2 — Jul 1                                   7 7d   3 30d
+
+  ◆ MERGED 7        ◆ ACTIVE 2/2        ◆ BUSIEST 3/day         ◆ LATEST Jul 1
+
+  MERGES / 30 DAYS GitHub · UTC
+  ·············▃········▆···▃··█
+  Jun 2                    today
+
+  BY PROJECT                              RECENT MERGES
+  project      merge  share latest        date   project / PR       title
+  ■ alpha          4    57%  07-01        07-01 alpha / #103  Port API to Expr
+  ■ beta           3    43%  07-01        07-01 beta / #42  Score landing
+                                          07-01 alpha / #41  Score landing
+                                          06-28 alpha / #102  Share live strea
+                                          06-24 beta / #101  Replay telemetry
+                                          06-24 alpha / #100  Install dependen
+                                          06-15 beta / #99  Repair score up re
+
+
+
+
+  1 overview  2 history  7 7d  3 30d  Tab switch  q quit

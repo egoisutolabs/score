@@ -150,12 +150,13 @@ Verified manually against `opencode 1.17.15` (`opencode serve --hostname
 (`~/.config/systemd/user/score-<key>.service`) on Linux. Other platforms are
 unsupported and fail before touching anything.
 
-The TUI reads fleet snapshots and dated log records through `apps/server`; it
-does not open project state or log files. `score up` installs one fleet-level
-loopback server alongside the project daemons, so `score tui` needs no separate
-server command. `bun run server:start` remains the foreground development path,
-and `SCORE_SERVER_URL` can point the TUI at another Score server. Lifecycle keys
-still call the local supervisor adapter directly because the API remains read-only.
+The TUI reads fleet snapshots, dated log records, daemon telemetry, and GitHub
+merge history through `apps/server`; it does not open project state or log files
+or invoke `gh` itself. `score up` installs one fleet-level loopback server
+alongside the project daemons, so `score tui` needs no separate server command.
+`bun run server:start` remains the foreground development path, and
+`SCORE_SERVER_URL` can point the TUI at another Score server. Lifecycle keys still
+call the local supervisor adapter directly because the API remains read-only.
 
 On Linux, systemd user units are killed at logout unless lingering is enabled.
 Run this once per operator account, or the daemons die with your SSH session:
@@ -170,7 +171,7 @@ enforced.
 ## Layout
 
 Bun workspaces + Turborepo. `apps/{daemon,tui,server}` are entry points (the
-`score` CLI is `apps/daemon`; `server` is the API-only Express app);
+`score` CLI is `apps/daemon`; `tui` is the Ink terminal viewer; `server` is the API-only Express app);
 `packages/{shared,core,agents,tracker}` are libraries — ports live in `core`,
 implementations in `agents`/`tracker`. Files are named `<noun>.<role>.ts`
 (`.service`, `.policy`, `.render`, `.interface`, `.run`); see `AGENTS.md`.

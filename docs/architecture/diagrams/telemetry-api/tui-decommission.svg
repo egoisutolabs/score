@@ -23,7 +23,7 @@
     <rect x="82" y="464" width="264" height="54" rx="8" fill="#ffffff" stroke="#fdba74"/>
     <text x="214" y="496" text-anchor="middle" fill="#7c2d12">start · stop · restart mutations</text>
     <rect x="82" y="534" width="264" height="38" rx="8" fill="#ffedd5" stroke="#fb923c"/>
-    <text x="214" y="559" text-anchor="middle" font-weight="650" fill="#9a3412">OpenTUI render + keymaps</text>
+    <text x="214" y="559" text-anchor="middle" font-weight="650" fill="#9a3412">Ink render + keymaps</text>
   </g>
 
   <rect x="456" y="116" width="290" height="480" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2.5"/>
@@ -74,7 +74,7 @@
     <circle cx="866" cy="421" r="10" fill="#dcfce7" stroke="#22c55e"/>
     <text x="866" y="426" text-anchor="middle" font-size="12" font-weight="700" fill="#15803d">4</text>
     <text x="890" y="417">remove tui command + package</text>
-    <text x="890" y="438" font-size="11.5" fill="#64748b">remove OpenTUI and FFI surface · CLI stays</text>
+    <text x="890" y="438" font-size="11.5" fill="#64748b">remove Ink and React surface · CLI stays</text>
 
     <circle cx="866" cy="491" r="10" fill="#dcfce7" stroke="#22c55e"/>
     <text x="866" y="496" text-anchor="middle" font-size="12" font-weight="700" fill="#15803d">5</text>

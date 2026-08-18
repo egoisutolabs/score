@@ -1,14 +1,18 @@
 import type { HealthState } from "@score/core/observation/health.policy";
 import { dotForHealth } from "./dots";
+import type { GitHubMerge, HistoryEvent } from "./history";
 import type { ProjectView, TuiDataSource, TuiPoll } from "./server-client.interface";
 
 const INITIAL_LINES = 200;
 const MAX_LINES = 2000;
+const HISTORY_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SERVER_URL = "http://127.0.0.1:3000";
 
 const FLEET_SNAPSHOT_EVENT = "score.snapshot.fleet";
 const PROJECT_SNAPSHOT_EVENT = "score.snapshot.project";
 const LOG_RECORD_EVENT = "score.log.record";
+const TELEMETRY_EVENT = "score.telemetry.event";
 const CAUGHT_UP_EVENT = "score.stream.caught_up";
 const WARNING_EVENT = "score.stream.warning";
 
@@ -35,13 +39,15 @@ interface RequestFailure {
 
 /**
  * Cursor-backed finite subscriptions for the TUI. Each poll gets fresh owner
- * snapshots and only log records after the prior caught-up boundary; the TUI
- * never reads Score's state files or dated logs itself.
+ * snapshots and telemetry after the prior caught-up boundary; the TUI never
+ * reads Score's state files or dated logs itself.
  */
 export class TuiServerClient implements TuiDataSource {
   #cursor = "";
   #stamp = "";
   readonly #logs = new Map<string, string[]>();
+  readonly #history: HistoryEvent[] = [];
+  #githubMerges: readonly GitHubMerge[] = [];
   readonly #baseUrl: URL;
 
   constructor(
@@ -64,6 +70,7 @@ export class TuiServerClient implements TuiDataSource {
       // replay is the only safe recovery; the server remains cursor authority.
       this.#cursor = "";
       this.#logs.clear();
+      this.#history.length = 0;
       return await this.#poll();
     }
   }
@@ -74,10 +81,11 @@ export class TuiServerClient implements TuiDataSource {
     if (stamp !== this.#stamp) {
       this.#stamp = stamp;
       this.#logs.clear();
+      this.#history.length = 0;
     }
 
     const url = new URL("/api/v1/stream", this.#baseUrl);
-    url.searchParams.set("signals", "snapshot,log");
+    url.searchParams.set("signals", "snapshot,event,log");
     url.searchParams.set("since", `${stamp}T00:00:00.000Z`);
     url.searchParams.set("follow", "false");
     const headers = new Headers();
@@ -89,6 +97,7 @@ export class TuiServerClient implements TuiDataSource {
 
     const projects: ProjectView[] = [];
     const pendingLogs = new Map<string, string[]>();
+    const pendingHistory: HistoryEvent[] = [];
     const warnings = new Set<string>();
     let caughtUp = false;
     let nextCursor = this.#cursor;
@@ -102,6 +111,8 @@ export class TuiServerClient implements TuiDataSource {
         const lines = pendingLogs.get(record.project) ?? [];
         lines.push(`[${record.ts}] [${record.level}] ${record.body}`);
         pendingLogs.set(record.project, lines);
+      } else if (message.event === TELEMETRY_EVENT) {
+        pendingHistory.push(historyEvent(message.envelope.data));
       } else if (message.event === WARNING_EVENT) {
         for (const warning of message.envelope.warnings ?? []) warnings.add(warning.reason);
       } else if (message.event === CAUGHT_UP_EVENT) {
@@ -112,12 +123,26 @@ export class TuiServerClient implements TuiDataSource {
     }
     if (!caughtUp) throw new Error("server stream ended before score.stream.caught_up");
 
+    try {
+      const github = await this.#requestHistory(stamp);
+      this.#githubMerges = github.merges;
+      for (const warning of github.warnings) warnings.add(warning);
+    } catch (error) {
+      const failure = error as Partial<RequestFailure>;
+      warnings.add(
+        failure.status === 404
+          ? "SERVER_HISTORY_UNAVAILABLE"
+          : (failure.reason ?? "GITHUB_UNAVAILABLE"),
+      );
+    }
+
     this.#cursor = nextCursor;
     for (const [project, additions] of pendingLogs) {
       const lines = this.#logs.get(project) ?? [];
       lines.push(...additions);
       this.#logs.set(project, lines);
     }
+    this.#history.push(...pendingHistory);
     const cap = freshBuffer ? INITIAL_LINES : MAX_LINES;
     for (const lines of this.#logs.values()) {
       if (lines.length > cap) lines.splice(0, lines.length - cap);
@@ -126,7 +151,28 @@ export class TuiServerClient implements TuiDataSource {
       projects,
       logs: this.#logs,
       logFile: `${stamp}.log`,
+      history: this.#history,
+      githubMerges: this.#githubMerges,
       warnings: [...warnings],
+    };
+  }
+
+  async #requestHistory(
+    stamp: string,
+  ): Promise<{ readonly merges: readonly GitHubMerge[]; readonly warnings: readonly string[] }> {
+    const url = new URL("/api/v1/history", this.#baseUrl);
+    const start = new Date(
+      Date.parse(`${stamp}T00:00:00.000Z`) - (HISTORY_DAYS - 1) * DAY_MS,
+    ).toISOString();
+    url.searchParams.set("since", start);
+    const response = await this.request(url);
+    const text = await response.text();
+    if (!response.ok) throw requestFailure(response.status, text);
+    const body = envelope(JSON.parse(text));
+    if (!Array.isArray(body.data)) throw new Error("server returned invalid GitHub history");
+    return {
+      merges: body.data.map(githubMerge),
+      warnings: (body.warnings ?? []).map((warning) => warning.reason),
     };
   }
 }
@@ -220,6 +266,64 @@ function logRecord(value: unknown): {
     throw new Error("server returned an invalid log record");
   }
   return { project: raw.project, ts: raw.ts, level: raw.level, body: raw.body };
+}
+
+function historyEvent(value: unknown): HistoryEvent {
+  const raw = object(value, "telemetry event");
+  if (
+    raw.signal !== "event" ||
+    typeof raw.project !== "string" ||
+    typeof raw.ts !== "string" ||
+    typeof raw.name !== "string"
+  ) {
+    throw new Error("server returned an invalid telemetry event");
+  }
+  const subject = raw.subject === undefined ? undefined : object(raw.subject, "event subject");
+  const attributes =
+    raw.attributes === undefined ? undefined : object(raw.attributes, "event attributes");
+  return {
+    project: raw.project,
+    ts: raw.ts,
+    name: raw.name,
+    ...(subject !== undefined && {
+      subject: {
+        ...(typeof subject.issue_number === "number" && {
+          issue_number: subject.issue_number,
+        }),
+        ...(typeof subject.pull_request_number === "number" && {
+          pull_request_number: subject.pull_request_number,
+        }),
+      },
+    }),
+    ...(attributes !== undefined && {
+      attributes: Object.fromEntries(
+        Object.entries(attributes).filter(
+          (entry): entry is [string, string | number | boolean] =>
+            typeof entry[1] === "string" ||
+            typeof entry[1] === "number" ||
+            typeof entry[1] === "boolean",
+        ),
+      ),
+    }),
+  };
+}
+
+function githubMerge(value: unknown): GitHubMerge {
+  const raw = object(value, "GitHub merge");
+  if (
+    typeof raw.project !== "string" ||
+    typeof raw.pull_request_number !== "number" ||
+    typeof raw.title !== "string" ||
+    typeof raw.merged_at !== "string"
+  ) {
+    throw new Error("server returned an invalid GitHub merge");
+  }
+  return {
+    project: raw.project,
+    pullRequest: raw.pull_request_number,
+    title: raw.title,
+    mergedTs: raw.merged_at,
+  };
 }
 
 function requestFailure(status: number, text: string): Error & RequestFailure {

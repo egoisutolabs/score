@@ -3,6 +3,7 @@
  * telemetry semantics or daemon lifecycle policy.
  */
 
+export * from "./history";
 export * from "./server";
 export * from "./telemetry";
 

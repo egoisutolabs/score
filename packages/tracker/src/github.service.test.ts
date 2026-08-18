@@ -41,6 +41,33 @@ test("dispatch and cleanup use narrow legacy GitHub observations", async () => {
   ]);
 });
 
+test("history observes merged pull requests regardless of Score branch identity", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    JSON.stringify([
+      {
+        number: 103,
+        title: "Port API to Express",
+        headRefName: "feature/next-to-express",
+        mergedAt: "2026-08-18T01:25:50Z",
+      },
+    ]),
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  expect(await github.observeMergeHistory("2026-08-18")).toEqual([
+    {
+      number: 103,
+      title: "Port API to Express",
+      headRefName: "feature/next-to-express",
+      mergedAt: "2026-08-18T01:25:50Z",
+    },
+  ]);
+  expect(runner.commands[0]).toContain("merged");
+  expect(runner.commands[0]).toContain("merged:>=2026-08-18");
+  expect(runner.commands[0]?.at(-1)).toBe("number,title,headRefName,mergedAt");
+});
+
 test("repair observation does not request landing-only fields", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
