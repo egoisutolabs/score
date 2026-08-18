@@ -31,6 +31,12 @@ test("renderPlist omits EnvironmentVariables when none are given", () => {
   expect(renderPlist(project, ["/bin/bun"])).not.toContain("EnvironmentVariables");
 });
 
+test("renderPlist accepts a fleet-service output path outside project state", () => {
+  expect(renderPlist(project, ["/bin/bun"], {}, "/tmp/score/server/crash.log")).toContain(
+    "<string>/tmp/score/server/crash.log</string>",
+  );
+});
+
 test("renderPlist snapshot, XML-escaping paths with & and <>", () => {
   process.env.SCORE_HOME = "/tmp/score home & data";
   const invocation = [

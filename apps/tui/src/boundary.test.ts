@@ -20,3 +20,26 @@ it("no @opentui import outside apps/tui", async () => {
   }
   expect(offenders).toEqual([]);
 });
+
+it("TUI read models come through the server API, never project files", async () => {
+  const offenders: string[] = [];
+  for (const entry of await readdir(import.meta.dirname, { withFileTypes: true })) {
+    if (
+      !entry.isFile() ||
+      !entry.name.endsWith(".ts") ||
+      entry.name.endsWith(".test.ts") ||
+      entry.name === "actions.ts"
+    ) {
+      continue;
+    }
+    const source = await readFile(join(import.meta.dirname, entry.name), "utf8");
+    if (
+      source.includes('from "node:fs') ||
+      source.includes("@score/shared/config/load") ||
+      source.includes("@score/shared/config/layout")
+    ) {
+      offenders.push(entry.name);
+    }
+  }
+  expect(offenders).toEqual([]);
+});

@@ -1,7 +1,7 @@
 # Score guidance
 
 - Use Bun and TypeScript. The repo is a Bun-workspaces + Turborepo monorepo:
-  `apps/{daemon,tui,web}` are entry points; `packages/{shared,core,agents,tracker}`
+  `apps/{daemon,tui,server}` are entry points; `packages/{shared,core,agents,tracker}`
   are libraries. The `score` CLI is `apps/daemon`.
 - Keep models as interfaces and types; do not add Zod or any schema-builder
   DSL — interfaces read as the shape directly, schema objects are indirection.

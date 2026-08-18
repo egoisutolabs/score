@@ -104,6 +104,12 @@ test("renderUnit omits Environment lines when none are given", () => {
   expect(renderUnit(project, ["/bin/bun"])).not.toContain("Environment=");
 });
 
+test("renderUnit accepts a fleet-service output path outside project state", () => {
+  expect(renderUnit(project, ["/bin/bun"], {}, "/tmp/score/server/crash.log")).toContain(
+    "StandardOutput=append:/tmp/score/server/crash.log",
+  );
+});
+
 test("install writes the unit, reloads, and enables --now", async () => {
   await adapter.install("demo", "[Unit]\n");
   expect(await readFile(join(unitDir, "score-demo.service"), "utf8")).toBe("[Unit]\n");

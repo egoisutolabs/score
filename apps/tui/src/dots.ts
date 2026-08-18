@@ -1,12 +1,6 @@
-import {
-  type HealthInput,
-  type HealthState,
-  healthFor,
-} from "@score/core/observation/health.policy";
+import type { HealthState } from "@score/core/observation/health.policy";
 
 export type Dot = "green" | "amber" | "gray" | "red";
-
-export type DotInput = HealthInput;
 
 const DOT_FOR: Record<HealthState, Dot> = {
   healthy: "green",
@@ -15,7 +9,7 @@ const DOT_FOR: Record<HealthState, Dot> = {
   stopped: "gray",
 };
 
-/** The TUI's color vocabulary over core's reason-coded health decision. */
-export function deriveDot(input: DotInput): Dot {
-  return DOT_FOR[healthFor(input).state];
+/** The TUI's color vocabulary over the server's reason-coded health state. */
+export function dotForHealth(state: HealthState): Dot {
+  return DOT_FOR[state];
 }

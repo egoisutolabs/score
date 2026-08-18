@@ -67,6 +67,7 @@ agent is respawned in place to finish the preserved work.
 | `WORKTREE_ROOT` | `~/wt` | Parent of the per-repo worktree directory. |
 | `EPIC_LABEL_PREFIX` | `epic:` | Label prefix marking dispatchable issues. |
 | `AGENT_CMD` | `claude` | Command repair spawns in a worktree. |
+| `SCORE_SERVER_URL` | `http://127.0.0.1:3000` | Read-only API used by `score tui`. |
 
 Others keep their legacy names and defaults (`GH_REPO`, `AUTO_PULL_MAIN`,
 `ONLY_ISSUE_BRANCHES`, `SESSION_SUFFIX`); see `apps/daemon/src/daemon/daemon.run.ts`
@@ -74,9 +75,10 @@ and `apps/daemon/src/repair/repair.run.ts`.
 
 ## Managed mode
 
-`score config init` writes `~/.score/config.jsonc`; `score up <project>` runs
-the daemon supervised (launchd/systemd), reading only that project's
-`resolved.json` — no env tuning. Each project's `agent.harness` is either
+`score config init` writes `~/.score/config.jsonc`; `score up <project>` ensures
+the fleet's loopback API is running and runs the project daemon supervised
+(launchd/systemd), reading only that project's `resolved.json` — no env tuning.
+Each project's `agent.harness` is either
 `"claude"` (tmux sessions, unchanged) or `"opencode"` (a durable HTTP session
 per issue against a locally-owned `opencode serve` child):
 
@@ -148,6 +150,13 @@ Verified manually against `opencode 1.17.15` (`opencode serve --hostname
 (`~/.config/systemd/user/score-<key>.service`) on Linux. Other platforms are
 unsupported and fail before touching anything.
 
+The TUI reads fleet snapshots and dated log records through `apps/server`; it
+does not open project state or log files. `score up` installs one fleet-level
+loopback server alongside the project daemons, so `score tui` needs no separate
+server command. `bun run server:start` remains the foreground development path,
+and `SCORE_SERVER_URL` can point the TUI at another Score server. Lifecycle keys
+still call the local supervisor adapter directly because the API remains read-only.
+
 On Linux, systemd user units are killed at logout unless lingering is enabled.
 Run this once per operator account, or the daemons die with your SSH session:
 
@@ -160,8 +169,8 @@ enforced.
 
 ## Layout
 
-Bun workspaces + Turborepo. `apps/{daemon,tui,web}` are entry points (the
-`score` CLI is `apps/daemon`; `web` is the API-only Next.js app);
+Bun workspaces + Turborepo. `apps/{daemon,tui,server}` are entry points (the
+`score` CLI is `apps/daemon`; `server` is the API-only Express app);
 `packages/{shared,core,agents,tracker}` are libraries — ports live in `core`,
 implementations in `agents`/`tracker`. Files are named `<noun>.<role>.ts`
 (`.service`, `.policy`, `.render`, `.interface`, `.run`); see `AGENTS.md`.

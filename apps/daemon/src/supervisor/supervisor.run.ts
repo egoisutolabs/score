@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { access, link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { EXIT_TIMEOUT_SECONDS, jobLabel, renderPlist } from "@score/core/supervisor/plist.render";
 import { plan } from "@score/core/supervisor/reconcile.policy";
 import {
@@ -25,6 +25,16 @@ function managedInvocation(key: string): readonly string[] {
     key,
     "--managed",
   ];
+}
+
+/** Invalid as a config key, so a fleet service can never collide with a project. */
+export const FLEET_SERVER_KEY = "_server";
+
+/** The server artifact beside the source or built daemon entry currently running. */
+function fleetServerInvocation(): readonly string[] {
+  const daemonEntry = resolve(process.argv[1] ?? "src/index.ts");
+  const flavor = basename(dirname(daemonEntry)) === "dist" ? "dist/index.js" : "src/index.ts";
+  return [process.execPath, resolve(dirname(daemonEntry), "../../server", flavor)];
 }
 
 function defaultSupervisor(): { adapter: SupervisorAdapter; render: DefinitionRenderer } {
@@ -110,7 +120,8 @@ function installedDefinitionPath(key: string): string {
  * lock-created dir for a stateless key (down of a ghost) would wedge
  * readiness — and a death while holding the lock leaves only a file
  * readiness ignores and the next command breaks as stale. Keys match
- * [a-z0-9-], so `<key>.mutate.lock` cannot collide with a project dir.
+ * Project keys match [a-z0-9-]; the one internal `_server` key has no path
+ * separators, so `<key>.mutate.lock` cannot collide with a project dir.
  */
 async function withProjectLock<T>(key: string, action: () => Promise<T>): Promise<T> {
   const lockPath = `${projectDir(key)}.mutate.lock`;
@@ -188,6 +199,8 @@ export interface UpDependencies {
   readonly invocationFor: (key: string) => readonly string[];
   /** Defaults to renderPlist — the injected-adapter tests are launchd-shaped. */
   readonly renderDefinition?: DefinitionRenderer;
+  /** Omitted by project-only unit tests; production always supplies the sibling server entry. */
+  readonly serverInvocation?: readonly string[];
   /** Teardown-wait pacing; tests inject an instant sleep. */
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -196,15 +209,102 @@ export interface UpDependencies {
 const TEARDOWN_WAIT_MS = (EXIT_TIMEOUT_SECONDS + 30) * 1000;
 const TEARDOWN_POLL_MS = 2000;
 
+async function waitForTeardown(
+  key: string,
+  adapter: SupervisorAdapter,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  const deadline = Date.now() + TEARDOWN_WAIT_MS;
+  for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
+    const job = (await adapter.status()).find((entry) => entry.key === key);
+    if (job === undefined || !job.loaded) return;
+    // A fresh registration means this plan lost a race. Installing over it
+    // would tear the supervisor definition and our saved record apart.
+    if (job.stopping !== true) {
+      throw new Error(`re-registered by a concurrent command — re-run: score up ${key}`);
+    }
+    if (elapsed === 0)
+      console.log(`'${key}' is still stopping — waiting for the old process to exit`);
+    if (elapsed >= TEARDOWN_WAIT_MS || Date.now() >= deadline) {
+      throw new Error(
+        `still stopping after ${Math.round(TEARDOWN_WAIT_MS / 1000)}s — retry: score up ${key}`,
+      );
+    }
+    await sleep(TEARDOWN_POLL_MS);
+  }
+}
+
+type FleetServerReconcile = "started" | "restarted" | "unchanged";
+
+async function reconcileFleetServer(
+  adapter: SupervisorAdapter,
+  render: DefinitionRenderer,
+  invocation: readonly string[],
+  sleep: (ms: number) => Promise<void>,
+): Promise<FleetServerReconcile> {
+  const entry = invocation[1];
+  if (entry === undefined) throw new Error("server invocation must include an entry script");
+  // Fail before supervisor mutation when this checkout has not built or does
+  // not contain the sibling server entry the managed job would execute.
+  await access(entry);
+  const stateDir = join(scoreHome(), "server");
+  const savedDefinition = join(stateDir, "job.plist");
+  const outputPath = join(stateDir, "launchd-crash.log");
+  const projectShape: ResolvedProject = {
+    key: FLEET_SERVER_KEY,
+    mainLocation: dirname(entry),
+    worktreeLocation: "",
+    githubRepo: "",
+    tickIntervalMs: 0,
+    maxParallel: 0,
+    agent: { harness: "claude" },
+    autoMerge: false,
+    logRetentionDays: 0,
+    configHash: "fleet-server",
+  };
+  const environment = {
+    ...jobEnvironment(),
+    ...(process.env.PORT !== undefined && { PORT: process.env.PORT }),
+  };
+  const desiredDefinition = render(projectShape, invocation, environment, outputPath);
+  await mkdir(stateDir, { recursive: true });
+
+  return withProjectLock(FLEET_SERVER_KEY, async () => {
+    const job = (await adapter.status()).find((entry) => entry.key === FLEET_SERVER_KEY);
+    const installed = await readFile(savedDefinition, "utf8").catch(() => undefined);
+    if (job?.loaded === true && job.stopping !== true && installed === desiredDefinition) {
+      return "unchanged";
+    }
+
+    const restarting = job?.loaded === true && job.stopping !== true;
+    if (restarting) await adapter.uninstall(FLEET_SERVER_KEY);
+    if (job?.stopping === true || restarting) {
+      await waitForTeardown(FLEET_SERVER_KEY, adapter, sleep);
+    }
+    // install → record → start is convergent: if the process dies between any
+    // two steps, the next score up observes definition-only or record drift
+    // and replays this handoff before reporting the service healthy.
+    await adapter.install(FLEET_SERVER_KEY, desiredDefinition);
+    await writeFile(savedDefinition, desiredDefinition, "utf8");
+    await adapter.start(FLEET_SERVER_KEY);
+    return restarting ? "restarted" : "started";
+  });
+}
+
 export async function runUp(args: readonly string[], deps?: UpDependencies): Promise<void> {
   const only = parseSingleKey(args, "up");
-  const { adapter, invocationFor, render } =
+  const { adapter, invocationFor, render, serverInvocation } =
     deps === undefined
-      ? { ...defaultSupervisor(), invocationFor: managedInvocation }
+      ? {
+          ...defaultSupervisor(),
+          invocationFor: managedInvocation,
+          serverInvocation: fleetServerInvocation(),
+        }
       : {
           adapter: deps.adapter,
           invocationFor: deps.invocationFor,
           render: deps.renderDefinition ?? renderPlist,
+          serverInvocation: deps.serverInvocation,
         };
   const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const renderFor = (project: ResolvedProject): string =>
@@ -217,7 +317,10 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     throw new Error(`no enabled project '${only}' in config`);
   }
 
-  const actual = await adapter.status();
+  const observed = await adapter.status();
+  // The internal fleet service shares the OS namespace so fleet-wide down can
+  // find it, but it must never enter project collision or removal policy.
+  const actual = observed.filter((job) => job.key !== FLEET_SERVER_KEY);
   const existing = new Map<string, ResolvedProject>();
   for (const job of actual) {
     try {
@@ -271,6 +374,17 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
     else restarts.push(project);
   }
 
+  let serverState: FleetServerReconcile | undefined;
+  if (serverInvocation !== undefined) {
+    try {
+      serverState = await reconcileFleetServer(adapter, render, serverInvocation, sleep);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`failed to start server: ${message}`);
+      process.exitCode = 1;
+    }
+  }
+
   // Bootstrapping over a still-draining registration fails (launchd returns
   // EIO until the booted-out process exits), so a start planned for a
   // stopping job waits the drain out first. Waiting mutates nothing: a death
@@ -278,32 +392,6 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
   const stopping = new Set(
     actual.filter((job) => job.loaded && job.stopping === true).map((job) => job.key),
   );
-  const waitForTeardown = async (key: string): Promise<void> => {
-    const deadline = Date.now() + TEARDOWN_WAIT_MS;
-    for (let elapsed = 0; ; elapsed += TEARDOWN_POLL_MS) {
-      const job = (await adapter.status()).find((entry) => entry.key === key);
-      if (job === undefined || !job.loaded) return;
-      // Re-registered: a concurrent command finished the drain and
-      // re-installed the job while we queued for the lock. This command's
-      // plan is stale — installing over the live registration would tear
-      // plist/record apart, so fail before any mutation and let a re-run
-      // re-plan against the fresh state.
-      if (job.stopping !== true) {
-        throw new Error(`re-registered by a concurrent command — re-run: score up ${key}`);
-      }
-      if (elapsed === 0) {
-        console.log(`'${key}' is still stopping — waiting for the old process to exit`);
-      }
-      // Two bounds: the nominal poll count, plus wall clock so slow status
-      // calls cannot stretch the wait — the project lock is held throughout.
-      if (elapsed >= TEARDOWN_WAIT_MS || Date.now() >= deadline) {
-        throw new Error(
-          `still stopping after ${Math.round(TEARDOWN_WAIT_MS / 1000)}s — retry: score up ${key}`,
-        );
-      }
-      await sleep(TEARDOWN_POLL_MS);
-    }
-  };
 
   let started = 0;
   let restarted = 0;
@@ -312,7 +400,8 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
       await withProjectLock(project.key, async () => {
         const definition = renderFor(project);
         if (restart) await adapter.stop(project.key);
-        if (!restart && stopping.has(project.key)) await waitForTeardown(project.key);
+        if (!restart && stopping.has(project.key))
+          await waitForTeardown(project.key, adapter, sleep);
         await writeResolvedJson(project);
         await adapter.install(project.key, definition);
         await writeFile(installedDefinitionPath(project.key), definition, "utf8");
@@ -330,7 +419,7 @@ export async function runUp(args: readonly string[], deps?: UpDependencies): Pro
   for (const project of decided.start) await apply(project, false);
 
   console.log(
-    `started=${started} restarted=${restarted} unchanged=${unchanged.length} removed=${removed.length}`,
+    `started=${started} restarted=${restarted} unchanged=${unchanged.length} removed=${removed.length}${serverState === undefined ? "" : ` server=${serverState}`}`,
   );
 }
 
@@ -385,6 +474,7 @@ export async function runDown(
   const only = parseSingleKey(args, "down");
   const keys = only !== undefined ? [only] : (await adapter.status()).map((job) => job.key);
   for (const key of keys) {
+    const display = key === FLEET_SERVER_KEY ? "server" : key;
     // Per-job isolation: one failing bootout must not leave the remaining
     // jobs silently running.
     try {
@@ -392,10 +482,10 @@ export async function runDown(
       // up is waiting out a teardown drain would otherwise report "stopped"
       // and then lose to that up's install once the drain ends.
       await withProjectLock(key, () => adapter.uninstall(key));
-      console.log(`stopped '${key}'`);
+      console.log(`stopped '${display}'`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`failed to stop '${key}': ${message}`);
+      console.error(`failed to stop '${display}': ${message}`);
       process.exitCode = 1;
     }
   }

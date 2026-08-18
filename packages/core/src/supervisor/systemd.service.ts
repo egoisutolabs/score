@@ -49,8 +49,8 @@ export function renderUnit(
   project: ResolvedProject,
   invocation: readonly string[],
   environment: Readonly<Record<string, string>> = {},
+  outputPath: string = crashLogPath(project.key),
 ): string {
-  const log = crashLogPath(project.key);
   const environmentLines = Object.entries(environment)
     .map(([name, value]) => `Environment=${quoted(`${name}=${value}`)}\n`)
     .join("");
@@ -64,8 +64,8 @@ WorkingDirectory=${specifierEscape(project.mainLocation)}
 ${environmentLines}Restart=on-failure
 RestartSec=${THROTTLE_INTERVAL_SECONDS}
 TimeoutStopSec=${EXIT_TIMEOUT_SECONDS}
-StandardOutput=append:${specifierEscape(log)}
-StandardError=append:${specifierEscape(log)}
+StandardOutput=append:${specifierEscape(outputPath)}
+StandardError=append:${specifierEscape(outputPath)}
 
 [Install]
 WantedBy=default.target
