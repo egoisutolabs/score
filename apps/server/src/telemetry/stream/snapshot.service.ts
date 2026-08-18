@@ -13,6 +13,7 @@ import type { Health } from "@score/core/observation/health.policy";
 import { healthFor } from "@score/core/observation/health.policy";
 import type { JobStatus } from "@score/core/observation/jobs.service";
 import type { ScoreConfig } from "@score/shared/config/config.interface";
+import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import { DEFAULT_MAX_PARALLEL, DEFAULT_TICK_INTERVAL_MS } from "@score/shared/config/resolve";
 
 /** The resolved.json values safe to emit; everything else stays on disk. */
@@ -62,7 +63,13 @@ export class SnapshotService {
   async observe(nowMs: number): Promise<FleetObservation> {
     const config = await this.deps.readConfig().catch(() => null);
     const jobList = await this.deps.jobs().catch(() => null);
-    const jobs = new Map((jobList ?? []).map((job) => [job.key, job]));
+    // Fleet-level services share the supervisor namespace but cannot be
+    // project keys. They stay out of project membership and health rendering.
+    const jobs = new Map(
+      (jobList ?? [])
+        .filter((job) => PROJECT_KEY_PATTERN.test(job.key))
+        .map((job) => [job.key, job]),
+    );
     const keys = [
       ...new Set([
         ...Object.keys(config?.projects ?? {}),
@@ -110,7 +117,7 @@ function readJson(path: string): Record<string, unknown> | null {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
   } catch {
-    // Missing or mid-write — absent, same as the TUI's read.
+    // Missing or mid-write — absent; consumers receive the degraded snapshot.
   }
   return null;
 }

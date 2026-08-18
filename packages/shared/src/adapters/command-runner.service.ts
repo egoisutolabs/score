@@ -84,9 +84,9 @@ export class BunCommandRunner implements CommandRunner {
 
     const child = spawn(command[0] as string, command.slice(1), {
       cwd: options.cwd,
-      // Cast: apps/web's TS program includes this file (via the supervisor
-      // adapter) under Next's ProcessEnv augmentation, which demands NODE_ENV
-      // and rejects a plain string record; the runtime value is unchanged.
+      // Cast: apps/server's TS program includes this file via the supervisor
+      // adapter and rejects a plain string record for ProcessEnv; the runtime
+      // value is unchanged.
       env: (options.env ? { ...processEnv(), ...options.env } : processEnv()) as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
       // Own process group, so the deadline can kill the whole tree.

@@ -5,10 +5,8 @@ import type {
   JobStatus,
   SupervisorAdapter,
 } from "@score/core/supervisor/supervisor-adapter.interface";
-import type { ProjectConfig, ScoreConfig } from "@score/shared/config/config.interface";
+import type { ProjectView, TuiDataSource, TuiPoll } from "@score/tui/server-client.interface";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
-const NOW = new Date("2026-07-01T12:00:00.000Z");
 
 /** Lifecycle calls are recorded; status() is a read and is not. */
 class FakeAdapter implements SupervisorAdapter {
@@ -39,71 +37,50 @@ class FakeAdapter implements SupervisorAdapter {
   }
 }
 
-function project(key: string): ProjectConfig {
-  return {
-    enabled: true,
-    main_location: `/tmp/${key}`,
-    worktree_location: `/tmp/wt/${key}`,
-    github_repo: `example/${key}`,
-    config: { agent: { harness: "claude" } },
-  };
+async function writeFixtures(home: string): Promise<void> {
+  await mkdir(join(home, "projects", "alpha"), { recursive: true });
+  await writeFile(join(home, "projects", "alpha", "job.plist"), PLIST);
 }
 
-const config: ScoreConfig = {
-  version: 1,
-  projects: { alpha: project("alpha"), beta: project("beta") },
-};
+class FakeDataSource implements TuiDataSource {
+  readonly disabled = new Set<string>();
 
-async function writeFixtures(home: string): Promise<void> {
-  const status = (key: string, updatedAt: Date, tick: number) =>
-    writeFile(
-      join(home, "projects", key, "status.json"),
-      JSON.stringify({
-        state: "running",
-        pid: key === "alpha" ? 111 : 222,
-        tick,
-        last_pass_started_at: null,
-        last_pass_completed_at: null,
-        last_error: null,
-        last_gate_failure: null,
-        updated_at: updatedAt.toISOString(),
-      }),
-    );
-  const resolved = (key: string) =>
-    writeFile(
-      join(home, "projects", key, "resolved.json"),
-      JSON.stringify({
-        key,
-        tickIntervalMs: 60_000,
-        maxParallel: 2,
-        agent: { harness: "claude", model: "sonnet" },
-      }),
-    );
-  for (const key of ["alpha", "beta"]) {
-    await mkdir(join(home, "projects", key, "logs"), { recursive: true });
-    await resolved(key);
+  constructor(private readonly adapter: FakeAdapter) {}
+
+  async poll(): Promise<TuiPoll> {
+    const jobs = new Map(this.adapter.jobs.map((job) => [job.key, job]));
+    const view = (key: string, tick: number, dot: ProjectView["dot"]): ProjectView => ({
+      key,
+      enabled: !this.disabled.has(key),
+      job: jobs.get(key),
+      status: { tick },
+      resolved: { agent: "claude · sonnet", tickIntervalMs: 60_000, maxParallel: 2 },
+      dot,
+    });
+    return {
+      projects: [view("alpha", 12, "green"), view("beta", 3, "amber")],
+      logs: new Map([
+        [
+          "alpha",
+          [
+            "[2026-07-01T11:59:58.000Z] [info] tick 12 started",
+            "[2026-07-01T11:59:59.000Z] [info] nothing to dispatch",
+          ],
+        ],
+      ]),
+      logFile: "2026-07-01.log",
+      warnings: [],
+    };
   }
-  await status("alpha", new Date(NOW.getTime() - 1000), 12);
-  // Ten minutes past a 60s tick interval: stale.
-  await status("beta", new Date(NOW.getTime() - 600_000), 3);
-  await writeFile(
-    join(home, "projects", "alpha", "logs", "2026-07-01.log"),
-    [
-      "[2026-07-01T11:59:58.000Z] [info] tick 12 started",
-      "[2026-07-01T11:59:59.000Z] [info] nothing to dispatch",
-    ]
-      .map((line) => `${line}\n`)
-      .join(""),
-  );
-  await writeFile(join(home, "projects", "alpha", "job.plist"), PLIST);
 }
 
 const PLIST = "<plist alpha/>\n";
 const INSTALL_ALPHA = `install alpha ${JSON.stringify(PLIST)}`;
+const cleanFrame = (frame: string): string => frame.replace(/[ \t]+$/gm, "");
 
 // OpenTUI's test renderer needs native FFI; vitest.config.ts only passes the
 // flag on Node >= 26.4. Without it these tests skip instead of crashing the
-// worker — the pure TUI logic (dots, tail, boundary) still runs everywhere.
+// worker — the pure TUI logic (server client, dots, boundary) still runs everywhere.
 const hasFfi = process.execArgv.includes("--experimental-ffi");
 
 describe.skipIf(!hasFfi)("tui app", () => {
@@ -111,6 +88,7 @@ describe.skipIf(!hasFfi)("tui app", () => {
   let buildTui: typeof import("@score/tui/app").buildTui;
   let home: string;
   let adapter: FakeAdapter;
+  let data: FakeDataSource;
   let destroy: (() => void) | null = null;
 
   beforeAll(async () => {
@@ -130,6 +108,7 @@ describe.skipIf(!hasFfi)("tui app", () => {
       { key: "alpha", loaded: true, pid: 111 },
       { key: "beta", loaded: true, pid: 222 },
     ];
+    data = new FakeDataSource(adapter);
   });
 
   afterEach(async () => {
@@ -139,24 +118,38 @@ describe.skipIf(!hasFfi)("tui app", () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  async function setup(width: number, height: number, cfg: ScoreConfig = config) {
-    const { renderer, renderOnce, captureCharFrame } = await createTestRenderer({ width, height });
+  async function setup(width: number, height: number, disabled: readonly string[] = []) {
+    for (const key of disabled) data.disabled.add(key);
+    const { renderer, renderOnce, captureCharFrame, captureSpans } = await createTestRenderer({
+      width,
+      height,
+    });
     destroy = () => renderer.destroy();
-    const app = buildTui(renderer, { adapter, config: cfg, now: () => NOW });
+    const app = buildTui(renderer, { adapter, data });
     await app.refresh();
-    return { app, renderOnce, captureCharFrame };
+    return { app, renderOnce, captureCharFrame, captureSpans };
   }
 
   it("matches the checked-in 80x24 frame", async () => {
     const { renderOnce, captureCharFrame } = await setup(80, 24);
     await renderOnce();
-    await expect(captureCharFrame()).toMatchFileSnapshot("fixtures/frame-80x24.txt");
+    await expect(cleanFrame(captureCharFrame())).toMatchFileSnapshot("fixtures/frame-80x24.txt");
   });
 
   it("matches the checked-in 120x40 frame", async () => {
     const { renderOnce, captureCharFrame } = await setup(120, 40);
     await renderOnce();
-    await expect(captureCharFrame()).toMatchFileSnapshot("fixtures/frame-120x40.txt");
+    await expect(cleanFrame(captureCharFrame())).toMatchFileSnapshot("fixtures/frame-120x40.txt");
+  });
+
+  it("uses the dashboard palette for surfaces and status accents", async () => {
+    const { renderOnce, captureSpans } = await setup(80, 24);
+    await renderOnce();
+    const spans = captureSpans().lines.flatMap((line) => line.spans);
+    const foregrounds = spans.map((span) => span.fg.toInts().slice(0, 3).join(","));
+    const backgrounds = spans.map((span) => span.bg.toInts().slice(0, 3).join(","));
+    expect(foregrounds).toEqual(expect.arrayContaining(["61,220,132", "255,180,84", "86,212,221"]));
+    expect(backgrounds).toEqual(expect.arrayContaining(["11,14,20", "13,17,24", "22,28,38"]));
   });
 
   it("q resolves done without ever touching the adapter", async () => {
@@ -222,15 +215,11 @@ describe.skipIf(!hasFfi)("tui app", () => {
   });
 
   it("x and r never start a project disabled in config", async () => {
-    const disabled: ScoreConfig = {
-      version: 1,
-      projects: { alpha: { ...project("alpha"), enabled: false }, beta: project("beta") },
-    };
     adapter.jobs = [
       { key: "alpha", loaded: false },
       { key: "beta", loaded: true, pid: 222 },
     ];
-    const { app, renderOnce, captureCharFrame } = await setup(80, 24, disabled);
+    const { app, renderOnce, captureCharFrame } = await setup(80, 24, ["alpha"]);
     app.handleKey({ name: "x" });
     app.handleKey({ name: "r" });
     await renderOnce();
@@ -239,11 +228,7 @@ describe.skipIf(!hasFfi)("tui app", () => {
   });
 
   it("x still stops a running project that is disabled in config", async () => {
-    const disabled: ScoreConfig = {
-      version: 1,
-      projects: { alpha: { ...project("alpha"), enabled: false }, beta: project("beta") },
-    };
-    const { app } = await setup(80, 24, disabled);
+    const { app } = await setup(80, 24, ["alpha"]);
     app.handleKey({ name: "x" });
     expect(adapter.calls).toEqual(["stop alpha"]);
   });

@@ -105,6 +105,14 @@ async function writeConfig(projects: string[], comment = "supervisor test"): Pro
   );
 }
 
+async function enableFleetServer(): Promise<string> {
+  const entry = join(home, "checkout", "apps", "server", "src", "index.ts");
+  await mkdir(join(home, "checkout", "apps", "server", "src"), { recursive: true });
+  await writeFile(entry, "export {};\n");
+  deps = { ...deps, serverInvocation: ["/bin/bun", entry] };
+  return entry;
+}
+
 const bothLoaded = "1\t0\tdev.score.alpha\n2\t0\tdev.score.beta";
 
 test("fresh up: writes resolved.json, renders plists, bootstraps and reports started=2", async () => {
@@ -135,6 +143,97 @@ test("fresh up: writes resolved.json, renders plists, bootstraps and reports sta
     ["launchctl", "kickstart", "gui/501/dev.score.beta"],
   ]);
   expect(logs.at(-1)).toBe("started=2 restarted=0 unchanged=0 removed=0");
+});
+
+test("up ensures one fleet server beside project daemons and then leaves it unchanged", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  const serverEntry = await enableFleetServer();
+  await runUp([], deps);
+
+  expect((await readdir(agentsDir)).sort()).toEqual([
+    "dev.score._server.plist",
+    "dev.score.alpha.plist",
+  ]);
+  const definition = await readFile(join(agentsDir, "dev.score._server.plist"), "utf8");
+  expect(definition).toContain(`<string>${serverEntry}</string>`);
+  expect(definition).toContain(`<string>${join(home, "server", "launchd-crash.log")}</string>`);
+  expect(await readFile(join(home, "server", "job.plist"), "utf8")).toBe(definition);
+  expect(logs.at(-1)).toBe("started=1 restarted=0 unchanged=0 removed=0 server=started");
+
+  runner.calls.length = 0;
+  runner.listOutput = "10\t0\tdev.score._server\n11\t0\tdev.score.alpha";
+  logs = [];
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([]);
+  expect(logs.at(-1)).toBe("started=0 restarted=0 unchanged=1 removed=0 server=unchanged");
+});
+
+test("a failed fleet-server install converges on the next up", async () => {
+  await writeConfig([]);
+  await enableFleetServer();
+  runner.failBootstrapMatching = "dev.score._server";
+  await runUp([], deps);
+  expect(errors.some((line) => line.startsWith("failed to start server:"))).toBe(true);
+  expect(process.exitCode).toBe(1);
+  expect(await readFile(join(agentsDir, "dev.score._server.plist"), "utf8")).toContain(
+    "dev.score._server",
+  );
+
+  runner.failBootstrapMatching = undefined;
+  runner.calls.length = 0;
+  logs = [];
+  errors = [];
+  process.exitCode = 0;
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score._server.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score._server"],
+  ]);
+  expect(logs.at(-1)).toBe("started=0 restarted=0 unchanged=0 removed=0 server=started");
+  expect(process.exitCode).toBe(0);
+});
+
+test("fleet-server definition drift restarts only the server", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await enableFleetServer();
+  await runUp([], deps);
+
+  const movedEntry = join(home, "moved", "apps", "server", "src", "index.ts");
+  await mkdir(join(home, "moved", "apps", "server", "src"), { recursive: true });
+  await writeFile(movedEntry, "export {};\n");
+  deps = { ...deps, serverInvocation: ["/bin/bun", movedEntry] };
+  runner.calls.length = 0;
+  logs = [];
+  const loaded = "10\t0\tdev.score._server\n11\t0\tdev.score.alpha";
+  runner.listQueue.push(loaded, loaded, "11\t0\tdev.score.alpha");
+
+  await runUp([], deps);
+  expect(runner.mutations()).toEqual([
+    ["launchctl", "bootout", "gui/501/dev.score._server"],
+    ["launchctl", "bootstrap", "gui/501", join(agentsDir, "dev.score._server.plist")],
+    ["launchctl", "kickstart", "gui/501/dev.score._server"],
+  ]);
+  expect(logs.at(-1)).toBe("started=0 restarted=0 unchanged=1 removed=0 server=restarted");
+});
+
+test("fleet-wide down removes the server while project-scoped down leaves it alone", async () => {
+  await writeConfig([projectBlock("alpha", "/repos/alpha", 5000)]);
+  await enableFleetServer();
+  await runUp([], deps);
+  runner.listOutput = "10\t0\tdev.score._server\n11\t0\tdev.score.alpha";
+  runner.calls.length = 0;
+  logs = [];
+
+  await runDown(["alpha"], deps.adapter);
+  expect(runner.mutations()).toEqual([["launchctl", "bootout", "gui/501/dev.score.alpha"]]);
+  expect(await stat(join(agentsDir, "dev.score._server.plist"))).toBeDefined();
+
+  runner.calls.length = 0;
+  logs = [];
+  runner.listOutput = "10\t0\tdev.score._server";
+  await runDown([], deps.adapter);
+  expect(runner.mutations()).toEqual([["launchctl", "bootout", "gui/501/dev.score._server"]]);
+  expect(logs).toEqual(["stopped 'server'"]);
 });
 
 test("second up with no config change performs zero launchctl mutations", async () => {

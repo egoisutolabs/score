@@ -6,7 +6,7 @@ import type { LandingResult } from "@score/core/landing/change.interface";
 export type DaemonState = "starting" | "running" | "stopping";
 
 /**
- * Machine-readable heartbeat for the supervisor and TUI. This schema is the
+ * Machine-readable heartbeat for the supervisor and API snapshots. This schema is the
  * integration contract with issues #5 and #7 — additive changes only.
  */
 export interface StatusFile {

@@ -42,6 +42,7 @@ export type DefinitionRenderer = (
   project: ResolvedProject,
   invocation: readonly string[],
   environment?: Readonly<Record<string, string>>,
+  outputPath?: string,
 ) => string;
 
 export interface PlatformSupervisor {

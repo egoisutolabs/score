@@ -13,7 +13,7 @@
 
   <rect width="1320" height="760" fill="#f8fafc"/>
   <text x="660" y="46" text-anchor="middle" font-size="25" font-weight="700" fill="#0f172a">Telemetry first: durable locally, standard at the edge</text>
-  <text x="660" y="72" text-anchor="middle" font-size="14" fill="#64748b">Next.js serves one read-only SSE stream — not a UI, collector, or authority surface</text>
+  <text x="660" y="72" text-anchor="middle" font-size="14" fill="#64748b">Express serves one read-only SSE stream — not a UI, collector, or authority surface</text>
 
   <rect x="48" y="122" width="320" height="456" rx="12" fill="#eff6ff" stroke="#2563eb" stroke-width="2.5"/>
   <text x="208" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#1e3a8a">score daemon · one per project</text>
@@ -58,7 +58,7 @@
   <text x="629" y="533" text-anchor="middle" font-size="11.5" fill="#64748b">never repaired into a current-state model</text>
 
   <rect x="890" y="122" width="380" height="456" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2.5"/>
-  <text x="1080" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#4c1d95">apps/web · Next.js SSE only</text>
+  <text x="1080" y="154" text-anchor="middle" font-size="17" font-weight="700" fill="#4c1d95">apps/server · Express SSE only</text>
   <text x="1080" y="178" text-anchor="middle" font-size="12.5" fill="#b91c1c" font-weight="650">127.0.0.1 · read-only · no pages</text>
 
   <rect x="916" y="204" width="328" height="82" rx="8" fill="#ffffff" stroke="#c4b5fd"/>

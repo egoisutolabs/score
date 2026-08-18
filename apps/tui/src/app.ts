@@ -4,6 +4,7 @@ import {
   createCliRenderer,
   fg,
   type KeyEvent,
+  StyledText,
   TextRenderable,
   t,
 } from "@opentui/core";
@@ -12,43 +13,94 @@ import {
   supervisorForPlatform,
 } from "@score/core/supervisor/supervisor-adapter.interface";
 import { BunCommandRunner } from "@score/shared/adapters/command-runner.service";
-import type { ScoreConfig } from "@score/shared/config/config.interface";
-import { logsDir } from "@score/shared/config/layout";
-import { loadConfig } from "@score/shared/config/load";
 import { restartProject, startProject, stopProject } from "@score/tui/actions";
 import type { Dot } from "@score/tui/dots";
-import { fleetSnapshot, type ProjectView } from "@score/tui/snapshot";
-import { LogTail } from "@score/tui/tail";
+import type { ProjectView, TuiDataSource } from "@score/tui/server-client.interface";
+import { TuiServerClient } from "@score/tui/server-client.service";
 
-const RAIL_WIDTH = 26;
+const RAIL_WIDTH = 24;
 const HEADER_HEIGHT = 3;
-const PANE_HEADER_HEIGHT = 1;
-const CONFIG_HEIGHT = 6;
-const FOOTER_HEIGHT = 1;
+const PANE_HEADER_HEIGHT = 2;
+const STATS_HEIGHT = 4;
+const FOOTER_HEIGHT = 2;
 const POLL_MS = 1000;
-/** Rail border (2) — the card content area inside the projects box. */
-const RAIL_INNER = RAIL_WIDTH - 2;
-/** Rail (26) + log box border (2) + paddingLeft (1) — the wrap width for log rows. */
-const LOG_CHROME = RAIL_WIDTH + 3;
+/** Rail and pane chrome removed from the activity row width. */
+const LOG_CHROME = RAIL_WIDTH + 6;
+
+// Palette lifted from Score Web.dc (1).html. Terminal layout is denser, but
+// sharing the same surfaces and status accents keeps both views recognizably Score.
+const UI = {
+  canvas: "#0b0e14",
+  panel: "#0d1118",
+  selected: "#161c26",
+  border: "#1e2632",
+  borderStrong: "#2e3a4c",
+  text: "#dde3ea",
+  textSoft: "#c3ccd8",
+  muted: "#8a94a6",
+  dim: "#5f6875",
+  faint: "#4e5866",
+  green: "#3ddc84",
+  cyan: "#56d4dd",
+  amber: "#ffb454",
+  red: "#e06c6c",
+  redSurface: "#150e11",
+  redBorder: "#3a1e26",
+} as const;
 
 const DOT_CHAR: Record<Dot, string> = { green: "●", amber: "●", red: "●", gray: "○" };
 const DOT_COLOR: Record<Dot, string> = {
-  green: "#3fb950",
-  amber: "#d29922",
-  red: "#f85149",
-  gray: "#8b949e",
+  green: UI.green,
+  amber: UI.amber,
+  red: UI.red,
+  gray: UI.faint,
 };
 const DOT_WORD: Record<Dot, string> = {
   green: "running",
   amber: "stale",
-  red: "error",
+  red: "crashed",
   gray: "stopped",
 };
 
+function compactInterval(milliseconds: number): string {
+  return milliseconds % 1000 === 0 ? `${milliseconds / 1000}s` : `${milliseconds}ms`;
+}
+
+function compactLogLine(line: string): string {
+  const match = /^\[([^\]]+)] \[([^\]]+)] (.*)$/.exec(line);
+  if (match === null) return line;
+  const [, timestamp, level, body] = match;
+  const time = timestamp?.slice(11, 19) ?? "";
+  return `${time}  ${(level ?? "").padEnd(7)}  ${body ?? ""}`;
+}
+
+function logLevelColor(level: string): string {
+  if (level === "error" || level === "fatal") return UI.red;
+  if (level === "warn" || level === "warning") return UI.amber;
+  if (level === "debug" || level === "trace") return UI.faint;
+  return UI.cyan;
+}
+
+function styledLogRows(rows: readonly string[]): StyledText {
+  const chunks = rows.flatMap((row, index) => {
+    const match = /^(\d{2}:\d{2}:\d{2}) {2}(\S+)\s{2,}(.*)$/.exec(row);
+    const line =
+      match === null
+        ? [fg(UI.muted)(row)]
+        : [
+            fg(UI.faint)(match[1] ?? ""),
+            fg(UI.borderStrong)("  "),
+            fg(logLevelColor(match[2] ?? ""))((match[2] ?? "").padEnd(7)),
+            fg(UI.muted)(`  ${match[3] ?? ""}`),
+          ];
+    return index === rows.length - 1 ? line : [...line, fg(UI.muted)("\n")];
+  });
+  return new StyledText(chunks);
+}
+
 export interface TuiDeps {
   readonly adapter: SupervisorAdapter;
-  readonly config: ScoreConfig;
-  readonly now?: () => Date;
+  readonly data: TuiDataSource;
 }
 
 export interface TuiKey {
@@ -58,7 +110,7 @@ export interface TuiKey {
 }
 
 export interface TuiApp {
-  /** One poll cycle: fleet snapshot + log tail + render. */
+  /** One API poll cycle: fleet snapshot + new log records + render. */
   refresh(): Promise<void>;
   handleKey(key: TuiKey): void;
   /** Resolves when the user quits the viewer. */
@@ -66,18 +118,16 @@ export interface TuiApp {
 }
 
 /**
- * The viewer per docs/wireframe_tui.png: project rail with live dots and the
- * latest tick on the left; the selected project's config box, log tail, and a
- * shortcut footer on the right. Everything rendered comes from status.json,
- * resolved.json, dated logs, and adapter.status(); every action goes through
- * the adapter; quitting only ever exits the viewer.
+ * Score Web.dc (1).html supplies the visual system: compact fleet rail, dark
+ * cards, muted chrome, and bright operational accents. Everything rendered
+ * still comes from the server's read-only SSE API; every action goes through
+ * the supervisor adapter, and quitting only ever exits the viewer.
  */
 export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
-  const now = deps.now ?? (() => new Date());
-
   let views: ProjectView[] = [];
   let selectedKey: string | null = null;
-  let tail: LogTail | null = null;
+  let logs: ReadonlyMap<string, readonly string[]> = new Map();
+  let logFile = "";
   let follow = true;
   let scroll = 0;
   let help = false;
@@ -91,59 +141,126 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     finish = resolve;
   });
 
-  // Top header bar per the wireframe: app name left, fleet summary right.
-  const headerText = new TextRenderable(renderer, { id: "header-text", content: "" });
+  const headerText = new TextRenderable(renderer, {
+    id: "header-text",
+    content: "",
+    truncate: true,
+  });
   const headerBox = new BoxRenderable(renderer, {
     id: "header",
-    border: true,
+    border: ["bottom"],
+    borderColor: UI.border,
+    backgroundColor: UI.canvas,
     width: "100%",
     height: HEADER_HEIGHT,
-    paddingLeft: 1,
+    paddingX: 2,
+    justifyContent: "center",
   });
   headerBox.add(headerText);
   const railBox = new BoxRenderable(renderer, {
     id: "rail",
-    title: "projects",
-    border: true,
+    border: ["right"],
+    borderColor: UI.border,
+    backgroundColor: UI.canvas,
     width: RAIL_WIDTH,
     flexShrink: 0,
     flexDirection: "column",
+    paddingX: 1,
+    paddingTop: 1,
   });
-  const railRows: TextRenderable[] = [];
-  // Selected-project header row above the config box: name left, state right.
-  const paneHeaderText = new TextRenderable(renderer, { id: "pane-header-text", content: "" });
+  const railTitle = new TextRenderable(renderer, {
+    id: "rail-title",
+    content: "",
+    fg: UI.dim,
+    height: 1,
+  });
+  const railEmpty = new TextRenderable(renderer, {
+    id: "rail-empty",
+    content: "no projects",
+    fg: UI.faint,
+    height: 1,
+  });
+  railBox.add(railTitle);
+  railBox.add(railEmpty);
+  const railCards: Array<{ box: BoxRenderable; text: TextRenderable }> = [];
+
+  const paneHeaderText = new TextRenderable(renderer, {
+    id: "pane-header-text",
+    content: "",
+    truncate: true,
+  });
   const paneHeaderBox = new BoxRenderable(renderer, {
     id: "pane-header",
     height: PANE_HEADER_HEIGHT,
     paddingLeft: 1,
+    justifyContent: "center",
   });
   paneHeaderBox.add(paneHeaderText);
-  const configText = new TextRenderable(renderer, { id: "config-text", content: "" });
-  const configBox = new BoxRenderable(renderer, {
-    id: "config",
-    title: "config",
-    border: true,
-    height: CONFIG_HEIGHT,
-    paddingLeft: 1,
+
+  const metricBox = (id: string, grow: number): [BoxRenderable, TextRenderable] => {
+    const text = new TextRenderable(renderer, {
+      id: `${id}-text`,
+      content: "",
+      truncate: true,
+      wrapMode: "none",
+    });
+    const box = new BoxRenderable(renderer, {
+      id,
+      flexGrow: grow,
+      flexBasis: 0,
+      height: STATS_HEIGHT,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: UI.border,
+      backgroundColor: UI.panel,
+      paddingLeft: 1,
+    });
+    box.add(text);
+    return [box, text];
+  };
+  const [agentBox, agentText] = metricBox("agent", 2);
+  const [tickBox, tickText] = metricBox("tick", 1);
+  const [parallelBox, parallelText] = metricBox("parallel", 1);
+  const statsRow = new BoxRenderable(renderer, {
+    id: "stats",
+    height: STATS_HEIGHT,
+    width: "100%",
+    flexDirection: "row",
+    columnGap: 1,
   });
-  configBox.add(configText);
-  // Lines are wrapped by hand into rows, so the visible-slice math stays exact.
-  const logText = new TextRenderable(renderer, { id: "log-text", content: "", wrapMode: "none" });
+  statsRow.add(agentBox);
+  statsRow.add(tickBox);
+  statsRow.add(parallelBox);
+
+  // Lines are wrapped by hand so scroll positions remain stable across polls.
+  const logText = new TextRenderable(renderer, {
+    id: "log-text",
+    content: "",
+    wrapMode: "none",
+  });
   const logBox = new BoxRenderable(renderer, {
     id: "log",
-    title: "logs",
+    title: "activity",
     border: true,
+    borderStyle: "rounded",
+    borderColor: UI.border,
+    titleColor: UI.textSoft,
+    backgroundColor: UI.panel,
     flexGrow: 1,
-    paddingLeft: 1,
+    paddingX: 1,
+    bottomTitleAlignment: "right",
   });
   logBox.add(logText);
   const rightColumn = new BoxRenderable(renderer, {
     id: "right",
     flexGrow: 1,
     flexDirection: "column",
+    backgroundColor: UI.canvas,
+    padding: 1,
+    rowGap: 1,
   });
   rightColumn.add(paneHeaderBox);
-  rightColumn.add(configBox);
+  rightColumn.add(statsRow);
   rightColumn.add(logBox);
   const mainRow = new BoxRenderable(renderer, {
     id: "main",
@@ -156,13 +273,17 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
   const footerText = new TextRenderable(renderer, { id: "footer-text", content: "" });
   const footerBox = new BoxRenderable(renderer, {
     id: "footer",
+    border: ["top"],
+    borderColor: UI.border,
+    backgroundColor: UI.canvas,
     width: "100%",
     height: FOOTER_HEIGHT,
-    paddingLeft: 1,
+    paddingX: 2,
   });
   footerBox.add(footerText);
   const root = new BoxRenderable(renderer, {
     id: "tui-root",
+    backgroundColor: UI.canvas,
     width: "100%",
     height: "100%",
     flexDirection: "column",
@@ -175,85 +296,97 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
   const selectedView = (): ProjectView | undefined =>
     views.find((view) => view.key === selectedKey);
 
-  /** left-pad-right layout: `left……right` across the given content width. */
-  const spread = (left: string, right: string, width: number): string => {
-    const pad = Math.max(1, width - left.length - right.length);
-    return `${left}${" ".repeat(pad)}${right}`;
-  };
-
   const render = (): void => {
-    // A fire-and-forget tail poll can land after quit tore the renderer down.
+    // An in-flight API poll can land after quit tore the renderer down.
     if (renderer.isDestroyed) return;
 
     const running = views.filter((view) => view.job?.pid !== undefined).length;
-    const summary = `● ${running} running`;
-    const headerPad = Math.max(1, renderer.terminalWidth - 4 - "score".length - summary.length);
-    headerText.content = t`score${" ".repeat(headerPad)}${fg("#3fb950")(summary)}`;
-    headerText.fg = "#e6edf3";
+    const down = views.length - running;
+    const headerLeft = "■ score  FLEET";
+    const headerRight = `● ${running} running  ● ${down} down`;
+    const headerPad = Math.max(
+      1,
+      renderer.terminalWidth - 4 - headerLeft.length - headerRight.length,
+    );
+    headerText.content = t`${fg(UI.green)("■")} ${fg(UI.text)("score")}  ${fg(UI.dim)("FLEET")}${" ".repeat(headerPad)}${fg(UI.green)("●")} ${fg(UI.muted)(`${running} running`)}  ${fg(down === 0 ? UI.faint : UI.red)("●")} ${fg(UI.muted)(`${down} down`)}`;
 
-    // Rail: a two-line card per project (name + dot, then its tick) with a
-    // separator row between cards — per the wireframe.
-    const CARD_ROWS = 3;
-    while (railRows.length < views.length * CARD_ROWS) {
-      const row = new TextRenderable(renderer, { id: `rail-row-${railRows.length}`, content: "" });
-      railBox.add(row);
-      railRows.push(row);
+    railTitle.content = t`${fg(UI.dim)("PROJECTS")} ${fg(UI.faint)(views.length)}`;
+    railEmpty.visible = views.length === 0;
+    while (railCards.length < views.length) {
+      const index = railCards.length;
+      const text = new TextRenderable(renderer, {
+        id: `project-card-${index}-text`,
+        content: "",
+        wrapMode: "none",
+        truncate: true,
+      });
+      const box = new BoxRenderable(renderer, {
+        id: `project-card-${index}`,
+        width: "100%",
+        height: 4,
+        border: true,
+        borderStyle: "rounded",
+        borderColor: UI.canvas,
+        backgroundColor: UI.canvas,
+        paddingLeft: 1,
+      });
+      box.add(text);
+      railBox.add(box);
+      railCards.push({ box, text });
     }
-    railRows.forEach((row, index) => {
-      const view = views[Math.floor(index / CARD_ROWS)];
+    railCards.forEach(({ box, text }, index) => {
+      const view = views[index];
       if (view === undefined) {
-        row.content = "";
+        box.visible = false;
         return;
       }
-      const kind = index % CARD_ROWS;
-      if (kind === 0) {
-        const marker = view.key === selectedKey ? "▸" : " ";
-        const name = `${marker}${view.key.slice(0, RAIL_INNER - 4)}`;
-        // Name in the row's own color; only the dot carries the status color.
-        row.content = t`${name.padEnd(RAIL_INNER - 2)}${fg(DOT_COLOR[view.dot])(DOT_CHAR[view.dot])}`;
-        row.fg = view.key === selectedKey ? "#e6edf3" : "#c9d1d9";
-      } else if (kind === 1) {
-        const tick = view.status !== null && view.status.tick !== null ? view.status.tick : "-";
-        row.content = ` tick ${tick}`;
-        row.fg = "#8b949e";
-      } else {
-        // No separator after the last card.
-        row.content =
-          Math.floor(index / CARD_ROWS) === views.length - 1 ? "" : "─".repeat(RAIL_INNER);
-        row.fg = "#30363d";
-      }
+      box.visible = true;
+      const selected = view.key === selectedKey;
+      const alert = view.dot === "red";
+      box.backgroundColor = alert ? UI.redSurface : selected ? UI.selected : UI.canvas;
+      box.borderColor = alert ? UI.redBorder : selected ? UI.borderStrong : UI.canvas;
+      const tick = `t${view.status?.tick ?? "-"}`;
+      const cardWidth = RAIL_WIDTH - 6;
+      const name = view.key.slice(0, Math.max(1, cardWidth - tick.length - 3));
+      const pad = Math.max(1, cardWidth - name.length - tick.length - 2);
+      const status = [
+        DOT_WORD[view.dot],
+        ...(view.job?.pid !== undefined ? [`pid ${view.job.pid}`] : []),
+        ...(view.enabled ? [] : ["disabled"]),
+      ].join(" · ");
+      text.content = t`${fg(DOT_COLOR[view.dot])(DOT_CHAR[view.dot])} ${fg(selected ? UI.text : UI.textSoft)(name)}${" ".repeat(pad)}${fg(UI.faint)(tick)}\n ${fg(DOT_COLOR[view.dot])(status.slice(0, cardWidth - 1))}`;
     });
 
     const selected = selectedView();
-    const paneWidth = renderer.terminalWidth - RAIL_WIDTH - 2;
     if (selected === undefined) {
-      paneHeaderText.content = "";
-      configText.content = "no projects — run: score up";
+      paneHeaderText.content = t`${fg(UI.text)("fleet is empty")}  ${fg(UI.dim)("run score up to add a project")}`;
+      agentText.content = t`${fg(UI.dim)("AGENT")}\n${fg(UI.faint)("—")}`;
+      tickText.content = t`${fg(UI.dim)("TICK")}\n${fg(UI.faint)("—")}`;
+      parallelText.content = t`${fg(UI.dim)("PARALLEL")}\n${fg(UI.faint)("—")}`;
     } else {
-      paneHeaderText.content = spread(
-        selected.key,
-        `${DOT_WORD[selected.dot]} | x to toggle`,
-        paneWidth,
-      );
-      paneHeaderText.fg = "#e6edf3";
-      const state = [
-        DOT_WORD[selected.dot],
+      const tick = `t${selected.status?.tick ?? "-"}`;
+      const action = selected.job?.pid !== undefined ? "stop" : "start";
+      const stateSuffix = [
         ...(selected.job?.pid !== undefined ? [`pid ${selected.job.pid}`] : []),
         ...(selected.enabled ? [] : ["disabled"]),
       ].join(" · ");
-      configText.content =
-        selected.resolved === null
-          ? `no resolved config — run: score up\nstate     ${state}`
-          : `agent     ${selected.resolved.agent}\ntick      ${selected.resolved.tickIntervalMs} ms\nparallel  ${selected.resolved.maxParallel}\nstate     ${state}`;
+      const headerPlainLeft = `${selected.key}  ${tick}`;
+      const headerPlainRight = `● ${DOT_WORD[selected.dot]}${stateSuffix === "" ? "" : ` · ${stateSuffix}`}  [x] ${action}`;
+      const paneWidth = renderer.terminalWidth - RAIL_WIDTH - 4;
+      const pad = Math.max(1, paneWidth - headerPlainLeft.length - headerPlainRight.length);
+      paneHeaderText.content = t`${fg(UI.text)(selected.key)}  ${fg(UI.faint)(tick)}${" ".repeat(pad)}${fg(DOT_COLOR[selected.dot])(DOT_CHAR[selected.dot])} ${fg(DOT_COLOR[selected.dot])(DOT_WORD[selected.dot])}${fg(UI.dim)(stateSuffix === "" ? "" : ` · ${stateSuffix}`)}  ${fg(UI.muted)(`[x] ${action}`)}`;
+      agentText.content = t`${fg(UI.dim)("AGENT")}\n${fg(UI.cyan)(selected.resolved?.agent ?? "not resolved")}`;
+      tickText.content = t`${fg(UI.dim)("TICK")}\n${fg(UI.text)(selected.resolved === null ? "—" : compactInterval(selected.resolved.tickIntervalMs))}`;
+      parallelText.content = t`${fg(UI.dim)("PARALLEL")}\n${fg(UI.text)(selected.resolved?.maxParallel ?? "—")}`;
     }
 
-    // Long lines wrap (the wireframe wraps them) — rows are cut by hand so the
-    // scroll window stays exact; `scroll` indexes wrapped rows, not file lines.
     const wrapWidth = Math.max(20, renderer.terminalWidth - LOG_CHROME);
-    const rows = (tail?.lines ?? []).flatMap((line) => {
+    const rows = (selectedKey === null ? [] : (logs.get(selectedKey) ?? [])).flatMap((source) => {
+      const line = compactLogLine(source);
       const chunks: string[] = [];
-      for (let at = 0; at < Math.max(1, line.length); at += wrapWidth) {
-        chunks.push(line.slice(at, at + wrapWidth));
+      chunks.push(line.slice(0, wrapWidth));
+      for (let at = wrapWidth; at < line.length; at += wrapWidth - 2) {
+        chunks.push(`  ${line.slice(at, at + wrapWidth - 2)}`);
       }
       return chunks;
     });
@@ -262,24 +395,25 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
       renderer.terminalHeight -
         HEADER_HEIGHT -
         PANE_HEADER_HEIGHT -
-        CONFIG_HEIGHT -
+        STATS_HEIGHT -
         FOOTER_HEIGHT -
-        2,
+        6,
     );
     const maxStart = Math.max(0, rows.length - visible);
     scroll = follow ? maxStart : Math.min(scroll, maxStart);
-    logText.content = rows.slice(scroll, scroll + visible).join("\n");
-    logBox.title = tail === null ? "logs" : `logs — ${tail.file}${follow ? " · follow" : ""}`;
+    logText.content = styledLogRows(rows.slice(scroll, scroll + visible));
+    logBox.title = logFile === "" ? "activity" : `activity · ${logFile}`;
+    logBox.bottomTitle = follow ? "● live" : "paused";
 
     const error = actionError ?? pollError;
-    const footer =
-      error !== null
-        ? `error: ${error}`
-        : help
-          ? "j/k select project · x stop/start via supervisor · r restart · f toggle follow · g top · G end · q quit viewer (daemons keep running)"
-          : `j/k select · x ${selected?.job?.pid !== undefined ? "stop" : "start"} · r restart · f follow${follow ? " *" : ""} · g/G · ? help · q quit`;
-    // Errors read left-aligned; the shortcut line sits bottom-right per the wireframe.
-    footerText.content = error !== null ? footer : spread("", footer, renderer.terminalWidth - 2);
+    if (error !== null) {
+      const label = actionError === null ? "warning" : "error";
+      footerText.content = t`${fg(actionError === null ? UI.amber : UI.red)("●")} ${fg(UI.textSoft)(`${label}: ${error}`)}`;
+    } else if (help) {
+      footerText.content = t`${fg(UI.textSoft)("j/k")} ${fg(UI.dim)("project   ")}${fg(UI.textSoft)("x")} ${fg(UI.dim)("start/stop   ")}${fg(UI.textSoft)("r")} ${fg(UI.dim)("restart   ")}${fg(UI.textSoft)("f")} ${fg(UI.dim)("follow   ")}${fg(UI.textSoft)("g/G")} ${fg(UI.dim)("top/end   ")}${fg(UI.textSoft)("q")} ${fg(UI.dim)("quit viewer")}`;
+    } else {
+      footerText.content = t`${fg(UI.dim)("j/k project   x ")}${fg(UI.textSoft)(selected?.job?.pid !== undefined ? "stop" : "start")}${fg(UI.dim)("   r restart   f follow ")}${fg(follow ? UI.green : UI.faint)(follow ? "on" : "off")}${fg(UI.dim)("   g/G logs   ? help   q quit")}`;
+    }
   };
 
   const select = (key: string | null): void => {
@@ -287,18 +421,13 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     selectedKey = key;
     follow = true;
     scroll = 0;
-    tail = key === null ? null : new LogTail(logsDir(key), now);
   };
 
   const move = (delta: number): void => {
     if (views.length === 0) return;
     const index = views.findIndex((view) => view.key === selectedKey) + delta;
     select(views[Math.max(0, Math.min(views.length - 1, index))]?.key ?? null);
-    // Fill the log pane now instead of waiting out the poll interval.
-    void tail
-      ?.poll()
-      .catch(() => {})
-      .then(render);
+    render();
   };
 
   const runAction = (action: (adapter: SupervisorAdapter, key: string) => Promise<void>): void => {
@@ -359,15 +488,17 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
     refreshing = true;
     try {
       try {
-        views = await fleetSnapshot(deps.adapter, deps.config, now().getTime());
-        pollError = null;
+        const state = await deps.data.poll();
+        views = [...state.projects];
+        logs = state.logs;
+        logFile = state.logFile;
+        pollError = state.warnings.length === 0 ? null : state.warnings.join(", ");
       } catch (error) {
         pollError = error instanceof Error ? error.message : String(error);
       }
       if (selectedKey === null || !views.some((view) => view.key === selectedKey)) {
         select(views[0]?.key ?? null);
       }
-      await tail?.poll().catch(() => {});
       render();
     } finally {
       refreshing = false;
@@ -379,10 +510,10 @@ export function buildTui(renderer: CliRenderer, deps: TuiDeps): TuiApp {
 
 export async function runTui(args: readonly string[]): Promise<void> {
   if (args.length > 0) throw new Error("usage: score tui");
-  const config = await loadConfig();
   const adapter: SupervisorAdapter = supervisorForPlatform(new BunCommandRunner()).adapter;
+  const data = new TuiServerClient(process.env.SCORE_SERVER_URL);
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
-  const app = buildTui(renderer, { adapter, config });
+  const app = buildTui(renderer, { adapter, data });
   renderer.keyInput.on("keypress", (key: KeyEvent) => app.handleKey(key));
   await app.refresh();
   const interval = setInterval(() => void app.refresh(), POLL_MS);

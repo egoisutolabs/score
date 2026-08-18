@@ -31,8 +31,8 @@ export function renderPlist(
   project: ResolvedProject,
   invocation: readonly string[],
   environment: Readonly<Record<string, string>> = {},
+  outputPath: string = crashLogPath(project.key),
 ): string {
-  const log = crashLogPath(project.key);
   const environmentBlock =
     Object.keys(environment).length === 0
       ? ""
@@ -65,9 +65,9 @@ ${environmentBlock}  <key>KeepAlive</key>
   <key>ExitTimeOut</key>
   <integer>${EXIT_TIMEOUT_SECONDS}</integer>
   <key>StandardOutPath</key>
-  <string>${xml(log)}</string>
+  <string>${xml(outputPath)}</string>
   <key>StandardErrorPath</key>
-  <string>${xml(log)}</string>
+  <string>${xml(outputPath)}</string>
 </dict>
 </plist>
 `;

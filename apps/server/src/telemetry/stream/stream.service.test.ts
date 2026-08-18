@@ -55,6 +55,9 @@ function seedFleet(dir: string): void {
 function fleetDeps(dir: string) {
   return testDeps(dir, {
     jobs: async () => [
+      // Internal fleet services share the supervisor namespace but never
+      // become snapshot projects.
+      { key: "_server", loaded: true, pid: 4000 },
       { key: "score", loaded: true, pid: 4242 },
       { key: "beta", loaded: true, pid: 777 },
     ],

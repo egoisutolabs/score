@@ -11,8 +11,8 @@
   "scripts": {
     "start": "bun run --cwd apps/daemon start",
     "dev": "bun run --cwd apps/daemon dev",
-    "web:dev": "bun run --cwd apps/web dev",
-    "web:start": "bun run --cwd apps/web start",
+    "server:dev": "bun run --cwd apps/server dev",
+    "server:start": "bun run --cwd apps/server start",
     "build": "turbo run build",
     "test": "turbo run test",
     "check": "biome check . && turbo run typecheck",
