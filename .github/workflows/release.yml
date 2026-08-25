@@ -64,7 +64,7 @@ jobs:
           EOF
 
       # Auth is OIDC (trusted publisher configured on npmjs.com) — no token.
-      # npm publish ignores directory args under OIDC, so run inside publish/.
-      - name: Publish to npm
+      # Stage-only: a maintainer approves the release with 2FA before it goes live.
+      - name: Stage publish to npm
         working-directory: apps/daemon/publish
-        run: npm publish --access public
+        run: npm stage publish --access public
