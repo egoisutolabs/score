@@ -37,11 +37,16 @@ commits looks stranded. Push remains end-only, per Completion Instructions.
 Work in this order:
 
 1. **Explore before writing.** Map the code this task touches: similar
-   patterns, the owning feature folder, its tests. Prefer read-only
-   subagents for broad sweeps. If the graphify skill is available, query the
+   patterns, the owning feature folder, its tests. Perform a
+   **Defect Surface Analysis**: pinpoint the exact formulas, state
+   transitions, and business rules being modified, list the core invariants
+   (rules that must never be broken), and identify where the Defect
+   Prevention classes below apply. Prefer read-only subagents for broad
+   sweeps. If the graphify skill is available, query the
    repository's existing graph first (\`graphify-out/\` at the root); if the
    graph is missing or stale, index the repository again.
-2. **Implement this TASK.md end-to-end.**
+2. **Implement this TASK.md end-to-end.** Apply the **Defect Prevention**
+   checklist below; preserve every invariant identified in your analysis.
 3. **Review until clean.** If the codex review skill is available, run it
    over your diff and fix what it finds; repeat until it reports no new
    issues. An unavailable tool skips that tool only — the self-review in
@@ -87,7 +92,9 @@ failure — document that failure in the PR body and still run the rest.
 
 Write tests that would **fail** if the behavior is wrong. If you find yourself
 writing a test that passes regardless of the implementation, that is a bug in
-the test — fix the test or flag it.
+the test — fix the test or flag it. Ensure tests explicitly cover edge cases —
+zero-scale, empty collections, nulls, and boundary values — for all modified
+logic.
 
 Do not paper over a bug to make tests green. If you discover a defect you
 cannot properly fix within this issue's scope:
@@ -100,13 +107,28 @@ cannot properly fix within this issue's scope:
    can see it before merging.
 3. Do not silently work around it or write a test that hides it.
 
+## Defect Prevention
+
+Address these specific classes to ensure a first-pass merge:
+
+- **Error Paths**: Ensure isolated failure containment and resource cleanup.
+- **Validation**: Enforce strict input format and schema validation.
+- **Boundaries**: Validate all data crossing interface or system boundaries.
+- **Numeric & Logic**: Handle NaN/Inf, overflows, and division-by-zero. Verify
+  calculation correctness, rounding, and signage; check for integer division
+  bugs and precision loss. Account for zero/empty inputs and all logical
+  branches.
+- **Concurrency**: Prevent race conditions and unsafe interleavings.
+
 ## Completion Instructions
 
 1. Implement the issue end-to-end.
 2. Run required verification.
 3. Self-review the full diff hunk-by-hunk as if it were a stranger's PR,
    against this repository's own review rules (\`AGENTS.md\` Code Review Rules
-   and \`INVARIANTS.md\` where present). Fix everything you would flag in
+   and \`INVARIANTS.md\` where present) and the **Defect Prevention** checklist.
+   Perform a **Requirement Audit**: confirm every constraint and example in
+   the issue body is satisfied. Fix everything you would flag in
    review. If the review changed anything, re-run required verification over
    the fixes before committing.
 4. Commit with a concise message. Do not add Co-Authored-By or Claude-Session trailers.
