@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up Node (npm registry auth)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify
+        run: |
+          bun run check
+          bun run test
+          bun run build
+
+      # The daemon build bundles every @score/* workspace dep into dist, so the
+      # published package is dist + a bin shim and declares no dependencies.
+      - name: Stage publishable package
+        working-directory: apps/daemon
+        run: |
+          mkdir -p publish/bin
+          cp -r dist publish/dist
+          cp ../../LICENSE ../../README.md publish/
+          printf '#!/usr/bin/env bun\nimport "../dist/index.js";\n' > publish/bin/score.js
+          chmod +x publish/bin/score.js
+          cat > publish/package.json <<EOF
+          {
+            "name": "@egoisuto/score",
+            "version": "${GITHUB_REF_NAME#v}",
+            "description": "One daemon runs the whole issue -> PR -> green -> merged pipeline",
+            "type": "module",
+            "license": "AGPL-3.0-only",
+            "bin": { "score": "bin/score.js" },
+            "engines": { "bun": ">=1.3.0" }
+          }
+          EOF
+
+      - name: Publish to npm
+        run: npm publish --access public ./apps/daemon/publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

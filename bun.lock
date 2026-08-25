@@ -13,7 +13,7 @@
       },
     },
     "apps/daemon": {
-      "name": "@egoisutolabs/score",
+      "name": "@egoisuto/score",
       "dependencies": {
         "@score/agents": "workspace:*",
         "@score/core": "workspace:*",
@@ -95,7 +95,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.7", "", { "os": "win32", "cpu": "x64" }, "sha512-V+0wu/nrj2S+MhP4EQ0uHNolP0IALEsz45pg0WoKkHfDeh0+ItHwP/p7bX5RPoMOl9NkpHYWdYPhIcy2mACHvQ=="],
 
-    "@egoisutolabs/score": ["@egoisutolabs/score@workspace:apps/daemon"],
+    "@egoisuto/score": ["@egoisuto/score@workspace:apps/daemon"],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
