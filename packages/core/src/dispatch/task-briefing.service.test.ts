@@ -125,6 +125,57 @@ test("non-claude briefings carry no workflow section", () => {
   expect(markdown).toContain("Self-review the full diff");
 });
 
+test("defect prevention checklist is harness-agnostic and wired into analysis and self-review", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  for (const agent of [claude, opencode]) {
+    const markdown = new TaskBriefingService().render(issue(), identity, agent);
+    const section = markdown.slice(
+      markdown.indexOf("## Defect Prevention"),
+      markdown.indexOf("## Completion Instructions"),
+    );
+    // The classes reviewers actually flag, each present as an explicit target.
+    for (const cls of [
+      "Error Paths",
+      "Validation",
+      "Boundaries",
+      "Numeric & Logic",
+      "Concurrency",
+    ]) {
+      expect(section).toContain(`**${cls}**`);
+    }
+    // Self-review audits the diff against the checklist, not just repo rules.
+    const instructions = markdown.slice(markdown.indexOf("## Completion Instructions"));
+    expect(instructions).toContain("**Defect Prevention** checklist");
+  }
+  // The claude workflow's analysis step names the same checklist.
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
+  expect(markdown).toContain("Defect Surface Analysis");
+});
+
+test("self-review demands a requirement audit against the issue body", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
+  const instructions = markdown.slice(markdown.indexOf("## Completion Instructions"));
+  const unwrapped = instructions.replace(/\s+/g, " ");
+
+  const audit = unwrapped.indexOf(
+    "Perform a **Requirement Audit**: confirm every constraint and example in the issue body is satisfied.",
+  );
+  const commit = unwrapped.indexOf("Commit with a concise message");
+  expect(audit).toBeGreaterThan(-1);
+  expect(commit).toBeGreaterThan(audit);
+});
+
+test("test integrity requires explicit edge-case coverage", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const markdown = new TaskBriefingService().render(issue(), identity, claude);
+  const unwrapped = markdown.replace(/\s+/g, " ");
+
+  expect(unwrapped).toContain(
+    "Ensure tests explicitly cover edge cases — zero-scale, empty collections, nulls, and boundary values — for all modified logic.",
+  );
+});
+
 test("briefing forbids opening a PR while required verification fails", () => {
   const identity = createWorkIdentity("/worktrees", issue());
   const markdown = new TaskBriefingService().render(issue(), identity, claude);
