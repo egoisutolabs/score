@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # OIDC token for npm trusted publishing
 
 env:
   TURBO_TELEMETRY_DISABLED: "1"
@@ -23,10 +24,11 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
+      # Trusted publishing needs npm >= 11.5.1; Node 24 bundles it.
       - name: Set up Node (npm registry auth)
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
@@ -56,11 +58,13 @@ jobs:
             "type": "module",
             "license": "AGPL-3.0-only",
             "bin": { "score": "bin/score.js" },
-            "engines": { "bun": ">=1.3.0" }
+            "engines": { "bun": ">=1.3.0" },
+            "repository": { "type": "git", "url": "git+https://github.com/egoisutolabs/score.git" }
           }
           EOF
 
+      # Auth is OIDC (trusted publisher configured on npmjs.com) — no token.
+      # npm publish ignores directory args under OIDC, so run inside publish/.
       - name: Publish to npm
-        run: npm publish --access public ./apps/daemon/publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: apps/daemon/publish
+        run: npm publish --access public
