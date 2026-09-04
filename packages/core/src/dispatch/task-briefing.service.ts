@@ -102,13 +102,13 @@ cannot properly fix within this issue's scope:
 1. Open a \`triage\`-labeled issue for it. Nothing reads issue comments; only
    a \`triage\`-labeled issue reaches the backlog. Create the label first —
    an existing label is left untouched, so the already-exists error is
-   ignored. Write the one-line title to \`/tmp/triage-${issue.number}.title\` and
-   the body to \`/tmp/triage-${issue.number}.md\` with your file-writing tool —
+   ignored. Write the one-line title to \`/tmp/triage-${identity.branch}.title\` and
+   the body to \`/tmp/triage-${identity.branch}.md\` with your file-writing tool —
    never through the shell, so backticks, \`$()\`, and quotes in either stay
    literal — then file the issue from those files, exactly as written:
    \`\`\`sh
    gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
-   gh issue create --label triage --title "$(cat /tmp/triage-${issue.number}.title)" --body-file /tmp/triage-${issue.number}.md
+   gh issue create --label triage --title "$(cat /tmp/triage-${identity.branch}.title)" --body-file /tmp/triage-${identity.branch}.md
    \`\`\`
    The body must carry, in this order: what is wrong (observed vs expected);
    where (file, symbol, or user-visible behavior); evidence (how it was found,
