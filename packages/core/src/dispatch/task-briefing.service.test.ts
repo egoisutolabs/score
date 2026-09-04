@@ -192,8 +192,10 @@ test("briefing forbids opening a PR while required verification fails", () => {
 test("out-of-scope defects are filed as triage-labeled issues, never as comments", () => {
   const identity = createWorkIdentity("/worktrees", issue());
   const md = new TaskBriefingService().render(issue(), identity, claude);
-  expect(md).toContain("gh label create triage");
-  expect(md).toContain("--force");
+  expect(md).toContain(
+    'gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true',
+  );
+  expect(md).not.toContain("--force");
   expect(md).toContain("gh issue create --label triage");
   expect(md).toContain("Found while implementing #9");
   expect(md).not.toContain("gh issue comment");

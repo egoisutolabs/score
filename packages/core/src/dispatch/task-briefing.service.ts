@@ -101,9 +101,10 @@ cannot properly fix within this issue's scope:
 
 1. Open a \`triage\`-labeled issue for it. Nothing reads issue comments; only
    a \`triage\`-labeled issue reaches the backlog. Create the label first —
-   \`--force\` makes that idempotent — then the issue:
+   an existing label is left untouched, so the already-exists error is
+   ignored — then the issue:
    \`\`\`sh
-   gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B --force
+   gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
    gh issue create --label triage --title "<one-line defect statement>" --body "<body>"
    \`\`\`
    The body must carry, in this order: what is wrong (observed vs expected);
