@@ -225,7 +225,10 @@ test("the emitted filing block runs verbatim and delivers a hostile title and bo
   // Stub gh records argv one per line; a mangled title or body shows up as different argv.
   writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${log}"\n`, { mode: 0o755 });
   const scriptPath = join(dir, "file.sh");
-  writeFileSync(scriptPath, (block as string).replaceAll(`/tmp/triage-${identity.sessionName}`, join(dir, "triage-9")));
+  writeFileSync(
+    scriptPath,
+    (block as string).replaceAll(`/tmp/triage-${identity.sessionName}`, join(dir, "triage-9")),
+  );
   const run = spawnSync("sh", ["-e", scriptPath], {
     env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
     encoding: "utf8",
