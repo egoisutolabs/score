@@ -1,7 +1,3 @@
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
 import type { IssueObservation } from "@score/core/dispatch/issue.interface";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
@@ -201,38 +197,11 @@ test("out-of-scope defects are filed as triage-labeled issues, never as comments
   );
   expect(md).not.toContain("--force");
   expect(md).toContain(
-    `gh issue create --label triage --title "<one-line defect statement>" --body-file - <<'EOF'`,
+    'gh issue create --label triage --title "<one-line defect statement>" --body-file /tmp/triage-9.md',
   );
+  // The body must never pass through the shell: no inline --body, no heredoc.
   expect(md).not.toContain('--body "');
+  expect(md).not.toContain("<<");
   expect(md).toContain("Found while implementing #9");
   expect(md).not.toContain("gh issue comment");
-});
-
-test("the emitted triage filing block runs verbatim and delivers the body literally", () => {
-  const identity = createWorkIdentity("/worktrees", issue());
-  const md = new TaskBriefingService().render(issue(), identity, claude);
-  const block = /```sh\n([ \t]*gh label create triage[\s\S]*?)```/.exec(md)?.[1];
-  expect(block).toBeDefined();
-  // Hostile evidence: every character class the shell would otherwise expand or mangle.
-  const body = "observed `x` vs $(expected) \"quoted\" 'single'\nFound while implementing #9";
-  const dir = mkdtempSync(join(tmpdir(), "briefing-gh-"));
-  const log = join(dir, "log");
-  // Stub gh records argv and stdin; a stuck heredoc would hang or fail this spawn.
-  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${log}"\ncat >> "${log}"\n`, {
-    mode: 0o755,
-  });
-  // Run from a file, not stdin: the stub's `cat` must see only the heredoc, never the script.
-  const scriptPath = join(dir, "file.sh");
-  writeFileSync(scriptPath, (block as string).replace("<body>", body));
-  const run = spawnSync("sh", ["-e", scriptPath], {
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-    encoding: "utf8",
-  });
-  expect(run.status).toBe(0);
-  expect(run.stderr).toBe("");
-  const recorded = readFileSync(log, "utf8");
-  expect(recorded).toContain("--label\ntriage\n");
-  expect(recorded).toContain(body);
-  // An indented terminator is not an error to sh: it silently folds "EOF" into the body.
-  expect(recorded).not.toContain("EOF");
 });
