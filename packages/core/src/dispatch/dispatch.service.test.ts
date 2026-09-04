@@ -762,6 +762,33 @@ test("mutation-time refresh does not invent a second eligibility-label gate", as
   expect((await service.run()).started).toEqual([2]);
 });
 
+test("a triage label gained between the scan and the mutation-time refresh refuses the start", async () => {
+  const workspace = new FakeWorkspace();
+  const agents = new FakeAgents();
+  const source: WorkSource = {
+    async observeIssues() {
+      return [issue(2)];
+    },
+    async observeIssue() {
+      return { ...issue(2), labels: [{ name: "epic:v0" }, { name: "Triage" }] };
+    },
+    async observeDependency() {
+      return issue(2);
+    },
+  };
+  const service = new DispatchService(options, source, changes, workspace, agents, {
+    async write(): Promise<void> {
+      throw new Error("a refused issue must not write TASK.md");
+    },
+  });
+
+  const result = await service.run();
+
+  expect(result.started).toEqual([]);
+  expect(workspace.created).toEqual([]);
+  expect(agents.started).toEqual([]);
+});
+
 test("a mid-start failure rolls back the created worktree so the next tick retries (#32)", async () => {
   const removed: WorktreeObservation[] = [];
   class RollbackWorkspace extends FakeWorkspace {

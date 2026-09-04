@@ -51,6 +51,12 @@ text #3
     ).toBe(false);
   });
 
+  test("excluded labels match case-insensitively, as GitHub resolves them", () => {
+    expect(isOpenChildIssue(issue("", ["Triage", "epic:v0"]), policy)).toBe(false);
+    expect(isOpenChildIssue(issue("", ["HOLD", "epic:v0"]), policy)).toBe(false);
+    expect(isOpenChildIssue(issue("", ["Umbrella", "epic:v0"]), policy)).toBe(false);
+  });
+
   test("detached issue worktree basename still consumes legacy capacity", () => {
     expect(
       isOwnedIssueWorktree(
