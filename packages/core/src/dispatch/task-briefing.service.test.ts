@@ -188,3 +188,13 @@ test("briefing forbids opening a PR while required verification fails", () => {
     "Never open a PR while required verification fails: fix it, or — only for a pre-existing, unrelated failure — document that failure in the PR body and still run the rest.",
   );
 });
+
+test("out-of-scope defects are filed as triage-labeled issues, never as comments", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const md = new TaskBriefingService().render(issue(), identity, claude);
+  expect(md).toContain("gh label create triage");
+  expect(md).toContain("--force");
+  expect(md).toContain("gh issue create --label triage");
+  expect(md).toContain("Found while implementing #9");
+  expect(md).not.toContain("gh issue comment");
+});

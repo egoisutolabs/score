@@ -26,7 +26,9 @@ the same to it. A repo without the target never merges.
 Phases run strictly in order within a pass — **cleanup → dispatch → landing →
 repair** — which keeps the primary checkout single-writer and preserves the
 legacy authority split: dispatch never merges, landing never edits code, repair
-never merges. A phase that throws is logged and the pass continues.
+never merges. A phase that throws is logged and the pass continues. Out-of-scope
+bugs found by implementers arrive as `triage`-labeled issues, which dispatch
+ignores because it only takes `epic:` labels.
 
 Landing stages the exact head SHA it vetted (never the mutable branch name) and
 soaks per commit: a new push mid-soak restarts the count from zero, and an
