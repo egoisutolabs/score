@@ -102,15 +102,17 @@ cannot properly fix within this issue's scope:
 1. Open a \`triage\`-labeled issue for it. Nothing reads issue comments; only
    a \`triage\`-labeled issue reaches the backlog. Create the label first —
    an existing label is left untouched, so the already-exists error is
-   ignored — then the issue:
-   \`\`\`sh
-   gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
-   gh issue create --label triage --title "<one-line defect statement>" --body-file - <<'EOF'
-   <body>
-   EOF
-   \`\`\`
-   The quoted heredoc keeps backticks, \`$()\`, and quotes in the evidence
-   literal instead of letting the shell execute or mangle them.
+   ignored — then the issue. The fence sits outside the list on purpose: a
+   quoted heredoc's terminator must start at column 0, and the quoting keeps
+   backticks, \`$()\`, and quotes in the evidence literal.
+
+\`\`\`sh
+gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
+gh issue create --label triage --title "<one-line defect statement>" --body-file - <<'EOF'
+<body>
+EOF
+\`\`\`
+
    The body must carry, in this order: what is wrong (observed vs expected);
    where (file, symbol, or user-visible behavior); evidence (how it was found,
    plus a repro or failing command if there is one); why it is out of scope for
