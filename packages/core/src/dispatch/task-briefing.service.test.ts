@@ -196,7 +196,10 @@ test("out-of-scope defects are filed as triage-labeled issues, never as comments
     'gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true',
   );
   expect(md).not.toContain("--force");
-  expect(md).toContain("gh issue create --label triage");
+  expect(md).toContain(
+    `gh issue create --label triage --title "<one-line defect statement>" --body-file - <<'EOF'`,
+  );
+  expect(md).not.toContain('--body "');
   expect(md).toContain("Found while implementing #9");
   expect(md).not.toContain("gh issue comment");
 });

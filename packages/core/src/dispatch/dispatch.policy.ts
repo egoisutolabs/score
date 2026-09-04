@@ -7,6 +7,8 @@ export interface IssuePolicy {
   readonly eligibleLabelPrefix: string;
   readonly holdLabel: string;
   readonly umbrellaLabel: string;
+  /** Raw implementer-found reports; only the triage stage may promote them to `epic:` work. */
+  readonly triageLabel: string;
 }
 
 /** Legacy candidate filtering happens once, before the mutation-time issue refresh. */
@@ -16,7 +18,10 @@ export function isOpenChildIssue(issue: IssueObservation, policy: IssuePolicy): 
     issue.state === "OPEN" &&
     labels.some((label) => label.startsWith(policy.eligibleLabelPrefix)) &&
     !labels.includes(policy.holdLabel) &&
-    !labels.includes(policy.umbrellaLabel)
+    !labels.includes(policy.umbrellaLabel) &&
+    // Refused outright, not via prefix: an EPIC_LABEL_PREFIX of "triage" would otherwise
+    // dispatch raw reports that triage has not yet rewritten into PR-sized issues.
+    !labels.includes(policy.triageLabel)
   );
 }
 

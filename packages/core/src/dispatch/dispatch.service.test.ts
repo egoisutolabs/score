@@ -20,6 +20,7 @@ const options: DispatchServiceOptions = {
     eligibleLabelPrefix: "epic:",
     holdLabel: "hold",
     umbrellaLabel: "umbrella",
+    triageLabel: "triage",
   },
   agent: { harness: "claude", model: "opus-4.6" },
   dispatchableHarnesses: ["claude"],

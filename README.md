@@ -28,7 +28,8 @@ repair** — which keeps the primary checkout single-writer and preserves the
 legacy authority split: dispatch never merges, landing never edits code, repair
 never merges. A phase that throws is logged and the pass continues. Out-of-scope
 bugs found by implementers arrive as `triage`-labeled issues, which dispatch
-ignores because it only takes `epic:` labels.
+refuses outright — whatever the eligible label prefix — until triage rewrites
+them into `epic:` work.
 
 Landing stages the exact head SHA it vetted (never the mutable branch name) and
 soaks per commit: a new push mid-soak restarts the count from zero, and an

@@ -105,8 +105,12 @@ cannot properly fix within this issue's scope:
    ignored — then the issue:
    \`\`\`sh
    gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
-   gh issue create --label triage --title "<one-line defect statement>" --body "<body>"
+   gh issue create --label triage --title "<one-line defect statement>" --body-file - <<'EOF'
+   <body>
+   EOF
    \`\`\`
+   The quoted heredoc keeps backticks, \`$()\`, and quotes in the evidence
+   literal instead of letting the shell execute or mangle them.
    The body must carry, in this order: what is wrong (observed vs expected);
    where (file, symbol, or user-visible behavior); evidence (how it was found,
    plus a repro or failing command if there is one); why it is out of scope for

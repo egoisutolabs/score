@@ -147,6 +147,7 @@ export class DispatchService {
     if (issue.state !== "OPEN") return false;
     if (hasLabel(issue, this.options.issues.umbrellaLabel)) return false;
     if (hasLabel(issue, this.options.issues.holdLabel)) return false;
+    if (hasLabel(issue, this.options.issues.triageLabel)) return false;
     if (!(await this.#dependenciesSatisfied(issue))) return false;
 
     const identity = createWorkIdentity(this.options.workspaceRoot, issue, this.options.namespace);

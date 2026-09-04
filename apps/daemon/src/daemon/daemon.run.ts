@@ -738,6 +738,7 @@ export async function runDaemonLoop(
             eligibleLabelPrefix: tuning("EPIC_LABEL_PREFIX") || "epic:",
             holdLabel: "hold",
             umbrellaLabel: "umbrella",
+            triageLabel: "triage",
           },
           agent,
           namespace,
