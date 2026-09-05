@@ -28,8 +28,22 @@ repair** — which keeps the primary checkout single-writer and preserves the
 legacy authority split: dispatch never merges, landing never edits code, repair
 never merges. A phase that throws is logged and the pass continues. Out-of-scope
 bugs found by implementers arrive as `triage`-labeled issues, which dispatch
-refuses outright — whatever the eligible label prefix — until the planned
-triage stage (not yet a pass phase) rewrites them into `epic:` work.
+refuses outright — whatever the eligible label prefix — until triage rewrites
+them into `epic:` work.
+
+## Triage
+
+Triage is not a pass phase: it runs upstream of the daemon as a GitHub
+workflow (`.github/workflows/triage.yml`) that fires when an issue gains the
+`triage` label and hands one issue number to `.claude/skills/triage/SKILL.md`.
+It acts only on implementer-found reports (a `Found while implementing #N`
+line); anything else gets `needs-human`. For a real report it verifies the
+defect is still reachable on main, dedupes it against open issues, rewrites it
+into the same PR-sized shape as any planned child issue, and promotes it under
+the pinned `Maintenance` umbrella as an `epic:maintenance` child — or marks it
+`needs-human` when it cannot decide, or when the maintenance backlog already
+holds five open children. Removing the `triage` label is the last step and the
+handoff: until then dispatch keeps refusing the issue.
 
 Landing stages the exact head SHA it vetted (never the mutable branch name) and
 soaks per commit: a new push mid-soak restarts the count from zero, and an

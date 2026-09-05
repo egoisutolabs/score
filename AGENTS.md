@@ -36,6 +36,9 @@
   change code that is non-obvious and uncommented, leave it commented as
   part of the change; sweeping unrelated files for comments is scope creep.
 - Run `bun run check`, `bun run test`, and `bun run build` from this directory.
+- Triage of implementer-found `triage` issues is not daemon code: the procedure
+  lives in `.claude/skills/triage/SKILL.md`, run by `.github/workflows/triage.yml`.
+  Change the promotion rules there, never in `packages/`.
 
 ## Code Review Rules
 
@@ -55,3 +58,10 @@
 - Do not comment on style, formatting, naming taste, or hypothetical
   future-proofing. If it works and is tested, it passes.
 - Treat scope creep as a defect: changes unrelated to the PR's stated issue.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
