@@ -6,7 +6,12 @@ import {
 import { describe, expect, test } from "vitest";
 import type { IssueObservation } from "./issue.interface";
 
-const policy = { eligibleLabelPrefix: "epic:", holdLabel: "hold", umbrellaLabel: "umbrella" };
+const policy = {
+  eligibleLabelPrefix: "epic:",
+  holdLabel: "hold",
+  umbrellaLabel: "umbrella",
+  triageLabel: "triage",
+};
 
 function issue(body: string, labels = ["epic:v0"]): IssueObservation {
   return {
@@ -37,6 +42,19 @@ text #3
     expect(isOpenChildIssue(issue("", ["hold", "epic:v0"]), policy)).toBe(false);
     expect(isOpenChildIssue(issue("", ["umbrella", "epic:v0"]), policy)).toBe(false);
     expect(isOpenChildIssue(issue("", ["bug"]), policy)).toBe(false);
+  });
+
+  test("triage-labeled issues are ineligible even when the eligible prefix is triage", () => {
+    expect(isOpenChildIssue(issue("", ["triage", "epic:v0"]), policy)).toBe(false);
+    expect(
+      isOpenChildIssue(issue("", ["triage"]), { ...policy, eligibleLabelPrefix: "triage" }),
+    ).toBe(false);
+  });
+
+  test("excluded labels match case-insensitively, as GitHub resolves them", () => {
+    expect(isOpenChildIssue(issue("", ["Triage", "epic:v0"]), policy)).toBe(false);
+    expect(isOpenChildIssue(issue("", ["HOLD", "epic:v0"]), policy)).toBe(false);
+    expect(isOpenChildIssue(issue("", ["Umbrella", "epic:v0"]), policy)).toBe(false);
   });
 
   test("detached issue worktree basename still consumes legacy capacity", () => {

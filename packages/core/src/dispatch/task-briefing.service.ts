@@ -99,12 +99,25 @@ logic.
 Do not paper over a bug to make tests green. If you discover a defect you
 cannot properly fix within this issue's scope:
 
-1. Post a comment on this issue:
+1. Open a \`triage\`-labeled issue for it. Nothing reads issue comments; only
+   a \`triage\`-labeled issue reaches the backlog. Create the label first —
+   an existing label is left untouched, so the already-exists error is
+   ignored. Write the one-line title to \`/tmp/triage-${identity.sessionName}.title\` and
+   the body to \`/tmp/triage-${identity.sessionName}.md\` with your file-writing tool —
+   never through the shell, so backticks, \`$()\`, and quotes in either stay
+   literal — then file the issue from those files, exactly as written:
    \`\`\`sh
-   gh issue comment ${issue.number} --body "Found bug: <description of what is wrong and why it is out of scope>"
+   gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true
+   gh issue create --label triage --title "$(cat /tmp/triage-${identity.sessionName}.title)" --body-file /tmp/triage-${identity.sessionName}.md
    \`\`\`
-2. Open the PR anyway with the comment reference in the PR body so the operator
-   can see it before merging.
+   The body must carry, in this order: what is wrong (observed vs expected);
+   where (file, symbol, or user-visible behavior); evidence (how it was found,
+   plus a repro or failing command if there is one); why it is out of scope for
+   #${issue.number}; and the line \`Found while implementing #${issue.number}\`.
+   Never add an \`epic:\` label, never assign, and never close that issue —
+   triage owns it from there.
+2. Open the PR anyway and reference the new issue in the PR body
+   (\`Found #<M> during this work\`) so the operator can see it before merging.
 3. Do not silently work around it or write a test that hides it.
 
 ## Defect Prevention

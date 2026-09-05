@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
 import type { IssueObservation } from "@score/core/dispatch/issue.interface";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
@@ -187,4 +191,52 @@ test("briefing forbids opening a PR while required verification fails", () => {
   expect(unwrapped).toContain(
     "Never open a PR while required verification fails: fix it, or — only for a pre-existing, unrelated failure — document that failure in the PR body and still run the rest.",
   );
+});
+
+test("out-of-scope defects are filed as triage-labeled issues, never as comments", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const md = new TaskBriefingService().render(issue(), identity, claude);
+  expect(md).toContain(
+    'gh label create triage --description "Implementer-found defect awaiting triage" --color D93F0B 2>/dev/null || true',
+  );
+  expect(md).not.toContain("--force");
+  expect(md).toContain(
+    'gh issue create --label triage --title "$(cat /tmp/triage-issue-9.title)" --body-file /tmp/triage-issue-9.md',
+  );
+  // Neither title nor body may pass through shell quoting: no inline --body, no heredoc.
+  expect(md).not.toContain('--body "');
+  expect(md).not.toContain("<<");
+  expect(md).toContain("Found while implementing #9");
+  expect(md).not.toContain("gh issue comment");
+});
+
+test("the emitted filing block runs verbatim and delivers a hostile title and body literally", () => {
+  const identity = createWorkIdentity("/worktrees", issue());
+  const md = new TaskBriefingService().render(issue(), identity, claude);
+  const block = /```sh\n([ \t]*gh label create triage[\s\S]*?)```/.exec(md)?.[1];
+  expect(block).toBeDefined();
+  // Every character class the shell would expand or mangle if the text were re-parsed.
+  const title = "`Foo` breaks on $(bar) \"quoted\" 'single'";
+  const body = "observed `x` vs $(expected) \"quoted\" 'single'\nFound while implementing #9";
+  const dir = mkdtempSync(join(tmpdir(), "briefing-gh-"));
+  writeFileSync(join(dir, "triage-9.title"), `${title}\n`);
+  writeFileSync(join(dir, "triage-9.md"), body);
+  const log = join(dir, "log");
+  // Stub gh records argv one per line; a mangled title or body shows up as different argv.
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${log}"\n`, { mode: 0o755 });
+  const scriptPath = join(dir, "file.sh");
+  writeFileSync(
+    scriptPath,
+    (block as string).replaceAll(`/tmp/triage-${identity.sessionName}`, join(dir, "triage-9")),
+  );
+  const run = spawnSync("sh", ["-e", scriptPath], {
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    encoding: "utf8",
+  });
+  expect(run.status).toBe(0);
+  expect(run.stderr).toBe("");
+  const argv = readFileSync(log, "utf8").split("\n");
+  expect(argv).toContain(title);
+  expect(argv[argv.indexOf("--label") + 1]).toBe("triage");
+  expect(readFileSync(argv[argv.indexOf("--body-file") + 1] as string, "utf8")).toBe(body);
 });
