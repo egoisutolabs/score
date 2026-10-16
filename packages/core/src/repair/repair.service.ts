@@ -27,7 +27,12 @@ export interface RepairServiceOptions {
    * act (the manual subcommand); the daemon passes its in-repair ledger here so
    * an agent already working on this PR is left alone.
    */
-  shouldAct?(pullRequestNumber: number, defects: RepairDefects, headSha?: string): boolean;
+  shouldAct?(
+    pullRequestNumber: number,
+    defects: RepairDefects,
+    headSha?: string,
+    diffSize?: number,
+  ): boolean;
   /**
    * Asked before shouldAct: the PR's spent round budget, or undefined while
    * rounds remain. `labeled` tells the ledger whether the PR still carries the
@@ -130,7 +135,11 @@ export class RepairService {
         });
         continue;
       }
-      if (this.options.shouldAct?.(change.number, defects, change.headSha) === false) {
+      const diffSize =
+        change.additions !== undefined && change.deletions !== undefined
+          ? change.additions + change.deletions
+          : undefined;
+      if (this.options.shouldAct?.(change.number, defects, change.headSha, diffSize) === false) {
         results.push({ pullRequestNumber: change.number, action: "WORKING", dryRun });
         continue;
       }

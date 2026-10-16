@@ -86,28 +86,37 @@ test("countChecks mirrors landing: running or expected is pending, non-success c
 test("the exhaustion comment opens with the marker and lists every wave", () => {
   const body = renderExhaustionComment(99, {
     budget: 2,
+    rule: "diff-growing",
+    detail: "diff grew 10 → 20 → 30 lines over the last three waves",
     waves: [
       {
         at: "2026-10-16T10:00:00Z",
         tick: 4,
         headSha: "abcdef0123",
         defects: { conflicting: true, unresolvedThreads: 3, failingChecks: 0 },
+        openFindings: 3,
+        diffSize: 120,
       },
       {
         at: "2026-10-16T10:05:00Z",
         tick: 9,
         headSha: undefined,
         defects: { conflicting: false, unresolvedThreads: 0, failingChecks: 1, buildRed: "tsc" },
+        openFindings: 4,
+        diffSize: undefined,
       },
     ],
   });
   expect(body.startsWith(`${REPAIR_EXHAUSTED_MARKER}\n`)).toBe(true);
   expect(body).toContain("PR #99");
   expect(body).toContain(
-    "| 1 | 2026-10-16T10:00:00Z | abcdef0 | conflicts, 3 unresolved thread(s) |",
+    "Rule: diff-growing — diff grew 10 → 20 → 30 lines over the last three waves.",
   );
   expect(body).toContain(
-    "| 2 | 2026-10-16T10:05:00Z | unknown | 1 failing check(s), merged-tree build red |",
+    "| 1 | 2026-10-16T10:00:00Z | abcdef0 | 3 | 120 | conflicts, 3 unresolved thread(s) |",
+  );
+  expect(body).toContain(
+    "| 2 | 2026-10-16T10:05:00Z | unknown | 4 | ? | 1 failing check(s), merged-tree build red |",
   );
   expect(body).toContain(`Remove the \`${REPAIR_EXHAUSTED_LABEL}\` label`);
 });

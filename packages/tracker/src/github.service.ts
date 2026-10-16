@@ -131,7 +131,7 @@ export class GitHubService implements WorkSource, ChangeHost, RepairHost {
   async observeRepairChanges(): Promise<readonly RepairPullRequestObservation[]> {
     const raw = await this.#listComplete(
       ["pr", "list", "--state", "open"],
-      "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup",
+      "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup,additions,deletions",
       100,
       "github.repairPullRequests",
     );
@@ -157,6 +157,16 @@ export class GitHubService implements WorkSource, ChangeHost, RepairHost {
         mergeable: parsed.mergeable,
         labels: parsed.labels,
         statusCheckRollup: parsed.statusCheckRollup,
+        ...(typeof value.additions === "number" &&
+        Number.isInteger(value.additions) &&
+        value.additions >= 0
+          ? { additions: value.additions }
+          : {}),
+        ...(typeof value.deletions === "number" &&
+        Number.isInteger(value.deletions) &&
+        value.deletions >= 0
+          ? { deletions: value.deletions }
+          : {}),
       };
     });
   }

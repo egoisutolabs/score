@@ -20,6 +20,8 @@ import type {
   ReviewThreadObservation,
 } from "../packages/core/src/repair/findings/finding.interface";
 import { GitHubService } from "../packages/tracker/src/github.service";
+import { convergenceVerdict } from "../packages/core/src/repair/convergence/convergence.policy";
+import type { WaveRecord } from "../packages/core/src/repair/repair.policy";
 
 const [repo, prArg, checkout = "."] = process.argv.slice(2);
 const pr = Number(prArg);
@@ -63,6 +65,9 @@ class ReplayLedger implements FindingLedger {
   firstHead() {
     return firstHead;
   }
+  lastWaveHead() {
+    return rounds[this.waves - 1];
+  }
   waveCount() {
     return this.waves;
   }
@@ -78,12 +83,40 @@ for (const t of threads) {
   const wave = rounds.filter((r) => commits.indexOf(r) < idx).length;
   byWave.set(wave, [...(byWave.get(wave) ?? []), t]);
 }
+// Diff size at each round's head, as repair would have seen it when it pinged.
+const base = ((await gh(["pr", "view", String(pr), "-R", repo, "--json", "baseRefOid"])) as { baseRefOid: string })
+  .baseRefOid;
+const diffSizeAt = async (sha: string) => {
+  const r = await runner.run(["git", "diff", "--shortstat", base, sha], { cwd: checkout });
+  const m = /(\d+) insertions?\(\+\)|(\d+) deletions?\(-\)/g;
+  let total = 0;
+  for (const hit of r.stdout.matchAll(m)) total += Number(hit[1] ?? hit[2] ?? 0);
+  return r.exitCode === 0 ? total : undefined;
+};
 let seen: ReviewThreadObservation[] = [];
 const out = new Map<string, FindingRecord>();
+const waves: WaveRecord[] = [];
+const verdicts: string[] = [];
+const DEFECTS = { conflicting: false, unresolvedThreads: 0, failingChecks: 0 } as never;
 for (const wave of [...byWave.keys()].sort((a, b) => a - b)) {
   ledger.waves = wave;
   seen = [...seen, ...(byWave.get(wave) ?? [])];
-  for (const r of await tracker.observe(pr, seen)) if (!out.has(r.threadId)) out.set(r.threadId, r);
+  const recs = await tracker.observe(pr, seen);
+  for (const r of recs) if (!out.has(r.threadId)) out.set(r.threadId, r);
+  // What the gate would have said when repair came to send wave+1.
+  const verdict = convergenceVerdict({ waves, findings: recs, budget: 4 });
+  verdicts.push(`after round ${wave + 1}: ${verdict ? `${verdict.rule} — ${verdict.detail}` : "continue"}`);
+  const head = rounds[wave];
+  if (head !== undefined) {
+    waves.push({
+      at: "",
+      tick: wave,
+      headSha: head,
+      defects: DEFECTS,
+      openFindings: recs.filter((r) => r.resolution !== "reviewer-resolved").length,
+      diffSize: await diffSizeAt(head),
+    });
+  }
 }
 const records = [...out.values()];
 const tally = (pick: (r: FindingRecord) => string) =>
@@ -92,6 +125,8 @@ console.log(`PR ${pr}: ${rounds.length} rounds, ${records.length} findings`);
 console.log("classes:", tally((r) => r.class));
 console.log("resolutions:", tally((r) => r.resolution));
 console.log(`blamed: ${records.filter((r) => r.origin).length}  symbol named: ${records.filter((r) => r.symbol).length}`);
+console.log("diff size per round head:", waves.map((w) => w.diffSize).join(" → "));
+for (const v of verdicts) console.log(v);
 for (const r of records) {
   console.log(`w${r.wave} ${r.class.padEnd(19)} ${r.resolution.padEnd(17)} ${(r.origin ?? "").slice(0, 7).padEnd(7)} ${r.path}:${r.symbol ?? "?"}`);
 }

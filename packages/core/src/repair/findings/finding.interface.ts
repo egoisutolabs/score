@@ -46,6 +46,10 @@ export interface FindingRecord {
   readonly class: FindingClass;
   /** Repair waves the PR had received when this thread first appeared. */
   readonly wave: number;
+  /** Blame places the cited line after the head the latest wave was sent to fix: the fix introduced it. */
+  readonly fromLastFix: boolean;
+  /** A classifier's probability the finding is real; absent with the default classifier. */
+  readonly real?: number;
   readonly resolution: FindingResolution;
   readonly resolvedBy: string | undefined;
 }
@@ -63,6 +67,8 @@ export interface FindingLedger {
   findings(pullRequestNumber: number): readonly FindingRecord[];
   /** Head commit when the first repair wave was sent; undefined before that. */
   firstHead(pullRequestNumber: number): string | undefined;
+  /** Head commit the latest wave was sent to fix; undefined before any wave. */
+  lastWaveHead(pullRequestNumber: number): string | undefined;
   waveCount(pullRequestNumber: number): number;
   recordFindings(pullRequestNumber: number, records: readonly FindingRecord[]): void;
 }

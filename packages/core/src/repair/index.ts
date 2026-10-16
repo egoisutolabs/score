@@ -5,6 +5,7 @@
  * policy here.
  */
 
+export * from "./convergence/index";
 export * from "./findings/index";
 export * from "./repair.policy";
 export * from "./repair.service";

@@ -114,12 +114,16 @@ test("the budget counts pings and spawns; once spent, exhaustion returns the wav
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
   expect(ledger.exhaustion(9, false)).toBeUndefined();
   // The agent pushed and the PR is still broken: round two.
-  pass(ledger, 1, ["score-issue-3"], BROKEN, "bbb", () => pinged("score-issue-3"));
+  ledger.startPass(1, new Set(["score-issue-3"]));
+  expect(ledger.shouldAct(9, BROKEN, "bbb", 12)).toBe(true);
+  ledger.finishPass([pinged("score-issue-3")]);
   expect(ledger.exhaustion(9, false)).toEqual({
     budget: 2,
+    rule: "budget",
+    detail: "2 wave(s) used the budget of 2",
     waves: [
-      { at: "T", tick: 0, headSha: "aaa", defects: BROKEN },
-      { at: "T", tick: 1, headSha: "bbb", defects: BROKEN },
+      { at: "T", tick: 0, headSha: "aaa", defects: BROKEN, openFindings: 0, diffSize: undefined },
+      { at: "T", tick: 1, headSha: "bbb", defects: BROKEN, openFindings: 0, diffSize: 12 },
     ],
   });
 });
@@ -183,6 +187,7 @@ test("restore keeps budget, waves, label state, and findings; the tick is clampe
       createdAt: "",
       class: "first-round",
       wave: 0,
+      fromLastFix: false,
       resolution: "open",
       resolvedBy: undefined,
     },
@@ -229,6 +234,7 @@ test("openFindingCount counts GitHub-open threads and the agent's own resolves, 
     createdAt: "",
     class: "first-round" as const,
     wave: 0,
+    fromLastFix: false,
     resolvedBy: undefined,
   };
   ledger.recordFindings(9, [
@@ -237,4 +243,42 @@ test("openFindingCount counts GitHub-open threads and the agent's own resolves, 
     { ...base, threadId: "c", resolution: "reviewer-resolved" },
   ]);
   expect(ledger.openFindingCount(9)).toBe(2);
+});
+
+test("a convergence rule parks the PR before the budget, naming the rule in the exhaustion", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 8, now: () => "T" });
+  // Three waves with findings that never go down: rule 1 fires at wave three.
+  for (const [tick, sha] of [
+    [0, "a"],
+    [1, "b"],
+    [2, "c"],
+  ] as const) {
+    ledger.startPass(tick, new Set(["score-issue-3"]));
+    ledger.recordFindings(9, [
+      {
+        threadId: `T${tick}`,
+        key: `k${tick}`,
+        path: "a.ts",
+        symbol: "f",
+        origin: sha,
+        author: "codex",
+        createdAt: "",
+        class: "first-round" as const,
+        wave: tick,
+        fromLastFix: false,
+        resolution: "open" as const,
+        resolvedBy: undefined,
+      },
+      ...ledger.findings(9),
+    ]);
+    expect(ledger.exhaustion(9, false)).toBeUndefined();
+    expect(ledger.shouldAct(9, BROKEN, sha)).toBe(true);
+    ledger.finishPass([pinged("score-issue-3")]);
+  }
+  expect(ledger.exhaustion(9, false)).toMatchObject({
+    rule: "findings-flat",
+    detail: "open findings 1 → 2 → 3 over the last three waves",
+    budget: 8,
+  });
+  expect(ledger.lastWaveHead(9)).toBe("c");
 });

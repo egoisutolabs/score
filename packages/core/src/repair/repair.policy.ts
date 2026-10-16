@@ -129,11 +129,18 @@ export interface WaveRecord {
   readonly tick: number;
   readonly headSha: string | undefined;
   readonly defects: RepairDefects;
+  /** Ledger-open findings (GitHub-open plus the agent's own resolves) when the wave was sent. */
+  readonly openFindings: number;
+  /** additions + deletions of the head the wave was sent to fix; undefined when GitHub did not say. */
+  readonly diffSize: number | undefined;
 }
 
 export interface RepairExhaustion {
   readonly budget: number;
   readonly waves: readonly WaveRecord[];
+  /** Which convergence rule parked the PR, and the numbers behind it. */
+  readonly rule: string;
+  readonly detail: string;
 }
 
 function describeDefects(defects: RepairDefects): string {
@@ -157,13 +164,13 @@ export function renderExhaustionComment(
 ): string {
   const lines = [
     REPAIR_EXHAUSTED_MARKER,
-    `Score stopped repairing PR #${pullRequestNumber}: ${exhaustion.waves.length} repair wave(s) used the budget of ${exhaustion.budget} without the PR landing.`,
+    `Score stopped repairing PR #${pullRequestNumber} after ${exhaustion.waves.length} repair wave(s) (budget ${exhaustion.budget}). Rule: ${exhaustion.rule} — ${exhaustion.detail}.`,
     "",
-    "| Wave | When | Head | Sent to fix |",
-    "| --- | --- | --- | --- |",
+    "| Wave | When | Head | Open findings | Diff | Sent to fix |",
+    "| --- | --- | --- | --- | --- | --- |",
     ...exhaustion.waves.map(
       (wave, index) =>
-        `| ${index + 1} | ${wave.at} | ${wave.headSha?.slice(0, 7) ?? "unknown"} | ${describeDefects(wave.defects)} |`,
+        `| ${index + 1} | ${wave.at} | ${wave.headSha?.slice(0, 7) ?? "unknown"} | ${wave.openFindings} | ${wave.diffSize ?? "?"} | ${describeDefects(wave.defects)} |`,
     ),
     "",
     `No more pings until a human acts. Remove the \`${REPAIR_EXHAUSTED_LABEL}\` label to grant a fresh budget.`,

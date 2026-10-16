@@ -208,3 +208,62 @@ External check: `landing.service.test.ts` proves the wait, the restart on a
 new head, the clock starting under pending checks, and the forget-on-leave.
 Online: the share of merged PRs whose head commit Codex never reviewed, from
 the baseline's 22 of 38, must fall to the latency tail past 15 minutes.
+
+## Phase 1 step 5: convergence gate
+
+Evidence: the PR 99 replay, with diff size per round head measured by
+`git diff --shortstat` against the PR base:
+
+| Round | Diff lines | Open findings after the round |
+| --- | --- | --- |
+| 1 | 1707 | 5 |
+| 2 | 1637 | 9 |
+| 3 | 1698 | 11 |
+| 4 | 1722 | 13 |
+| 5 | 1731 | 14 |
+| 6 | 1745 | 17 |
+| 7 | 1792 | 18 |
+| 8 | 1062 | 19 |
+
+Open findings never fell. The diff grew every round from round two until
+the final squash. Two of the four round-two findings blamed to the round-one
+fix commit, both in `runDown`.
+
+Decision: the park path from step 2 is now driven by four deterministic
+rules, checked in order, with the first to fire named in the exhaustion
+comment: the round budget; open findings that do not decrease across the
+last three waves; a diff that grows across the last three waves; a finding
+blame places after the head the last wave was sent to fix. Each wave record
+carries the open-finding count and the PR diff size as repair saw them when
+it pinged. A classifier (jev or another) sits behind a port that answers one
+probability per finding; the default answers nothing, and the only effect an
+answer has today is that a finding judged under one half real does not count
+toward the regression rule.
+
+Rule 3 fires on a single finding after the first answered wave, as the
+analysis lists it. The cost is a human look at a PR whose first fix drew one
+follow-up; the replay shows that this is also the earliest point at which
+PR 99 could have been stopped.
+
+Rejected: a model orchestrator (analysis §2.3, the mandate caused the
+rounds, not the lack of context); rule 3 requiring two consecutive
+regressions (softer, but not what the plan specifies, and PR 99 would have
+run one round longer); counting GitHub reviews as rounds (invisible when
+Codex is silent).
+
+External check: `convergence.policy.test.ts` proves each rule, its
+threshold, and its silence on a converging loop; `repair-ledger.service.
+test.ts` proves a rule parks before the budget. The replay of PR 99:
+
+| After round | Verdict |
+| --- | --- |
+| 1 | continue |
+| 2 | regression-from-fix (2 findings blame to the last fix, `runDown`) |
+| 3 | continue |
+| 4 | findings-flat (5 → 9 → 11) |
+| 5 and later | budget (4) |
+
+Live, the PR would have parked after round two with 9 findings and 1637
+changed lines, against the 19 findings and 8 rounds it ran to. Online: the
+share of parked PRs by rule, and whether a human un-parks them (label
+removed) or finishes by hand.

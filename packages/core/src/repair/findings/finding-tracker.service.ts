@@ -1,3 +1,5 @@
+import type { FindingClassifier } from "@score/core/repair/convergence/finding-classifier.interface";
+import { NO_CLASSIFIER } from "@score/core/repair/convergence/finding-classifier.interface";
 import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type {
   BlameSource,
@@ -18,6 +20,7 @@ export class FindingTracker {
     private readonly blame: BlameSource,
     private readonly ancestry: Pick<WorktreeProvisioner, "isAncestor">,
     private readonly ledger: FindingLedger,
+    private readonly classifier: FindingClassifier = NO_CLASSIFIER,
   ) {}
 
   async observe(
@@ -29,6 +32,7 @@ export class FindingTracker {
     );
     const wave = this.ledger.waveCount(pullRequestNumber);
     const firstHead = this.ledger.firstHead(pullRequestNumber);
+    const lastWaveHead = this.ledger.lastWaveHead(pullRequestNumber);
     const records: FindingRecord[] = [];
     for (const thread of threads) {
       const prior = known.get(thread.id);
@@ -42,10 +46,16 @@ export class FindingTracker {
         origin !== undefined && firstHead !== undefined
           ? !(await this.ancestry.isAncestor(origin, firstHead))
           : undefined;
+      // The latest wave's head is what the agent was sent to fix; a line
+      // blame places after it was written by that fix (convergence rule 3).
+      const fromLastFix =
+        origin !== undefined && lastWaveHead !== undefined
+          ? !(await this.ancestry.isAncestor(origin, lastWaveHead))
+          : false;
       // Prior includes this pass's earlier threads so two reviewers raising
       // one defect in the same round read as a duplicate, not two findings.
       const priorRecords = [...known.values(), ...records];
-      records.push({
+      const record: FindingRecord = {
         threadId: thread.id,
         key,
         path: thread.path,
@@ -58,9 +68,13 @@ export class FindingTracker {
           priorRecords,
         ),
         wave,
+        fromLastFix,
         resolution: resolutionOf(thread),
         resolvedBy: thread.resolvedBy,
-      });
+      };
+      // A classifier failure is no opinion, never a failed pass.
+      const assessment = await this.classifier.assess(record).catch(() => undefined);
+      records.push(assessment === undefined ? record : { ...record, real: assessment.real });
     }
     this.ledger.recordFindings(pullRequestNumber, records);
     return records;

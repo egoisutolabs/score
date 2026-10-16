@@ -324,7 +324,7 @@ test("a completed check that failed still counts as a defect, not a pending wait
   expect(result[0]?.action).toBe("PINGED");
 });
 
-const spent = { budget: 2, waves: [] };
+const spent = { budget: 2, waves: [], rule: "budget", detail: "2 wave(s) used the budget of 2" };
 
 test("a spent budget posts the history comment, then the label, and pings nobody", async () => {
   const agents = new RepairAgents();

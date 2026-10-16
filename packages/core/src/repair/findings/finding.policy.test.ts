@@ -98,6 +98,7 @@ function record(overrides: Partial<FindingRecord>): FindingRecord {
     createdAt: "",
     class: "first-round",
     wave: 0,
+    fromLastFix: false,
     resolution: "open",
     resolvedBy: undefined,
     ...overrides,

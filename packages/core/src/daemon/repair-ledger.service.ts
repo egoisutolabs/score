@@ -1,4 +1,5 @@
 import { repairSessionName } from "@score/core/dispatch/dispatch.identity";
+import { convergenceVerdict } from "@score/core/repair/convergence/convergence.policy";
 import type { FindingLedger, FindingRecord } from "@score/core/repair/findings/finding.interface";
 import type { RepairDefects, RepairExhaustion, WaveRecord } from "@score/core/repair/repair.policy";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
@@ -59,7 +60,10 @@ export interface RepairLedgerOptions {
  */
 export class RepairLedger implements FindingLedger {
   #entries = new Map<number, RepairLedgerEntry>();
-  readonly #pending = new Map<number, { headSha?: string; defects: RepairDefects }>();
+  readonly #pending = new Map<
+    number,
+    { headSha?: string; defects: RepairDefects; diffSize?: number }
+  >();
   readonly #options: Required<RepairLedgerOptions>;
   #tick = 0;
   #liveSessions: ReadonlySet<string> = new Set();
@@ -115,6 +119,10 @@ export class RepairLedger implements FindingLedger {
     return this.#entries.get(pullRequestNumber)?.waves.length ?? 0;
   }
 
+  lastWaveHead(pullRequestNumber: number): string | undefined {
+    return this.#entries.get(pullRequestNumber)?.waves.at(-1)?.headSha;
+  }
+
   recordFindings(pullRequestNumber: number, records: readonly FindingRecord[]): void {
     const entry = this.#entries.get(pullRequestNumber) ?? this.#blank();
     this.#entries.set(pullRequestNumber, { ...entry, findings: records });
@@ -128,9 +136,11 @@ export class RepairLedger implements FindingLedger {
   }
 
   /**
-   * RepairService's `exhaustion`: the spent budget, or undefined while rounds
-   * remain. A PR whose label a human removed starts over with an empty wave
-   * history — that removal is the only way to grant another budget.
+   * RepairService's `exhaustion`: the convergence verdict that parks this PR
+   * (budget spent, findings flat, diff growing, or a regression from the last
+   * fix — analysis §2.3), or undefined while the loop may continue. A PR whose
+   * label a human removed starts over with an empty wave history — that
+   * removal is the only way to grant another budget.
    */
   exhaustion(pullRequestNumber: number, labeled: boolean): RepairExhaustion | undefined {
     const entry = this.#entries.get(pullRequestNumber);
@@ -139,13 +149,23 @@ export class RepairLedger implements FindingLedger {
       this.#entries.set(pullRequestNumber, { ...entry, waves: [], labeled: false });
       return undefined;
     }
-    if (entry.waves.length < this.#options.roundBudget) return undefined;
-    return { budget: this.#options.roundBudget, waves: entry.waves };
+    const verdict = convergenceVerdict({
+      waves: entry.waves,
+      findings: entry.findings,
+      budget: this.#options.roundBudget,
+    });
+    if (verdict === undefined) return undefined;
+    return { budget: this.#options.roundBudget, waves: entry.waves, ...verdict };
   }
 
   /** RepairService's `shouldAct`: false while the agent on this PR is still working. */
-  shouldAct(pullRequestNumber: number, defects: RepairDefects, headSha?: string): boolean {
-    this.#pending.set(pullRequestNumber, { headSha, defects });
+  shouldAct(
+    pullRequestNumber: number,
+    defects: RepairDefects,
+    headSha?: string,
+    diffSize?: number,
+  ): boolean {
+    this.#pending.set(pullRequestNumber, { headSha, defects, diffSize });
     const entry = this.#entries.get(pullRequestNumber);
     if (!entry || entry.waves.length === 0) return true;
     // An absent headSha compares equal to an absent one, so a PR whose sha we
@@ -191,6 +211,10 @@ export class RepairLedger implements FindingLedger {
         tick: this.#tick,
         headSha: pending.headSha,
         defects: pending.defects,
+        // Findings were observed earlier in this same pass, so this is the
+        // count the agent is being sent to bring down.
+        openFindings: this.openFindingCount(result.pullRequestNumber),
+        diffSize: pending.diffSize,
       };
       this.#entries.set(result.pullRequestNumber, {
         ...entry,

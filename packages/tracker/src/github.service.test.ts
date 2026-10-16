@@ -87,7 +87,7 @@ test("repair observation does not request landing-only fields", async () => {
   expect(observed?.mergeable).toBe("A_FUTURE_VALUE");
   expect(observed?.headSha).toBe("cafe1234");
   expect(runner.commands[0]?.at(-1)).toBe(
-    "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup",
+    "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup,additions,deletions",
   );
 });
 

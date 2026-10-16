@@ -17,6 +17,9 @@ class MemoryLedger implements FindingLedger {
   firstHead() {
     return this.head;
   }
+  lastWaveHead() {
+    return this.head;
+  }
   waveCount() {
     return this.waves;
   }
@@ -158,4 +161,38 @@ test("a thread GitHub stopped returning drops out of the ledger; a file-level th
   expect(blame.blamed).toEqual(["rev:src/a.ts:3"]);
   await tracker.observe(9, [thread("T2", { originalLine: null })]);
   expect(ledger.findings(9).map((record) => record.threadId)).toEqual(["T2"]);
+});
+
+test("fromLastFix compares the origin against the latest wave's head, and a classifier can annotate the record", async () => {
+  const blame = new FakeBlame();
+  blame.origins.set("rev:src/a.ts:3", "fix");
+  blame.files.set("rev:src/a.ts", SOURCE);
+  const ledger = new MemoryLedger();
+  ledger.waves = 2;
+  ledger.head = "base";
+  const lastHeads: (string | undefined)[] = [];
+  const ledgerWithLast: FindingLedger = {
+    ...ledger,
+    findings: (n) => ledger.findings(n),
+    firstHead: () => ledger.firstHead(),
+    waveCount: () => ledger.waveCount(),
+    lastWaveHead: () => lastHeads.shift(),
+    recordFindings: (n, r) => ledger.recordFindings(n, r),
+  };
+  const classifier = {
+    async assess() {
+      return { real: 0.3 };
+    },
+  };
+  const tracker = new FindingTracker(blame, ancestry, ledgerWithLast, classifier);
+
+  // Latest wave head "base": "fix" is not its ancestor → written by the fix.
+  lastHeads.push("base");
+  const [first] = await tracker.observe(9, [thread("T1")]);
+  expect(first).toMatchObject({ fromLastFix: true, real: 0.3 });
+
+  // No wave yet (fresh PR): nothing can be "from the last fix".
+  lastHeads.push(undefined);
+  const [second] = await tracker.observe(9, [thread("T2")]);
+  expect(second).toMatchObject({ fromLastFix: false });
 });

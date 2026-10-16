@@ -42,6 +42,9 @@ export interface RepairPullRequestObservation {
   readonly headSha?: string;
   readonly mergeable: string;
   readonly statusCheckRollup: readonly ChangeCheck[];
+  /** PR-wide line counts, for the diff-growth convergence rule; undefined when the list omitted them. */
+  readonly additions?: number;
+  readonly deletions?: number;
 }
 
 export interface BuildStep {
