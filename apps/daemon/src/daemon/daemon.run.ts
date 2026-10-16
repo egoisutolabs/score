@@ -12,6 +12,7 @@ import type { DaemonPhase } from "@score/core/daemon/daemon.service";
 import { DaemonService } from "@score/core/daemon/daemon.service";
 import { PassCachedChangeHost } from "@score/core/daemon/observations.service";
 import { RepairLedger } from "@score/core/daemon/repair-ledger.service";
+import { RepairLedgerStore } from "@score/core/daemon/repair-ledger.store";
 import {
   applyGateVerdicts,
   gateFailureFrom,
@@ -24,6 +25,7 @@ import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
+import { FindingTracker } from "@score/core/repair/findings/finding-tracker.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
 import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
@@ -35,7 +37,13 @@ import {
 import { agentConfigFromCommand } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/config.interface";
-import { logsDir, promptsDir, statusPath, telemetryDir } from "@score/shared/config/layout";
+import {
+  logsDir,
+  promptsDir,
+  repairLedgerPath,
+  statusPath,
+  telemetryDir,
+} from "@score/shared/config/layout";
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
@@ -774,6 +782,21 @@ export async function runDaemonLoop(
       runner,
     );
     const ledger = new RepairLedger({ staleTicks, namespace, roundBudget });
+    // Managed only: unmanaged discovery mode has no project dir to persist
+    // into, so its budgets reset with the process as before.
+    const ledgerStore =
+      managed && parsed.project !== undefined
+        ? new RepairLedgerStore(repairLedgerPath(parsed.project))
+        : undefined;
+    if (ledgerStore) {
+      try {
+        const saved = await ledgerStore.read();
+        if (saved) ledger.restore(saved);
+      } catch (error) {
+        log.warn(`repair ledger not restored, starting empty: ${String(error)}`);
+      }
+    }
+    const findings = new FindingTracker(git, git, ledger);
     const repair = new RepairService(
       {
         agent,
@@ -783,6 +806,9 @@ export async function runDaemonLoop(
         noSpawn: false,
         shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
         exhaustion: (number, labeled) => ledger.exhaustion(number, labeled),
+        onThreads: async (number, threads) => {
+          await findings.observe(number, threads);
+        },
         buildRed: (number) => gateVerdicts.get(number),
       },
       github,
@@ -856,6 +882,7 @@ export async function runDaemonLoop(
           ledger.startPass(currentTick, new Set(await agents.listSessions()));
           const results = await repair.run(dryRun);
           ledger.finishPass(results);
+          await ledgerStore?.write(ledger.snapshot());
           const acted = results.filter(
             (result) => result.action === "PINGED" || result.action === "SPAWNED",
           ).length;

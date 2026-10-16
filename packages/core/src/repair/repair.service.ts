@@ -1,6 +1,7 @@
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { issueNumberFromBranch } from "@score/core/dispatch/dispatch.identity";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import type { RepairDefects, RepairExhaustion } from "@score/core/repair/repair.policy";
 import {
   countChecks,
@@ -39,6 +40,16 @@ export interface RepairServiceOptions {
    * this PR, if landing's merged-tree gate failed. Unset for the manual
    * subcommand — its scan stays GitHub-facts-only.
    */
+  /**
+   * Every review thread observed for a PR this pass, before any decision.
+   * The daemon routes it to the finding ledger; unset for the manual
+   * subcommand. A thread query failure skips the call rather than reporting
+   * an empty thread list as fact.
+   */
+  onThreads?(
+    pullRequestNumber: number,
+    threads: readonly ReviewThreadObservation[],
+  ): Promise<void> | void;
   buildRed?(pullRequestNumber: number): string | undefined;
 }
 
@@ -71,10 +82,12 @@ export class RepairService {
       const issueNumber = issueNumberFromBranch(change.headRefName);
       if (issueNumber === null) continue;
 
-      // shepherd-prs.sh treats a review-thread query failure as zero unresolved.
-      const unresolvedThreads = await this.changes
-        .unresolvedThreadCount(change.number)
-        .catch(() => 0);
+      // shepherd-prs.sh treats a review-thread query failure as zero unresolved;
+      // the full threads replace the bare count so the finding ledger sees
+      // every thread the gate counts, from one query.
+      const threads = await this.host.observeReviewThreads(change.number).catch(() => undefined);
+      if (threads !== undefined) await this.options.onThreads?.(change.number, threads);
+      const unresolvedThreads = threads?.filter((thread) => !thread.isResolved).length ?? 0;
       const checks = countChecks(change.statusCheckRollup);
       const buildRed = this.options.buildRed?.(change.number);
       const defects: RepairDefects = {

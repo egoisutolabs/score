@@ -3,6 +3,7 @@ import { createWorkIdentity } from "@score/core/dispatch/dispatch.identity";
 import type { WorktreeObservation } from "@score/core/dispatch/work.interface";
 import type { PullRequestObservation } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import { DEFAULT_SESSION_SUFFIX } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
 import type { RepairHost } from "@score/core/repair/repair-host.interface";
@@ -65,6 +66,12 @@ class RepairAgents implements AgentRuntime {
 
 class RecordingHost implements RepairHost {
   calls: string[] = [];
+  threads: ReviewThreadObservation[] = [];
+  failThreads = false;
+  async observeReviewThreads() {
+    if (this.failThreads) throw new Error("graphql failed");
+    return this.threads;
+  }
   comments: string[] = [];
   labels: string[] = [];
   failAt: "comment" | "label" | undefined;
@@ -169,38 +176,43 @@ test("repair spawns shepherd-pr work in the exact existing PR worktree", async (
   expect(agents.spawnedWith).toEqual([{ harness: "claude", model: "opus-4.6" }]);
 });
 
-test("review-thread query failure retains shepherd's fail-open zero", async () => {
-  const workspace = new RepairWorkspace();
-  const agents = new RepairAgents();
-  const clean = { ...change(), mergeable: "MERGEABLE" as const };
-  const host: ChangeHost = {
-    async observeOpenChanges() {
-      return [clean];
-    },
-    async observeMergedOwnedChanges() {
-      return [];
-    },
-    async observeClosedOwnedChanges() {
-      return [];
-    },
-    async observeOpenChangeHeads() {
-      return [];
-    },
-    async observeRepairChanges() {
-      return [clean];
-    },
-    async unresolvedThreadCount() {
-      throw new Error("graphql failed");
-    },
-  };
+test("review-thread query failure retains shepherd's fail-open zero, and skips the ledger", async () => {
+  const github = new RecordingHost();
+  github.failThreads = true;
+  const observed: number[] = [];
   const result = await new RepairService(
-    options,
-    host,
-    workspace,
-    agents,
-    new RecordingHost(),
+    { ...options, onThreads: (number) => void observed.push(number) },
+    withChange({ mergeable: "MERGEABLE" }),
+    new RepairWorkspace(),
+    new RepairAgents(),
+    github,
   ).run();
   expect(result[0]?.action).toBe("NOT_NEEDED");
+  expect(observed).toEqual([]);
+});
+
+test("unresolved threads are counted from the observed threads and handed to the ledger first", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  github.threads = [thread("T1", { isResolved: true, resolvedBy: "gendev1" }), thread("T2")];
+  const seen: unknown[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      onThreads: (number, threads) => void seen.push([number, threads.map((t) => t.id)]),
+      shouldAct: (_number, defects) => {
+        seen.push(defects.unresolvedThreads);
+        return true;
+      },
+    },
+    withChange({ mergeable: "MERGEABLE" }),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(result[0]?.action).toBe("PINGED");
+  expect(seen).toEqual([[9, ["T1", "T2"]], 1]);
 });
 
 test("a GitHub-clean PR with a landing build-red verdict is repaired, tail in the prompt", async () => {
@@ -423,3 +435,20 @@ test("a dry run reports EXHAUSTED without commenting or labeling", async () => {
   expect(result[0]?.action).toBe("EXHAUSTED");
   expect(github.calls).toEqual([]);
 });
+
+function thread(
+  id: string,
+  overrides: Partial<ReviewThreadObservation> = {},
+): ReviewThreadObservation {
+  return {
+    id,
+    path: "src/a.ts",
+    originalLine: 1,
+    originalCommit: "rev",
+    author: "chatgpt-codex-connector",
+    createdAt: "2026-10-16T00:00:00Z",
+    isResolved: false,
+    resolvedBy: undefined,
+    ...overrides,
+  };
+}

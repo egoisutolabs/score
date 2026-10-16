@@ -116,3 +116,55 @@ service.test.ts` proves the count, the wait, the reset on clean, and the
 fresh budget on label removal. Online: rounds per PR must not exceed the
 budget in the next batch, and the number of PRs that hit the label is the
 new figure to watch.
+
+## Phase 1 step 3: the finding ledger
+
+Evidence: the baseline cannot tell a new defect from a re-raised one, because
+GitHub threads carry a path and a line, and the line moves with every fix. In
+PR 99, 80% of resolves were by the human login, that is the agent on the
+operator's token, and no reviewer closed anything.
+
+Decision: every review thread repair observes is keyed by blame origin
+commit, file, and enclosing symbol, taken at the commit the reviewer wrote
+against so the key never moves. A finding is classified on first sight
+against the PR's recorded history (analysis §2.4): `first-round` before any
+wave, then `fix-failed` (same key as a thread the agent resolved itself),
+`duplicate` (same key open from the other reviewer), `regression-from-fix`
+(blame places the line after the first wave's head), else `missed-earlier`.
+A thread resolved by anyone but a reviewer bot is recorded as
+`self-resolved` and still counts as open in the ledger's own count. The
+ledger (waves, budget state, first head, findings) is persisted per project
+at `~/.score/projects/<key>/repair-ledger.json`, written whole via tmp and
+rename, and restored at daemon start with the pacing tick clamped so a
+restart neither re-pings early nor waits out the old tick gap.
+
+Blame runs once per thread, the first time it is seen; later passes only
+refresh resolution. Blame or show failures degrade the key to the reviewed
+commit and line and never fail the pass. The landing gate still uses GitHub's
+unresolved count; moving it to the ledger's count is step 4's decision, not
+this one's.
+
+Rejected: keying by path and line (moves every fix); keying by comment text
+similarity (a classifier question, kept for the port in step 5); a second
+GraphQL query per PR (the full threads replace the bare count for repair,
+one query); a database (one JSON file per project, same pattern as
+status.json).
+
+External check, offline: `bun scripts/replay-findings.ts egoisutolabs/score 99`
+replays PR 99's real threads through the tracker with live blame on this
+checkout.
+
+| PR 99 replay | Value |
+| --- | --- |
+| Threads blamed to an origin commit | 19 of 19 |
+| Threads with an enclosing symbol | 17 of 19 |
+| Round-one findings | 5 |
+| Later findings classed fix-failed or regression-from-fix | 11 of 14 |
+| Later findings classed missed-earlier | 3 |
+
+The replay uses GitHub's final resolution state, so fix-failed is an upper
+bound; live, the ledger learns a self-resolve only when it happens. Every
+later finding in `withProjectLock` and `runDown` keyed to the same symbol
+the previous fix touched, which is the analysis' "patches the example"
+pattern made countable. Online: the class mix per wave, segmented by prompt
+version once step 6 records it.

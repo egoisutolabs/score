@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -611,4 +612,45 @@ test("seedClaudeDirectory: false leaves the worktree without a copied .claude", 
   await expect(
     readFile(join(work.worktreePath, ".claude", "settings.json"), "utf8"),
   ).rejects.toThrow();
+});
+
+// BlameSource for repair's finding ledger.
+
+async function blameFixture(): Promise<{ repo: string; first: string; second: string }> {
+  const repo = await mkdtemp(join(tmpdir(), "score-blame-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: repo,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@example.invalid");
+  git("config", "user.name", "t");
+  await writeFile(join(repo, "a.ts"), "export function save() {\n  return 1;\n}\n");
+  git("add", "a.ts");
+  git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "first");
+  const first = git("rev-parse", "HEAD");
+  await writeFile(join(repo, "a.ts"), "export function save() {\n  const x = 2;\n  return x;\n}\n");
+  git("add", "a.ts");
+  git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "second");
+  const second = git("rev-parse", "HEAD");
+  return { repo, first, second };
+}
+
+test("blameOrigin names the commit that introduced the cited line, as of the reviewed commit", async () => {
+  const { repo, first, second } = await blameFixture();
+  sandboxes.push(repo);
+  const git = new GitService(new ExecRunner(), {
+    repositoryPath: repo,
+    workspaceRoot: join(repo, "wt"),
+  });
+
+  expect(await git.blameOrigin(second, "a.ts", 1)).toBe(first);
+  expect(await git.blameOrigin(second, "a.ts", 2)).toBe(second);
+  expect(await git.fileAt(second, "a.ts")).toContain("const x = 2;");
+  // A path or line the commit does not have reads as unknown, never as a throw.
+  expect(await git.blameOrigin(second, "missing.ts", 1)).toBeUndefined();
+  expect(await git.blameOrigin(first, "a.ts", 99)).toBeUndefined();
+  expect(await git.fileAt(first, "missing.ts")).toBeUndefined();
 });

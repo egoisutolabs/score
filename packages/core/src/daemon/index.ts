@@ -7,4 +7,5 @@
 export * from "./daemon.service";
 export * from "./observations.service";
 export * from "./repair-ledger.service";
+export * from "./repair-ledger.store";
 export * from "./status.service";

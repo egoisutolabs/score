@@ -1,8 +1,9 @@
 import { repairSessionName } from "@score/core/dispatch/dispatch.identity";
+import type { FindingLedger, FindingRecord } from "@score/core/repair/findings/finding.interface";
 import type { RepairDefects, RepairExhaustion, WaveRecord } from "@score/core/repair/repair.policy";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 
-interface RepairLedgerEntry {
+export interface RepairLedgerEntry {
   readonly tick: number;
   readonly headSha: string | undefined;
   readonly defects: RepairDefects;
@@ -11,7 +12,18 @@ interface RepairLedgerEntry {
   readonly waves: readonly WaveRecord[];
   /** The exhaustion label was put on (or seen on) this PR; its removal grants a fresh budget. */
   readonly labeled: boolean;
+  /** Head when the first wave was sent; blame after it is a regression from a fix. */
+  readonly firstHead: string | undefined;
+  readonly findings: readonly FindingRecord[];
 }
+
+/** The on-disk shape; additive changes only, bump `v` for anything else. */
+export interface RepairLedgerSnapshot {
+  readonly v: 1;
+  readonly pullRequests: Readonly<Record<string, RepairLedgerEntry>>;
+}
+
+const NO_DEFECTS: RepairDefects = { conflicting: false, unresolvedThreads: 0, failingChecks: 0 };
 
 function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
   return (
@@ -41,12 +53,12 @@ export interface RepairLedgerOptions {
  * those flipping — or `staleTicks` passing — earns another ping, until the
  * PR's round budget is spent.
  *
- * In-memory on purpose, like landing's soak counters: a restart costs at most
- * one extra ping — and, until the ledger is persisted, one fresh budget for a
- * PR whose exhaustion label never landed.
+ * The daemon persists it through snapshot()/restore() (RepairLedgerStore), so
+ * a restart keeps every PR's budget, wave history, and keyed findings. The
+ * manual subcommand runs without one.
  */
-export class RepairLedger {
-  readonly #entries = new Map<number, RepairLedgerEntry>();
+export class RepairLedger implements FindingLedger {
+  #entries = new Map<number, RepairLedgerEntry>();
   readonly #pending = new Map<number, { headSha?: string; defects: RepairDefects }>();
   readonly #options: Required<RepairLedgerOptions>;
   #tick = 0;
@@ -61,11 +73,58 @@ export class RepairLedger {
     };
   }
 
+  snapshot(): RepairLedgerSnapshot {
+    return {
+      v: 1,
+      pullRequests: Object.fromEntries(
+        [...this.#entries].map(([number, entry]) => [String(number), entry]),
+      ),
+    };
+  }
+
+  /**
+   * Ticks restart at zero with the process, so a restored entry's tick is
+   * clamped to zero: a live, unchanged agent is left alone for one more
+   * staleTicks window rather than for the whole gap the old tick would imply.
+   */
+  restore(snapshot: RepairLedgerSnapshot): void {
+    this.#entries = new Map(
+      Object.entries(snapshot.pullRequests).map(([number, entry]) => [
+        Number(number),
+        { ...entry, tick: 0 },
+      ]),
+    );
+  }
+
   /** Call once before each repair pass with the tick and the live tmux sessions. */
   startPass(tick: number, liveSessions: ReadonlySet<string>): void {
     this.#tick = tick;
     this.#liveSessions = liveSessions;
     this.#pending.clear();
+  }
+
+  findings(pullRequestNumber: number): readonly FindingRecord[] {
+    return this.#entries.get(pullRequestNumber)?.findings ?? [];
+  }
+
+  firstHead(pullRequestNumber: number): string | undefined {
+    return this.#entries.get(pullRequestNumber)?.firstHead;
+  }
+
+  waveCount(pullRequestNumber: number): number {
+    return this.#entries.get(pullRequestNumber)?.waves.length ?? 0;
+  }
+
+  recordFindings(pullRequestNumber: number, records: readonly FindingRecord[]): void {
+    const entry = this.#entries.get(pullRequestNumber) ?? this.#blank();
+    this.#entries.set(pullRequestNumber, { ...entry, findings: records });
+  }
+
+  /** Threads the convergence rules count as open: GitHub-open, plus the agent's own resolves. */
+  openFindingCount(pullRequestNumber: number): number {
+    return this.findings(pullRequestNumber).filter(
+      (record) => record.resolution !== "reviewer-resolved",
+    ).length;
   }
 
   /**
@@ -77,7 +136,7 @@ export class RepairLedger {
     const entry = this.#entries.get(pullRequestNumber);
     if (!entry) return undefined;
     if (entry.labeled && !labeled) {
-      this.#entries.delete(pullRequestNumber);
+      this.#entries.set(pullRequestNumber, { ...entry, waves: [], labeled: false });
       return undefined;
     }
     if (entry.waves.length < this.#options.roundBudget) return undefined;
@@ -99,36 +158,27 @@ export class RepairLedger {
     return !working;
   }
 
-  /** Call with the pass's results: records what was acted on, forgets the rest. */
+  /**
+   * Call with the pass's results. A PR that went clean keeps its findings and
+   * first head (history) but starts a fresh budget; a PR no longer reported
+   * (merged or closed) is forgotten entirely.
+   */
   finishPass(results: readonly RepairResult[]): void {
     const seen = new Set<number>();
     for (const result of results) {
       seen.add(result.pullRequestNumber);
-      const entry = this.#entries.get(result.pullRequestNumber);
+      const entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
       if (result.action === "EXHAUSTED") {
         // Seen or put on: either way the label now governs this PR.
         if (!result.dryRun) {
-          this.#entries.set(result.pullRequestNumber, {
-            tick: entry?.tick ?? this.#tick,
-            headSha: entry?.headSha,
-            defects: entry?.defects ?? {
-              conflicting: false,
-              unresolvedThreads: 0,
-              failingChecks: 0,
-            },
-            sessionName: entry?.sessionName ?? "",
-            waves: entry?.waves ?? [],
-            labeled: true,
-          });
+          this.#entries.set(result.pullRequestNumber, { ...entry, labeled: true });
         }
         continue;
       }
+      if (result.action === "WORKING" || result.action === "CHECKS_PENDING") continue;
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
-        // WORKING and CHECKS_PENDING keep their entry — the wave count must
-        // survive a wait; anything else means this PR is no longer one we are
-        // waiting on, and its budget starts over the next time it breaks.
-        if (result.action !== "WORKING" && result.action !== "CHECKS_PENDING") {
-          this.#entries.delete(result.pullRequestNumber);
+        if (entry.waves.length > 0 || entry.labeled) {
+          this.#entries.set(result.pullRequestNumber, { ...entry, waves: [], labeled: false });
         }
         continue;
       }
@@ -143,6 +193,7 @@ export class RepairLedger {
         defects: pending.defects,
       };
       this.#entries.set(result.pullRequestNumber, {
+        ...entry,
         tick: this.#tick,
         headSha: pending.headSha,
         defects: pending.defects,
@@ -150,12 +201,26 @@ export class RepairLedger {
           result.action === "PINGED"
             ? (result.target ?? "")
             : repairSessionName(this.#options.namespace || undefined, result.pullRequestNumber),
-        waves: [...(entry?.waves ?? []), wave],
+        waves: [...entry.waves, wave],
         labeled: false,
+        firstHead: entry.waves.length === 0 ? pending.headSha : entry.firstHead,
       });
     }
     for (const number of this.#entries.keys()) {
       if (!seen.has(number)) this.#entries.delete(number);
     }
+  }
+
+  #blank(): RepairLedgerEntry {
+    return {
+      tick: this.#tick,
+      headSha: undefined,
+      defects: NO_DEFECTS,
+      sessionName: "",
+      waves: [],
+      labeled: false,
+      firstHead: undefined,
+      findings: [],
+    };
   }
 }

@@ -236,3 +236,102 @@ test("comment posts the body as one argument, never through a shell", async () =
     "line one\n`code` $(not run)",
   ]);
 });
+
+test("observeReviewThreads follows pagination and reduces each thread to its root comment's facts", async () => {
+  const runner = new RecordingRunner();
+  const node = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    isResolved: false,
+    path: "src/a.ts",
+    originalLine: 12,
+    resolvedBy: null,
+    comments: {
+      nodes: [
+        {
+          createdAt: "2026-10-16T00:00:00Z",
+          author: { login: "chatgpt-codex-connector" },
+          originalCommit: { oid: "abc" },
+        },
+      ],
+    },
+    ...extra,
+  });
+  runner.responses = [
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: true, endCursor: "c1" },
+              nodes: [node("T1")],
+            },
+          },
+        },
+      },
+    }),
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                node("T2", {
+                  isResolved: true,
+                  resolvedBy: { login: "gendev1" },
+                  originalLine: null,
+                  comments: { nodes: [{ createdAt: "x", author: null, originalCommit: null }] },
+                }),
+              ],
+            },
+          },
+        },
+      },
+    }),
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  const threads = await github.observeReviewThreads(9);
+
+  expect(threads).toEqual([
+    {
+      id: "T1",
+      path: "src/a.ts",
+      originalLine: 12,
+      originalCommit: "abc",
+      author: "chatgpt-codex-connector",
+      createdAt: "2026-10-16T00:00:00Z",
+      isResolved: false,
+      resolvedBy: undefined,
+    },
+    {
+      id: "T2",
+      path: "src/a.ts",
+      originalLine: null,
+      originalCommit: undefined,
+      author: undefined,
+      createdAt: "x",
+      isResolved: true,
+      resolvedBy: "gendev1",
+    },
+  ]);
+  expect(runner.commands[1]).toContain("cursor=c1");
+});
+
+test("observeReviewThreads throws on a page failure instead of returning a partial list", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] },
+          },
+        },
+      },
+    }),
+    "not json",
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+  await expect(github.observeReviewThreads(9)).rejects.toThrow("invalid JSON");
+});

@@ -7,6 +7,7 @@ import type {
   RepairPullRequestObservation,
 } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import type { RepairHost } from "@score/core/repair/repair-host.interface";
 import { requireSuccess } from "@score/shared/adapters/command-runner.service";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
@@ -22,7 +23,9 @@ import {
   parseGithubIssues,
   parseGithubPullRequests,
   parseRepositoryName,
+  parseReviewThreadPage,
   parseUnresolvedThreadPage,
+  type ReviewThreadObservationPage,
   type ReviewThreadPage,
 } from "@score/tracker/github-parsers";
 
@@ -158,8 +161,48 @@ export class GitHubService implements WorkSource, ChangeHost, RepairHost {
     });
   }
 
-  // RepairHost: the only GitHub mutations Score performs itself. Each is
-  // idempotent on its own; repair sequences them (INVARIANTS.md).
+  // RepairHost. The thread observation is the full-fidelity sibling of
+  // unresolvedThreadCount (landing keeps the cheap one). The mutations are the
+  // only ones Score performs on GitHub itself; repair sequences them
+  // (INVARIANTS.md).
+
+  async observeReviewThreads(
+    pullRequestNumber: number,
+  ): Promise<readonly ReviewThreadObservation[]> {
+    const [owner, name] = this.options.repository.split("/");
+    if (!owner || !name) throw new Error("repository must use owner/name form");
+    const query =
+      "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id isResolved path originalLine resolvedBy{login}comments(first:1){nodes{createdAt author{login}originalCommit{oid}}}}}}}}";
+    const threads: ReviewThreadObservation[] = [];
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    do {
+      const page: ReviewThreadObservationPage = parseReviewThreadPage(
+        await this.#json([
+          "api",
+          "graphql",
+          "-f",
+          `query=${query}`,
+          "-F",
+          `owner=${owner}`,
+          "-F",
+          `repo=${name}`,
+          "-F",
+          `num=${pullRequestNumber}`,
+          ...(cursor === null ? [] : ["-f", `cursor=${cursor}`]),
+        ]),
+      );
+      // Same guard as unresolvedThreadCount: a cursor that does not advance
+      // would loop forever and may repeat nodes, so it is malformed evidence.
+      if (page.endCursor !== null && seenCursors.has(page.endCursor)) {
+        throw new Error(`github.graphql.reviewThreads cursor did not advance (${page.endCursor})`);
+      }
+      threads.push(...page.threads);
+      cursor = page.endCursor;
+      if (cursor !== null) seenCursors.add(cursor);
+    } while (cursor !== null);
+    return threads;
+  }
 
   async addLabel(pullRequestNumber: number, label: string): Promise<void> {
     // `gh pr edit --add-label` fails on a label the repository has never seen;

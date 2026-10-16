@@ -43,3 +43,8 @@ export function promptsDir(key: string): string {
 export function crashLogPath(key: string): string {
   return join(projectDir(key), "launchd-crash.log");
 }
+
+/** Repair's persisted per-PR ledger: waves, budget state, and keyed findings. */
+export function repairLedgerPath(key: string): string {
+  return join(projectDir(key), "repair-ledger.json");
+}

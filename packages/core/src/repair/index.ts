@@ -5,6 +5,7 @@
  * policy here.
  */
 
+export * from "./findings/index";
 export * from "./repair.policy";
 export * from "./repair.service";
 export * from "./repair-host.interface";
