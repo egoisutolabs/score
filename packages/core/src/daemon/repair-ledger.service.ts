@@ -121,7 +121,12 @@ export class RepairLedger implements FindingLedger {
   }
 
   lastWaveHead(pullRequestNumber: number): string | undefined {
-    return this.#entries.get(pullRequestNumber)?.waves.at(-1)?.headSha;
+    return this.lastWave(pullRequestNumber)?.headSha;
+  }
+
+  /** The most recent wave sent for this PR, for the wave telemetry record. */
+  lastWave(pullRequestNumber: number): WaveRecord | undefined {
+    return this.#entries.get(pullRequestNumber)?.waves.at(-1);
   }
 
   recordFindings(pullRequestNumber: number, records: readonly FindingRecord[]): void {

@@ -62,9 +62,13 @@ import { renderRepairRun } from "../repair/repair.run";
 import { proveLandingAuthorship } from "./recovery.policy";
 import {
   PassTelemetry,
+  renderFindingTelemetry,
   renderLandingTelemetry,
   renderMaintenanceTickTelemetry,
+  renderOpenAtMergeTelemetry,
+  renderParkedTelemetry,
   renderRepairTelemetry,
+  renderRepairWaveTelemetry,
 } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
@@ -815,7 +819,13 @@ export async function runDaemonLoop(
         shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
         exhaustion: (number, labeled) => ledger.exhaustion(number, labeled),
         onThreads: async (number, threads) => {
-          await findings.observe(number, threads);
+          const known = new Set(ledger.findings(number).map((record) => record.threadId));
+          const records = await findings.observe(number, threads);
+          telemetry?.decisions((ctx) =>
+            records
+              .filter((record) => !known.has(record.threadId))
+              .flatMap((record) => renderFindingTelemetry(number, record, ctx)),
+          );
         },
         buildRed: (number) => gateVerdicts.get(number),
       },
@@ -877,6 +887,20 @@ export async function runDaemonLoop(
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => renderLandingTelemetry(result, ctx)),
           );
+          // The ledger still holds the PR this pass (repair forgets it next);
+          // this is the "findings open at merge" figure the baseline counted.
+          telemetry?.decisions((ctx) =>
+            results
+              .filter((result) => result.tag === "merged")
+              .flatMap((result) =>
+                renderOpenAtMergeTelemetry(
+                  result.pullRequestNumber,
+                  ledger.openFindingCount(result.pullRequestNumber),
+                  ledger.findings(result.pullRequestNumber).length,
+                  ctx,
+                ),
+              ),
+          );
           pass.merged += results.filter(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
@@ -891,6 +915,21 @@ export async function runDaemonLoop(
           const results = await repair.run(dryRun);
           ledger.finishPass(results);
           await ledgerStore?.write(ledger.snapshot());
+          telemetry?.decisions((ctx) =>
+            results.flatMap((result) => {
+              if (result.action === "EXHAUSTED") return renderParkedTelemetry(result, ctx);
+              if (result.action !== "PINGED" && result.action !== "SPAWNED") return [];
+              const wave = ledger.lastWave(result.pullRequestNumber);
+              return wave === undefined
+                ? []
+                : renderRepairWaveTelemetry(
+                    result.pullRequestNumber,
+                    ledger.waveCount(result.pullRequestNumber),
+                    wave,
+                    ctx,
+                  );
+            }),
+          );
           const acted = results.filter(
             (result) => result.action === "PINGED" || result.action === "SPAWNED",
           ).length;

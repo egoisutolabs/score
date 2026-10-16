@@ -14,4 +14,6 @@ export interface RepairResult {
   readonly action: RepairAction;
   readonly dryRun: boolean;
   readonly target?: string;
+  /** EXHAUSTED only, and only on the pass that parked the PR: the convergence rule and its numbers. */
+  readonly parked?: { readonly rule: string; readonly detail: string };
 }

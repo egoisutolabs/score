@@ -132,6 +132,7 @@ export class RepairService {
           action: "EXHAUSTED",
           dryRun,
           target: REPAIR_EXHAUSTED_LABEL,
+          parked: { rule: exhaustion.rule, detail: exhaustion.detail },
         });
         continue;
       }

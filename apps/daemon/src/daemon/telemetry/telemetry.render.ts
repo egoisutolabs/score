@@ -17,7 +17,9 @@ import {
   IMPLEMENTATION_PROMPT_VERSION,
   REPAIR_PROMPT_VERSION,
 } from "@score/core/prompts/index";
+import type { FindingRecord } from "@score/core/repair/findings/finding.interface";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
+import type { WaveRecord } from "@score/core/repair/wave.interface";
 import type { TelemetryEvent, TelemetrySubject } from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
 
@@ -216,5 +218,97 @@ export function renderMaintenanceTickTelemetry(
   return [
     ...result.cleanup.flatMap((cleanup) => renderCleanupTelemetry(cleanup, ctx)),
     ...renderDispatchTelemetry(result.dispatch, ctx),
+  ];
+}
+
+// Review-loop records (analysis §2, Phase 2 of the plan): the wave, the
+// finding, the park, and what was still open at merge, all on the PR subject
+// so one trace reads top to bottom. Paths here are repo-relative; absolute
+// paths never enter telemetry.
+
+export function renderRepairWaveTelemetry(
+  pullRequestNumber: number,
+  waveIndex: number,
+  wave: WaveRecord,
+  ctx: TelemetryRenderContext,
+): readonly TelemetryEvent[] {
+  return [
+    decisionEvent(
+      ctx,
+      "score.repair.wave",
+      { pull_request_number: pullRequestNumber },
+      {
+        wave: waveIndex,
+        open_findings: wave.openFindings,
+        ...(wave.diffSize !== undefined && { diff_size: wave.diffSize }),
+        ...(wave.headSha !== undefined && { head_sha: wave.headSha }),
+        prompt_version: wave.promptVersion,
+        conflicting: wave.defects.conflicting,
+        unresolved_threads: wave.defects.unresolvedThreads,
+        failing_checks: wave.defects.failingChecks,
+        build_red: wave.defects.buildRed !== undefined,
+      },
+    ),
+  ];
+}
+
+/** One record per finding, the pass it is first keyed; resolution changes are not re-emitted. */
+export function renderFindingTelemetry(
+  pullRequestNumber: number,
+  finding: FindingRecord,
+  ctx: TelemetryRenderContext,
+): readonly TelemetryEvent[] {
+  return [
+    decisionEvent(
+      ctx,
+      "score.repair.finding",
+      { pull_request_number: pullRequestNumber },
+      {
+        thread_id: finding.threadId,
+        // "key" is a secret-shaped attribute name to the policy; the content is a blame fingerprint.
+        fingerprint: finding.key,
+        class: finding.class,
+        wave: finding.wave,
+        from_last_fix: finding.fromLastFix,
+        resolution: finding.resolution,
+        path: finding.path,
+        ...(finding.symbol !== undefined && { symbol: finding.symbol }),
+        ...(finding.author !== undefined && { author: finding.author }),
+        ...(finding.real !== undefined && { real: finding.real }),
+      },
+    ),
+  ];
+}
+
+/** The rule's numbers go in the body: free text, bounded by the policy, never an attribute. */
+export function renderParkedTelemetry(
+  result: RepairResult,
+  ctx: TelemetryRenderContext,
+): readonly TelemetryEvent[] {
+  if (result.parked === undefined) return [];
+  return [
+    decisionEvent(
+      ctx,
+      "score.repair.parked",
+      { pull_request_number: result.pullRequestNumber },
+      { rule: result.parked.rule },
+      result.parked.detail,
+    ),
+  ];
+}
+
+export function renderOpenAtMergeTelemetry(
+  pullRequestNumber: number,
+  openFindings: number,
+  totalFindings: number,
+  ctx: TelemetryRenderContext,
+): readonly TelemetryEvent[] {
+  return [
+    decisionEvent(
+      ctx,
+      "score.repair.open_at_merge",
+      { pull_request_number: pullRequestNumber },
+      { open_findings: openFindings, total_findings: totalFindings },
+    ),
   ];
 }

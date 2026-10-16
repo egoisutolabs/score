@@ -11,6 +11,8 @@ import {
   REVIEWER_PROMPT,
   REVIEWER_PROMPT_VERSION,
   renderImplementationPrompt,
+  renderStrandedPing,
+  renderStrandedRespawn,
   STRANDED_PING_VERSION,
   STRANDED_RESPAWN_VERSION,
 } from "./index";
@@ -67,4 +69,14 @@ test("the implementation line points at TASK.md and tells the session where to s
   expect(prompt).toContain("Fixes in the body");
   expect(prompt).toMatch(/Stop after reporting the PR URL\.$/);
   expect(prompt).not.toContain("\n");
+});
+
+test("the stranded prompts name the issue, the consequence, and the recovery path", () => {
+  expect(renderStrandedPing(21)).toContain("issue #21");
+  expect(renderStrandedPing(21)).toMatch(/open a PR now, or this workspace will be reclaimed/);
+  expect(renderStrandedRespawn(21)).toContain("issue #21");
+  expect(renderStrandedRespawn(21)).toMatch(/Read TASK\.md.*open a PR with Fixes in the body/);
+  for (const prompt of [renderStrandedPing(21), renderStrandedRespawn(21)]) {
+    expect(prompt).not.toContain("\n");
+  }
 });

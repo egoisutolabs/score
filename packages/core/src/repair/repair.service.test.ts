@@ -342,6 +342,7 @@ test("a spent budget posts the history comment, then the label, and pings nobody
     action: "EXHAUSTED",
     dryRun: false,
     target: "repair-exhausted",
+    parked: { rule: "budget", detail: "2 wave(s) used the budget of 2" },
   });
   expect(github.calls).toEqual(["hasComment", "comment:9", "label:9:repair-exhausted"]);
   expect(github.comments[0]).toContain("<!-- score:repair-exhausted -->");

@@ -299,3 +299,41 @@ stable, the reviewer copy equals the workflow block, the rules copy equals
 the AGENTS.md section, and the implementation line's shape. Online: rounds
 per PR, late-round share, and findings open at merge, grouped by
 `repair_prompt_version` and `briefing_version` from telemetry.
+
+## Phase 1 step 7: evals, tiers 1 and 3
+
+Tier 1, contract tests, now covers every prompt: the briefing (twelve tests
+in `task-briefing.service.test.ts`), the repair wave (`repair.policy.test.ts`),
+the implementation line and the two stranded prompts (`prompts.test.ts`), and
+the two copies pinned to their sources (reviewer workflow, AGENTS.md rules).
+
+Tier 3, online metrics, needed records the loop did not emit. The daemon
+now writes, on the PR subject and the phase trace:
+
+| Record | When | Carries |
+| --- | --- | --- |
+| `score.repair.wave` | each ping or spawn | wave index, open findings, diff size, head, prompt version, defects |
+| `score.repair.finding` | a thread's first keying | key, class, wave, from-last-fix, resolution, path, symbol, author |
+| `score.repair.parked` | the pass that parks a PR | rule as attribute, the numbers in the body |
+| `score.repair.open_at_merge` | a landing merge | ledger-open and total findings for that PR |
+
+`reviewLoopMetrics` (apps/server/src/telemetry/metrics) folds those into the
+baseline table per repair prompt version: PRs, waves per PR, late-round
+share, late-round regression share, merged PRs, findings open at merge, and
+parks by rule, plus dispatches per briefing version.
+`bun scripts/review-loop-metrics.ts <project-key>` prints it from a project's
+telemetry segments. A PR is attributed to the prompt version of its last
+wave, so a prompt change mid-PR counts under the version that finished it.
+
+Decision on the metric definitions: "late-round regression share" is the
+share of findings first seen after wave one whose class is fix-failed or
+regression-from-fix; "open at merge" uses the ledger's count, which keeps the
+agent's own resolves open. Both are the figures the baseline measured by
+hand, now from the loop's own records.
+
+External check: `review-loop.metrics.test.ts` proves the segmentation, the
+"none" bucket for a PR with no wave, and the empty case;
+`telemetry.render.test.ts` proves each record passes the telemetry policy.
+The first live numbers come from the next batch of PRs under this branch.
+
+Tier 2, the offline judge over the labeled findings, is the next change.
