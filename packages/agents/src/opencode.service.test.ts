@@ -439,7 +439,7 @@ test("every session-scoped request carries the directory query parameter matchin
 
 test("listSessions output feeds RepairLedger.startPass — an idle session counts as existing", async () => {
   fake.sessions.push(session("ses_1", "score-ns-shepherd-pr-7", "/work/7"));
-  const ledger = new RepairLedger(3);
+  const ledger = new RepairLedger({ staleTicks: 3 });
   const defects = { conflicting: false, unresolvedThreads: 0, failingChecks: 0 };
 
   ledger.startPass(1, new Set(await service.listSessions()));

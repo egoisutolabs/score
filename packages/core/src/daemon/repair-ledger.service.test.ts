@@ -28,7 +28,7 @@ function pass(
 const working: RepairResult = { pullRequestNumber: 9, action: "WORKING", dryRun: false };
 
 test("a pinged agent is left alone while its session lives and nothing moved", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   expect(
     pass(ledger, 0, ["score-issue-3"], CONFLICTING, "aaa", () => pinged("score-issue-3")),
   ).toBe(true);
@@ -37,7 +37,7 @@ test("a pinged agent is left alone while its session lives and nothing moved", (
 });
 
 test("a push that leaves the PR broken earns another ping", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   pass(ledger, 0, ["score-issue-3"], CONFLICTING, "aaa", () => pinged("score-issue-3"));
   expect(
     pass(ledger, 1, ["score-issue-3"], CONFLICTING, "bbb", () => pinged("score-issue-3")),
@@ -45,7 +45,7 @@ test("a push that leaves the PR broken earns another ping", () => {
 });
 
 test("a changed defect set earns another ping even without a push", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   pass(ledger, 0, ["score-issue-3"], CONFLICTING, "aaa", () => pinged("score-issue-3"));
   expect(pass(ledger, 1, ["score-issue-3"], RED_CI, "aaa", () => pinged("score-issue-3"))).toBe(
     true,
@@ -53,13 +53,13 @@ test("a changed defect set earns another ping even without a push", () => {
 });
 
 test("a dead session earns a respawn on the very next tick", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   pass(ledger, 0, ["score-issue-3"], CONFLICTING, "aaa", () => pinged("score-issue-3"));
   expect(pass(ledger, 1, [], CONFLICTING, "aaa", () => pinged("score-issue-3"))).toBe(true);
 });
 
 test("a wedged agent that never pushes is re-pinged once staleTicks pass", () => {
-  const ledger = new RepairLedger(3);
+  const ledger = new RepairLedger({ staleTicks: 3 });
   pass(ledger, 0, ["score-issue-3"], CONFLICTING, "aaa", () => pinged("score-issue-3"));
   expect(pass(ledger, 2, ["score-issue-3"], CONFLICTING, "aaa", () => working)).toBe(false);
   expect(
@@ -68,7 +68,7 @@ test("a wedged agent that never pushes is re-pinged once staleTicks pass", () =>
 });
 
 test("a spawned agent is tracked by its shepherd session, and a fixed PR is forgotten", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   ledger.startPass(0, new Set());
   expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(true);
   ledger.finishPass([{ pullRequestNumber: 9, action: "SPAWNED", dryRun: false, target: "/wt/x" }]);
@@ -83,7 +83,7 @@ test("a spawned agent is tracked by its shepherd session, and a fixed PR is forg
 });
 
 test("a dry run records nothing, so the next real pass still acts", () => {
-  const ledger = new RepairLedger(10);
+  const ledger = new RepairLedger({ staleTicks: 10 });
   ledger.startPass(0, new Set(["score-issue-3"]));
   expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(true);
   ledger.finishPass([{ ...pinged("score-issue-3"), dryRun: true }]);
@@ -93,7 +93,7 @@ test("a dry run records nothing, so the next real pass still acts", () => {
 });
 
 test("a namespaced spawn is tracked under the session name the adapter actually creates", () => {
-  const ledger = new RepairLedger(10, "demo");
+  const ledger = new RepairLedger({ staleTicks: 10, namespace: "demo" });
   ledger.startPass(0, new Set());
   expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(true);
   ledger.finishPass([{ pullRequestNumber: 9, action: "SPAWNED", dryRun: false, target: "/wt/x" }]);
@@ -102,4 +102,67 @@ test("a namespaced spawn is tracked under the session name the adapter actually 
   // match it, or every tick tears down and recreates the live repair.
   ledger.startPass(1, new Set(["score-demo-shepherd-pr-9"]));
   expect(ledger.shouldAct(9, CONFLICTING, "aaa")).toBe(false);
+});
+
+// Round budget (review-loop analysis §2.2).
+
+const BROKEN: RepairDefects = { conflicting: false, unresolvedThreads: 2, failingChecks: 0 };
+
+test("the budget counts pings and spawns; once spent, exhaustion returns the wave history", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 2, now: () => "T" });
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+  // The agent pushed and the PR is still broken: round two.
+  pass(ledger, 1, ["score-issue-3"], BROKEN, "bbb", () => pinged("score-issue-3"));
+  expect(ledger.exhaustion(9, false)).toEqual({
+    budget: 2,
+    waves: [
+      { at: "T", tick: 0, headSha: "aaa", defects: BROKEN },
+      { at: "T", tick: 1, headSha: "bbb", defects: BROKEN },
+    ],
+  });
+});
+
+test("a wait on pending checks keeps the wave count; a clean PR resets it", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  ledger.startPass(1, new Set(["score-issue-3"]));
+  ledger.finishPass([{ pullRequestNumber: 9, action: "CHECKS_PENDING", dryRun: false }]);
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
+
+  ledger.startPass(2, new Set(["score-issue-3"]));
+  ledger.finishPass([{ pullRequestNumber: 9, action: "NOT_NEEDED", dryRun: false }]);
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+});
+
+test("an exhausted PR stays parked while labeled; removing the label grants a fresh budget", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  ledger.startPass(1, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
+  ledger.finishPass([
+    { pullRequestNumber: 9, action: "EXHAUSTED", dryRun: false, target: "repair-exhausted" },
+  ]);
+
+  // Still labeled on later passes: the service parks it before asking; the
+  // entry survives so the history is not lost while parked.
+  ledger.startPass(2, new Set(["score-issue-3"]));
+  ledger.finishPass([
+    { pullRequestNumber: 9, action: "EXHAUSTED", dryRun: false, target: "repair-exhausted" },
+  ]);
+
+  // A human removed the label: the next question starts a fresh budget.
+  ledger.startPass(3, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+  expect(ledger.shouldAct(9, BROKEN, "aaa")).toBe(true);
+});
+
+test("a dry-run exhaustion records nothing, so the next real pass still marks the PR", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  ledger.startPass(1, new Set(["score-issue-3"]));
+  ledger.finishPass([{ pullRequestNumber: 9, action: "EXHAUSTED", dryRun: true }]);
+  ledger.startPass(2, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
 });

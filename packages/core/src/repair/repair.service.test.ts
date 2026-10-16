@@ -5,6 +5,7 @@ import type { PullRequestObservation } from "@score/core/landing/change.interfac
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
 import { DEFAULT_SESSION_SUFFIX } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
+import type { RepairHost } from "@score/core/repair/repair-host.interface";
 import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 import { expect, test } from "vitest";
@@ -62,6 +63,27 @@ class RepairAgents implements AgentRuntime {
   async stop() {}
 }
 
+class RecordingHost implements RepairHost {
+  calls: string[] = [];
+  comments: string[] = [];
+  labels: string[] = [];
+  failAt: "comment" | "label" | undefined;
+  async addLabel(pullRequestNumber: number, label: string) {
+    this.calls.push(`label:${pullRequestNumber}:${label}`);
+    if (this.failAt === "label") throw new Error("gh pr edit died");
+    this.labels.push(label);
+  }
+  async hasComment(_pullRequestNumber: number, marker: string) {
+    this.calls.push("hasComment");
+    return this.comments.some((body) => body.includes(marker));
+  }
+  async comment(pullRequestNumber: number, body: string) {
+    this.calls.push(`comment:${pullRequestNumber}`);
+    if (this.failAt === "comment") throw new Error("gh pr comment died");
+    this.comments.push(body);
+  }
+}
+
 function changes(): ChangeHost {
   return {
     async observeOpenChanges() {
@@ -97,7 +119,13 @@ test("repair pings the matching live issue session even without a worktree", asy
   const workspace = new RepairWorkspace();
   const agents = new RepairAgents();
   agents.sessions = ["score-issue-3"];
-  const result = await new RepairService(options, changes(), workspace, agents).run();
+  const result = await new RepairService(
+    options,
+    changes(),
+    workspace,
+    agents,
+    new RecordingHost(),
+  ).run();
   expect(result[0]?.action).toBe("PINGED");
   expect(agents.pinged).toEqual(["score-issue-3"]);
 });
@@ -117,6 +145,7 @@ test("shouldAct=false reports WORKING and touches no session", async () => {
     changes(),
     new RepairWorkspace(),
     agents,
+    new RecordingHost(),
   ).run();
   expect(result[0]?.action).toBe("WORKING");
   expect(asked).toEqual([9]);
@@ -127,7 +156,13 @@ test("repair spawns shepherd-pr work in the exact existing PR worktree", async (
   const workspace = new RepairWorkspace();
   workspace.worktrees = [{ path: "/wt/issue-3-repair", branch: "issue-3-repair", locked: false }];
   const agents = new RepairAgents();
-  const result = await new RepairService(options, changes(), workspace, agents).run();
+  const result = await new RepairService(
+    options,
+    changes(),
+    workspace,
+    agents,
+    new RecordingHost(),
+  ).run();
   expect(result[0]?.action).toBe("SPAWNED");
   expect(agents.spawned).toEqual([9]);
   // The agent config flows through to the spawn untouched.
@@ -158,7 +193,13 @@ test("review-thread query failure retains shepherd's fail-open zero", async () =
       throw new Error("graphql failed");
     },
   };
-  const result = await new RepairService(options, host, workspace, agents).run();
+  const result = await new RepairService(
+    options,
+    host,
+    workspace,
+    agents,
+    new RecordingHost(),
+  ).run();
   expect(result[0]?.action).toBe("NOT_NEEDED");
 });
 
@@ -189,6 +230,7 @@ test("a GitHub-clean PR with a landing build-red verdict is repaired, tail in th
     host,
     new RepairWorkspace(),
     agents,
+    new RecordingHost(),
   ).run();
   expect(result[0]?.action).toBe("PINGED");
   expect(agents.pingedMessages[0]).toContain("daemon:check — TS2345 boom");
@@ -212,4 +254,172 @@ test("default session suffix matches the sessions dispatch creates, and only tho
   expect(pattern.test("my-issue-1")).toBe(false);
   expect(pattern.test("shepherd-pr-1")).toBe(false);
   expect(pattern.test("issue-11")).toBe(false);
+});
+
+// Repair gate and round budget (review-loop analysis §2.2).
+
+function withChange(overrides: Partial<PullRequestObservation>): ChangeHost {
+  const observed = { ...change(), ...overrides };
+  return {
+    ...changes(),
+    async observeOpenChanges() {
+      return [observed];
+    },
+    async observeRepairChanges() {
+      return [observed];
+    },
+  };
+}
+
+test("no ping while a check on the head commit is still running", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const host = withChange({ statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: null }] });
+  const asked: number[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      shouldAct: (number) => {
+        asked.push(number);
+        return true;
+      },
+    },
+    host,
+    new RepairWorkspace(),
+    agents,
+    new RecordingHost(),
+  ).run();
+  expect(result[0]?.action).toBe("CHECKS_PENDING");
+  expect(agents.pinged).toEqual([]);
+  // The ledger is not even consulted: a pending check is a wait, not a round.
+  expect(asked).toEqual([]);
+});
+
+test("a completed check that failed still counts as a defect, not a pending wait", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const host = withChange({
+    mergeable: "MERGEABLE",
+    statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
+  });
+  const result = await new RepairService(
+    options,
+    host,
+    new RepairWorkspace(),
+    agents,
+    new RecordingHost(),
+  ).run();
+  expect(result[0]?.action).toBe("PINGED");
+});
+
+const spent = { budget: 2, waves: [] };
+
+test("a spent budget posts the history comment, then the label, and pings nobody", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  const result = await new RepairService(
+    { ...options, exhaustion: () => spent, shouldAct: () => true },
+    changes(),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(result[0]).toEqual({
+    pullRequestNumber: 9,
+    action: "EXHAUSTED",
+    dryRun: false,
+    target: "repair-exhausted",
+  });
+  expect(github.calls).toEqual(["hasComment", "comment:9", "label:9:repair-exhausted"]);
+  expect(github.comments[0]).toContain("<!-- score:repair-exhausted -->");
+  expect(agents.pinged).toEqual([]);
+});
+
+test("death after the comment, before the label — next tick labels without a second comment (RETRIED)", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  github.failAt = "label";
+  const service = new RepairService(
+    { ...options, exhaustion: () => spent },
+    changes(),
+    new RepairWorkspace(),
+    agents,
+    github,
+  );
+  await expect(service.run()).rejects.toThrow("gh pr edit died");
+  expect(github.comments).toHaveLength(1);
+
+  github.failAt = undefined;
+  github.calls = [];
+  const result = await service.run();
+  expect(result[0]?.action).toBe("EXHAUSTED");
+  expect(github.calls).toEqual(["hasComment", "label:9:repair-exhausted"]);
+  expect(github.comments).toHaveLength(1);
+  expect(github.labels).toEqual(["repair-exhausted"]);
+});
+
+test("death at the comment — next tick comments and labels; nothing was half-done (RETRIED)", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  github.failAt = "comment";
+  const service = new RepairService(
+    { ...options, exhaustion: () => spent },
+    changes(),
+    new RepairWorkspace(),
+    agents,
+    github,
+  );
+  await expect(service.run()).rejects.toThrow("gh pr comment died");
+  expect(github.labels).toEqual([]);
+
+  github.failAt = undefined;
+  github.calls = [];
+  await service.run();
+  expect(github.calls).toEqual(["hasComment", "comment:9", "label:9:repair-exhausted"]);
+  expect(github.comments).toHaveLength(1);
+  expect(github.labels).toEqual(["repair-exhausted"]);
+});
+
+test("a PR already carrying the label is parked: no ping, no mutation, no ledger question", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  const asked: string[] = [];
+  const result = await new RepairService(
+    {
+      ...options,
+      exhaustion: () => {
+        asked.push("exhaustion");
+        return undefined;
+      },
+      shouldAct: () => {
+        asked.push("shouldAct");
+        return true;
+      },
+    },
+    withChange({ labels: [{ name: "repair-exhausted" }] }),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(result[0]?.action).toBe("EXHAUSTED");
+  expect(agents.pinged).toEqual([]);
+  expect(github.calls).toEqual([]);
+  expect(asked).toEqual([]);
+});
+
+test("a dry run reports EXHAUSTED without commenting or labeling", async () => {
+  const github = new RecordingHost();
+  const result = await new RepairService(
+    { ...options, exhaustion: () => spent },
+    changes(),
+    new RepairWorkspace(),
+    new RepairAgents(),
+    github,
+  ).run(true);
+  expect(result[0]?.action).toBe("EXHAUSTED");
+  expect(github.calls).toEqual([]);
 });

@@ -16,7 +16,15 @@ import { GitHubService } from "@score/tracker/github.service";
 /** Legacy shepherd-prs output: per-PR action lines, summary counts, attach hint. */
 export function renderRepairRun(results: readonly RepairResult[]): readonly LogLine[] {
   const lines: LogLine[] = [];
-  const counts = { PINGED: 0, SPAWNED: 0, SKIPPED: 0, NOT_NEEDED: 0, WORKING: 0 };
+  const counts = {
+    PINGED: 0,
+    SPAWNED: 0,
+    SKIPPED: 0,
+    NOT_NEEDED: 0,
+    WORKING: 0,
+    CHECKS_PENDING: 0,
+    EXHAUSTED: 0,
+  };
   for (const result of results) {
     counts[result.action] += 1;
     const dryRun = result.dryRun ? "(dry-run) " : "";
@@ -35,6 +43,16 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
         level: "debug",
         text: `· #${result.pullRequestNumber} -> agent still working; left alone`,
       });
+    } else if (result.action === "CHECKS_PENDING") {
+      lines.push({
+        level: "debug",
+        text: `· #${result.pullRequestNumber} -> checks still running on the head commit; no ping`,
+      });
+    } else if (result.action === "EXHAUSTED") {
+      lines.push({
+        level: "warn",
+        text: `· #${result.pullRequestNumber} -> round budget spent; parked under ${result.target} for a human`,
+      });
     } else if (result.action === "SKIPPED") {
       lines.push({
         level: "debug",
@@ -46,7 +64,7 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
   }
   lines.push({
     level: "info",
-    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
+    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} checks-pending=${counts.CHECKS_PENDING} exhausted=${counts.EXHAUSTED} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
   });
   if (counts.SPAWNED > 0) {
     lines.push({
@@ -90,6 +108,7 @@ export async function runRepair(args: readonly string[]): Promise<void> {
     github,
     git,
     tmux,
+    github,
   );
   const results = await service.run(parsed.dryRun);
   log.lines(renderRepairRun(results));

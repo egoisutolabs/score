@@ -36,6 +36,8 @@ export interface PullRequestIdentity {
 export interface RepairPullRequestObservation {
   readonly number: number;
   readonly headRefName: string;
+  /** Repair reads only its own exhaustion label here; landing owns skip labels. */
+  readonly labels: readonly Label[];
   /** Lets a caller tell "the agent pushed something" from "nothing moved". */
   readonly headSha?: string;
   readonly mergeable: string;

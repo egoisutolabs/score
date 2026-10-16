@@ -622,6 +622,10 @@ export async function runDaemonLoop(
   const maxMerges = positiveTuning("MAX_MERGES", 5);
   const soakTicks = positiveTuning("SOAK_TICKS", 2);
   const staleTicks = positiveTuning("REPAIR_STALE_TICKS", 10);
+  // Four: in the baseline, 9 of 14 PRs with findings landed within four rounds,
+  // and the 25 findings opened after round four were fix-induced regressions
+  // (docs/review-loop-baseline.md). Past that, a human decides.
+  const roundBudget = positiveTuning("REPAIR_ROUND_BUDGET", 4);
   const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
     .split(",")
     .map((label) => label.trim().toLowerCase())
@@ -769,7 +773,7 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    const ledger = new RepairLedger(staleTicks, namespace);
+    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget });
     const repair = new RepairService(
       {
         agent,
@@ -778,11 +782,13 @@ export async function runDaemonLoop(
         onlyPullRequests: new Set<string>(),
         noSpawn: false,
         shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
+        exhaustion: (number, labeled) => ledger.exhaustion(number, labeled),
         buildRed: (number) => gateVerdicts.get(number),
       },
       github,
       git,
       agents,
+      github,
     );
 
     const pass = { cleaned: 0, started: 0, merged: 0, soaking: 0, repaired: 0, working: 0 };

@@ -306,7 +306,15 @@ export const landingRows: readonly MappingRow<LandingResult>[] = [
   },
 ];
 
-const repairActions = ["NOT_NEEDED", "PINGED", "SPAWNED", "SKIPPED", "WORKING"] as const;
+const repairActions = [
+  "NOT_NEEDED",
+  "PINGED",
+  "SPAWNED",
+  "SKIPPED",
+  "WORKING",
+  "CHECKS_PENDING",
+  "EXHAUSTED",
+] as const;
 
 export const repairRows: readonly MappingRow<RepairResult>[] = [
   ...repairActions.map((action, index) => ({

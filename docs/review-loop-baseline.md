@@ -84,3 +84,35 @@ single line, decline path, no-triage rule, test-before-fix, verify before
 push, and merge refusal. The online check is the table above, re-measured
 after the next batch of PRs: rounds per PR, late-round share, and findings
 open at merge, segmented by prompt version once step 6 records it.
+
+## Phase 1 step 2: repair gate and round budget
+
+Evidence: the PR 99 timeline above. Every one of its eight fix commits landed
+2 to 6 minutes after the previous Codex review, while the Claude check on
+the new head was still running; the repair ledger re-pinged the live session
+as soon as the thread count changed. Across the score set, 9 of 14 PRs with
+findings finished within four rounds. The five that went past four (85, 86,
+94, 99, 102) produced 64 of the 81 late-round findings, and the 25 findings
+opened after round four were all regressions from earlier fixes.
+
+Decision: repair now reports `CHECKS_PENDING` and sends nothing while any
+check on the head commit is running. Each PR has a round budget
+(`REPAIR_ROUND_BUDGET`, default 4) counted in pings and spawns since the PR
+was last clean. On exhaustion repair posts one comment carrying the wave
+history under a hidden marker, adds the `repair-exhausted` label, and stops.
+The label outlives the in-memory ledger, so a restart keeps the PR parked;
+removing the label is how a human grants a fresh budget. The daemon never
+closes the PR.
+
+Rejected: a timer instead of a check gate (Codex posts no check, so the
+timer would have to guess its latency); counting rounds in GitHub review
+submissions (Codex reviews only when it has findings, so a clean round is
+invisible); persisting the budget now (step 3 persists the whole ledger, and
+the label already makes the parked state restart-safe).
+
+External check: `repair.service.test.ts` proves the gate, the exhaustion
+sequence, both death boundaries, and the labeled no-op; `repair-ledger.
+service.test.ts` proves the count, the wait, the reset on clean, and the
+fresh budget on label removal. Online: rounds per PR must not exceed the
+budget in the next batch, and the number of PRs that hit the label is the
+new figure to watch.

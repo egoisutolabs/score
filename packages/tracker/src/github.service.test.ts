@@ -87,7 +87,7 @@ test("repair observation does not request landing-only fields", async () => {
   expect(observed?.mergeable).toBe("A_FUTURE_VALUE");
   expect(observed?.headSha).toBe("cafe1234");
   expect(runner.commands[0]?.at(-1)).toBe(
-    "number,headRefName,headRefOid,mergeable,statusCheckRollup",
+    "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup",
   );
 });
 
@@ -187,4 +187,52 @@ test("a repair observation without headRefOid stays undefined instead of throwin
   const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
 
   expect((await github.observeRepairChanges())[0]?.headSha).toBeUndefined();
+});
+
+test("addLabel creates the label idempotently before adding it to the PR", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = ["", ""];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await github.addLabel(9, "repair-exhausted");
+
+  expect(runner.commands.map((command) => command.slice(0, 4))).toEqual([
+    ["gh", "label", "create", "repair-exhausted"],
+    ["gh", "pr", "edit", "9"],
+  ]);
+  expect(runner.commands[0]).toContain("--force");
+  expect(runner.commands[1]?.slice(-2)).toEqual(["--add-label", "repair-exhausted"]);
+});
+
+test("hasComment finds the marker anywhere in the PR conversation, and only there", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    JSON.stringify({ comments: [{ body: "lgtm" }, { body: "<!-- m -->\nparked" }] }),
+    JSON.stringify({ comments: [{ body: "unrelated" }] }),
+    JSON.stringify({}),
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(true);
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
+  // A PR view without a comments array reads as no comment, not a crash.
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
+  expect(runner.commands[0]).toEqual(["gh", "pr", "view", "9", "--json", "comments"]);
+});
+
+test("comment posts the body as one argument, never through a shell", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [""];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await github.comment(9, "line one\n`code` $(not run)");
+
+  expect(runner.commands[0]).toEqual([
+    "gh",
+    "pr",
+    "comment",
+    "9",
+    "--body",
+    "line one\n`code` $(not run)",
+  ]);
 });

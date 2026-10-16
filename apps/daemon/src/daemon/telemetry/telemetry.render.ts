@@ -84,6 +84,8 @@ const REPAIR_ACTIONS: ReadonlySet<string> = new Set([
   "SPAWNED",
   "SKIPPED",
   "WORKING",
+  "CHECKS_PENDING",
+  "EXHAUSTED",
 ]);
 
 export function renderCleanupTelemetry(

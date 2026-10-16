@@ -1,4 +1,11 @@
-import { REPAIR_WAVE_STEPS, renderRepairPrompt } from "@score/core/repair/repair.policy";
+import {
+  countChecks,
+  REPAIR_EXHAUSTED_LABEL,
+  REPAIR_EXHAUSTED_MARKER,
+  REPAIR_WAVE_STEPS,
+  renderExhaustionComment,
+  renderRepairPrompt,
+} from "@score/core/repair/repair.policy";
 import { VERIFY_COMMAND } from "@score/core/verify";
 import { expect, test } from "vitest";
 
@@ -58,4 +65,49 @@ test("repair prompt appends the build-red tail only when landing handed one over
   const tail = "make verify: tsc exit 2";
   expect(renderRepairPrompt(7, tail)).toMatch(new RegExp(`fix this failure too: ${tail}\\.$`));
   expect(renderRepairPrompt(7)).not.toContain("merged-tree build gate");
+});
+
+test("countChecks mirrors landing: running or expected is pending, non-success completion is failing", () => {
+  expect(
+    countChecks([
+      { status: "IN_PROGRESS", conclusion: null },
+      { status: "COMPLETED", conclusion: "SUCCESS" },
+      { status: "COMPLETED", conclusion: "SKIPPED" },
+      { status: "COMPLETED", conclusion: "FAILURE" },
+      { state: "PENDING" },
+      { state: "EXPECTED" },
+      { state: "SUCCESS" },
+      { state: "ERROR" },
+    ]),
+  ).toEqual({ failing: 2, pending: 3 });
+  expect(countChecks([])).toEqual({ failing: 0, pending: 0 });
+});
+
+test("the exhaustion comment opens with the marker and lists every wave", () => {
+  const body = renderExhaustionComment(99, {
+    budget: 2,
+    waves: [
+      {
+        at: "2026-10-16T10:00:00Z",
+        tick: 4,
+        headSha: "abcdef0123",
+        defects: { conflicting: true, unresolvedThreads: 3, failingChecks: 0 },
+      },
+      {
+        at: "2026-10-16T10:05:00Z",
+        tick: 9,
+        headSha: undefined,
+        defects: { conflicting: false, unresolvedThreads: 0, failingChecks: 1, buildRed: "tsc" },
+      },
+    ],
+  });
+  expect(body.startsWith(`${REPAIR_EXHAUSTED_MARKER}\n`)).toBe(true);
+  expect(body).toContain("PR #99");
+  expect(body).toContain(
+    "| 1 | 2026-10-16T10:00:00Z | abcdef0 | conflicts, 3 unresolved thread(s) |",
+  );
+  expect(body).toContain(
+    "| 2 | 2026-10-16T10:05:00Z | unknown | 1 failing check(s), merged-tree build red |",
+  );
+  expect(body).toContain(`Remove the \`${REPAIR_EXHAUSTED_LABEL}\` label`);
 });

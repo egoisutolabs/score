@@ -1,13 +1,19 @@
 import type { AgentRuntime } from "@score/core/agent-runtime.interface";
 import { issueNumberFromBranch } from "@score/core/dispatch/dispatch.identity";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
-import type { RepairDefects } from "@score/core/repair/repair.policy";
-import { needsRepair, renderRepairPrompt } from "@score/core/repair/repair.policy";
+import type { RepairDefects, RepairExhaustion } from "@score/core/repair/repair.policy";
+import {
+  countChecks,
+  needsRepair,
+  REPAIR_EXHAUSTED_LABEL,
+  REPAIR_EXHAUSTED_MARKER,
+  renderExhaustionComment,
+  renderRepairPrompt,
+} from "@score/core/repair/repair.policy";
+import type { RepairHost } from "@score/core/repair/repair-host.interface";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import type { LandingWorkspace, WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type { AgentConfig } from "@score/shared/config/config.interface";
-
-const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 export interface RepairServiceOptions {
   readonly agent: AgentConfig;
@@ -21,6 +27,13 @@ export interface RepairServiceOptions {
    * an agent already working on this PR is left alone.
    */
   shouldAct?(pullRequestNumber: number, defects: RepairDefects, headSha?: string): boolean;
+  /**
+   * Asked before shouldAct: the PR's spent round budget, or undefined while
+   * rounds remain. `labeled` tells the ledger whether the PR still carries the
+   * exhaustion label, so a human removing it grants a fresh budget. Unset
+   * (the manual subcommand) means no budget.
+   */
+  exhaustion?(pullRequestNumber: number, labeled: boolean): RepairExhaustion | undefined;
   /**
    * Landing's build-red handoff (epic decision 11): the gate-failure tail for
    * this PR, if landing's merged-tree gate failed. Unset for the manual
@@ -39,6 +52,7 @@ export class RepairService {
     private readonly workspace: Pick<WorktreeProvisioner, "observeWorktrees"> &
       Pick<LandingWorkspace, "fetchOrigin">,
     private readonly agents: AgentRuntime,
+    private readonly host: RepairHost,
   ) {}
 
   async run(dryRun = false): Promise<readonly RepairResult[]> {
@@ -61,22 +75,46 @@ export class RepairService {
       const unresolvedThreads = await this.changes
         .unresolvedThreadCount(change.number)
         .catch(() => 0);
-      const failingChecks = change.statusCheckRollup.filter((check) => {
-        if ("status" in check) {
-          const conclusion = check.conclusion ?? "";
-          return check.status === "COMPLETED" && !SUCCESSFUL_CONCLUSIONS.has(conclusion);
-        }
-        return !["SUCCESS", "PENDING", "EXPECTED"].includes(check.state);
-      }).length;
+      const checks = countChecks(change.statusCheckRollup);
       const buildRed = this.options.buildRed?.(change.number);
       const defects: RepairDefects = {
         conflicting: change.mergeable === "CONFLICTING",
         unresolvedThreads,
-        failingChecks,
+        failingChecks: checks.failing,
         ...(buildRed !== undefined && { buildRed }),
       };
       if (!this.options.includeClean && !needsRepair(defects)) {
         results.push({ pullRequestNumber: change.number, action: "NOT_NEEDED", dryRun });
+        continue;
+      }
+      // The label outlives the in-memory ledger: a labeled PR stays parked
+      // across daemon restarts until a human removes the label.
+      const labeled = change.labels.some((label) => label.name === REPAIR_EXHAUSTED_LABEL);
+      if (labeled) {
+        results.push({
+          pullRequestNumber: change.number,
+          action: "EXHAUSTED",
+          dryRun,
+          target: REPAIR_EXHAUSTED_LABEL,
+        });
+        continue;
+      }
+      // A ping while the reviewer's check is still running makes the agent
+      // fix round N while round N+1 is being written (analysis §1): in PR 99
+      // every fix commit landed 2–6 minutes after the previous review.
+      if (checks.pending > 0) {
+        results.push({ pullRequestNumber: change.number, action: "CHECKS_PENDING", dryRun });
+        continue;
+      }
+      const exhaustion = this.options.exhaustion?.(change.number, labeled);
+      if (exhaustion !== undefined) {
+        if (!dryRun) await this.#markExhausted(change.number, exhaustion);
+        results.push({
+          pullRequestNumber: change.number,
+          action: "EXHAUSTED",
+          dryRun,
+          target: REPAIR_EXHAUSTED_LABEL,
+        });
         continue;
       }
       if (this.options.shouldAct?.(change.number, defects, change.headSha) === false) {
@@ -123,5 +161,20 @@ export class RepairService {
     }
 
     return results;
+  }
+
+  /**
+   * Comment, then label. The comment carries the history a human needs, so it
+   * goes first; the marker check makes a retry after a death between the two
+   * steps add the label without a second comment (INVARIANTS.md, RETRIED).
+   */
+  async #markExhausted(pullRequestNumber: number, exhaustion: RepairExhaustion): Promise<void> {
+    if (!(await this.host.hasComment(pullRequestNumber, REPAIR_EXHAUSTED_MARKER))) {
+      await this.host.comment(
+        pullRequestNumber,
+        renderExhaustionComment(pullRequestNumber, exhaustion),
+      );
+    }
+    await this.host.addLabel(pullRequestNumber, REPAIR_EXHAUSTED_LABEL);
   }
 }

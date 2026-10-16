@@ -7,6 +7,7 @@ import type {
   RepairPullRequestObservation,
 } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import type { RepairHost } from "@score/core/repair/repair-host.interface";
 import { requireSuccess } from "@score/shared/adapters/command-runner.service";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import {
@@ -49,7 +50,7 @@ export interface GitHubMergeHistory {
 }
 
 /** Validated GitHub observation adapter; it does not make scheduling or landing decisions. */
-export class GitHubService implements WorkSource, ChangeHost {
+export class GitHubService implements WorkSource, ChangeHost, RepairHost {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
 
@@ -127,7 +128,7 @@ export class GitHubService implements WorkSource, ChangeHost {
   async observeRepairChanges(): Promise<readonly RepairPullRequestObservation[]> {
     const raw = await this.#listComplete(
       ["pr", "list", "--state", "open"],
-      "number,headRefName,headRefOid,mergeable,statusCheckRollup",
+      "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup",
       100,
       "github.repairPullRequests",
     );
@@ -141,6 +142,7 @@ export class GitHubService implements WorkSource, ChangeHost {
           headRefName: value.headRefName,
           headRefOid: value.headRefOid,
           mergeable: value.mergeable,
+          labels: value.labels,
           statusCheckRollup: value.statusCheckRollup,
         },
       ])[0];
@@ -150,9 +152,50 @@ export class GitHubService implements WorkSource, ChangeHost {
         headRefName: parsed.headRefName,
         headSha: parsed.headSha,
         mergeable: parsed.mergeable,
+        labels: parsed.labels,
         statusCheckRollup: parsed.statusCheckRollup,
       };
     });
+  }
+
+  // RepairHost: the only GitHub mutations Score performs itself. Each is
+  // idempotent on its own; repair sequences them (INVARIANTS.md).
+
+  async addLabel(pullRequestNumber: number, label: string): Promise<void> {
+    // `gh pr edit --add-label` fails on a label the repository has never seen;
+    // --force makes create an update when it already exists.
+    requireSuccess(
+      await this.#run([
+        "label",
+        "create",
+        label,
+        "--force",
+        "--description",
+        "Score repair round budget spent; a human decides",
+        "--color",
+        "B60205",
+      ]),
+    );
+    requireSuccess(
+      await this.#run(["pr", "edit", String(pullRequestNumber), "--add-label", label]),
+    );
+  }
+
+  async hasComment(pullRequestNumber: number, marker: string): Promise<boolean> {
+    const view = objectValue(
+      await this.#json(["pr", "view", String(pullRequestNumber), "--json", "comments"]),
+      "github.pullRequest",
+    );
+    return arrayValue(view.comments ?? [], "github.pullRequest.comments").some((comment, index) =>
+      stringValue(
+        objectValue(comment, `github.pullRequest.comments[${index}]`).body ?? "",
+        `github.pullRequest.comments[${index}].body`,
+      ).includes(marker),
+    );
+  }
+
+  async comment(pullRequestNumber: number, body: string): Promise<void> {
+    requireSuccess(await this.#run(["pr", "comment", String(pullRequestNumber), "--body", body]));
   }
 
   async observeMergedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {
