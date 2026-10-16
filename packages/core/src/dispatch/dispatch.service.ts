@@ -16,6 +16,7 @@ import {
 import type { TaskBriefingWriter } from "@score/core/dispatch/task-briefing.interface";
 import type { WorkSource } from "@score/core/dispatch/work-source.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import { renderImplementationPrompt } from "@score/core/prompts/implementation.render";
 import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import { assertKnownHarness } from "@score/shared/agent-command";
 import type { AgentConfig } from "@score/shared/config/config.interface";
@@ -160,7 +161,7 @@ export class DispatchService {
       await this.briefings.write(issue, identity, this.options.agent);
       await this.agents.startImplementation(
         identity,
-        "Read TASK.md and implement it end-to-end. Open a PR with Fixes in the body. Stop after reporting the PR URL.",
+        renderImplementationPrompt(),
         this.options.agent,
       );
     } catch (error) {

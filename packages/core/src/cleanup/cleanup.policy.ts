@@ -67,10 +67,9 @@ export function decideStranded(
   return tick - entry.sinceTick >= staleTicks ? "PING" : "WAIT";
 }
 
-export function strandedPingMessage(issueNumber: number): string {
-  return `score: no PR observed for issue #${issueNumber}. Commit your work and open a PR now, or this workspace will be reclaimed.`;
-}
-
-export function strandedRespawnPrompt(issueNumber: number): string {
-  return `score: this workspace for issue #${issueNumber} holds unfinished work and its previous agent session ended. Read TASK.md, review the existing changes, finish the work, and open a PR with Fixes in the body.`;
-}
+// Both stranded prompts live with the other prompts (prompts/stranded.render.ts);
+// the legacy names stay as aliases for the call sites and tests that predate it.
+export {
+  renderStrandedPing as strandedPingMessage,
+  renderStrandedRespawn as strandedRespawnPrompt,
+} from "@score/core/prompts/stranded.render";

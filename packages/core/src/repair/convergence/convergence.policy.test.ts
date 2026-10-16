@@ -6,7 +6,15 @@ import { convergenceVerdict, countsAsReal } from "./convergence.policy";
 const DEFECTS = { conflicting: false, unresolvedThreads: 1, failingChecks: 0 };
 
 function wave(openFindings: number, diffSize?: number): WaveRecord {
-  return { at: "T", tick: 0, headSha: "h", defects: DEFECTS, openFindings, diffSize };
+  return {
+    at: "T",
+    tick: 0,
+    headSha: "h",
+    defects: DEFECTS,
+    openFindings,
+    diffSize,
+    promptVersion: "v",
+  };
 }
 
 function finding(overrides: Partial<FindingRecord>): FindingRecord {

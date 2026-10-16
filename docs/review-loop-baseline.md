@@ -267,3 +267,35 @@ Live, the PR would have parked after round two with 9 findings and 1637
 changed lines, against the 19 findings and 8 rounds it ran to. Online: the
 share of parked PRs by rule, and whether a human un-parks them (label
 removed) or finishes by hand.
+
+## Phase 1 step 6: prompts folder
+
+Evidence: Score put text in front of a model from five places in four
+feature folders (the briefing in dispatch, the implementation line inline in
+the dispatch service, the repair wave in repair policy, two stranded prompts
+in cleanup policy), plus the reviewer prompt in the workflow YAML and the
+Code Review Rules in AGENTS.md. None carried a version, so no metric could
+be segmented by what the agent was told.
+
+Decision: `packages/core/src/prompts/` holds one render module per prompt,
+TypeScript templates, each exporting a content-hash version taken over a
+canonical render. The four Score prompts moved there; their old names stay
+as re-exports so deep imports and tests keep working. The reviewer prompt
+and the review rules are copies, each pinned to its source file by a test
+that fails on drift, because GitHub reads the YAML and both reviewers read
+AGENTS.md from the checkout. The briefing and implementation versions ride
+every `score.dispatch.decision` started record; the repair version rides
+every PINGED or SPAWNED repair record and every wave in the ledger.
+
+Rejected: text files for templates (vitest cannot import them, and the
+prompts interpolate); moving the reviewer prompt out of the YAML into a file
+the workflow reads (the review must follow the base SHA's rules, which the
+inline prompt already enforces by `git show BASE:AGENTS.md`; a file read
+would add a second place for a PR to tamper with); hand-bumped version
+numbers (an edit without a bump is exactly the drift this prevents).
+
+External check: `prompts.test.ts` proves the versions are distinct and
+stable, the reviewer copy equals the workflow block, the rules copy equals
+the AGENTS.md section, and the implementation line's shape. Online: rounds
+per PR, late-round share, and findings open at merge, grouped by
+`repair_prompt_version` and `briefing_version` from telemetry.

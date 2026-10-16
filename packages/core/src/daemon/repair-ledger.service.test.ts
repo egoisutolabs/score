@@ -1,4 +1,5 @@
 import { RepairLedger } from "@score/core/daemon/repair-ledger.service";
+import { REPAIR_PROMPT_VERSION } from "@score/core/prompts/repair.render";
 import type { RepairDefects } from "@score/core/repair/repair.policy";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import { expect, test } from "vitest";
@@ -122,8 +123,24 @@ test("the budget counts pings and spawns; once spent, exhaustion returns the wav
     rule: "budget",
     detail: "2 wave(s) used the budget of 2",
     waves: [
-      { at: "T", tick: 0, headSha: "aaa", defects: BROKEN, openFindings: 0, diffSize: undefined },
-      { at: "T", tick: 1, headSha: "bbb", defects: BROKEN, openFindings: 0, diffSize: 12 },
+      {
+        at: "T",
+        tick: 0,
+        headSha: "aaa",
+        defects: BROKEN,
+        openFindings: 0,
+        diffSize: undefined,
+        promptVersion: REPAIR_PROMPT_VERSION,
+      },
+      {
+        at: "T",
+        tick: 1,
+        headSha: "bbb",
+        defects: BROKEN,
+        openFindings: 0,
+        diffSize: 12,
+        promptVersion: REPAIR_PROMPT_VERSION,
+      },
     ],
   });
 });

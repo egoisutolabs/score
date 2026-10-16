@@ -96,6 +96,7 @@ test("the exhaustion comment opens with the marker and lists every wave", () => 
         defects: { conflicting: true, unresolvedThreads: 3, failingChecks: 0 },
         openFindings: 3,
         diffSize: 120,
+        promptVersion: "v1",
       },
       {
         at: "2026-10-16T10:05:00Z",
@@ -104,6 +105,7 @@ test("the exhaustion comment opens with the marker and lists every wave", () => 
         defects: { conflicting: false, unresolvedThreads: 0, failingChecks: 1, buildRed: "tsc" },
         openFindings: 4,
         diffSize: undefined,
+        promptVersion: "v1",
       },
     ],
   });

@@ -9,6 +9,11 @@
 import type { CleanupResult } from "@score/core/cleanup/cleanup-result.interface";
 import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interface";
 import type { LandingResult } from "@score/core/landing/change.interface";
+import {
+  BRIEFING_VERSION,
+  IMPLEMENTATION_PROMPT_VERSION,
+  REPAIR_PROMPT_VERSION,
+} from "@score/core/prompts/index";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import type { TelemetrySubject } from "@score/core/telemetry/telemetry.interface";
 
@@ -167,7 +172,11 @@ export const dispatchRows: readonly MappingRow<DispatchResult>[] = [
       {
         name: "score.dispatch.decision",
         subject: { issue_number: 31 },
-        attributes: { decision: "started" },
+        attributes: {
+          decision: "started",
+          briefing_version: BRIEFING_VERSION,
+          implementation_prompt_version: IMPLEMENTATION_PROMPT_VERSION,
+        },
       },
     ],
   },
@@ -325,7 +334,12 @@ export const repairRows: readonly MappingRow<RepairResult>[] = [
       {
         name: "score.repair.decision",
         subject: { pull_request_number: 61 + index },
-        attributes: { action },
+        attributes: {
+          action,
+          ...((action === "PINGED" || action === "SPAWNED") && {
+            repair_prompt_version: REPAIR_PROMPT_VERSION,
+          }),
+        },
       },
     ],
   })),

@@ -1,4 +1,5 @@
 import { repairSessionName } from "@score/core/dispatch/dispatch.identity";
+import { REPAIR_PROMPT_VERSION } from "@score/core/prompts/repair.render";
 import { convergenceVerdict } from "@score/core/repair/convergence/convergence.policy";
 import type { FindingLedger, FindingRecord } from "@score/core/repair/findings/finding.interface";
 import type { RepairDefects, RepairExhaustion, WaveRecord } from "@score/core/repair/repair.policy";
@@ -215,6 +216,7 @@ export class RepairLedger implements FindingLedger {
         // count the agent is being sent to bring down.
         openFindings: this.openFindingCount(result.pullRequestNumber),
         diffSize: pending.diffSize,
+        promptVersion: REPAIR_PROMPT_VERSION,
       };
       this.#entries.set(result.pullRequestNumber, {
         ...entry,

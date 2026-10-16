@@ -12,6 +12,11 @@ import type { CleanupResult } from "@score/core/cleanup/cleanup-result.interface
 import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interface";
 import type { LandingResult } from "@score/core/landing/change.interface";
 import type { MaintenanceTickResult } from "@score/core/maintenance/maintenance.service";
+import {
+  BRIEFING_VERSION,
+  IMPLEMENTATION_PROMPT_VERSION,
+  REPAIR_PROMPT_VERSION,
+} from "@score/core/prompts/index";
 import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import type { TelemetryEvent, TelemetrySubject } from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
@@ -113,13 +118,19 @@ export function renderDispatchTelemetry(
   ctx: TelemetryRenderContext,
 ): readonly TelemetryEvent[] {
   const records: TelemetryEvent[] = [];
+  // The prompt versions ride the start record so online metrics can be
+  // segmented by what the agent was actually told (analysis §3).
   for (const issue of result.started)
     records.push(
       decisionEvent(
         ctx,
         "score.dispatch.decision",
         { issue_number: issue },
-        { decision: "started" },
+        {
+          decision: "started",
+          briefing_version: BRIEFING_VERSION,
+          implementation_prompt_version: IMPLEMENTATION_PROMPT_VERSION,
+        },
       ),
     );
   for (const issue of result.planned)
@@ -184,12 +195,16 @@ export function renderRepairTelemetry(
   const name = REPAIR_ACTIONS.has(result.action) ? "score.repair.decision" : "score.repair.unknown";
   // result.target is omitted on purpose: it can hold a worktree path, and
   // absolute paths never enter telemetry (epic attribute-safety rule).
+  const sentPrompt = result.action === "PINGED" || result.action === "SPAWNED";
   return [
     decisionEvent(
       ctx,
       name,
       { pull_request_number: result.pullRequestNumber },
-      { action: result.action },
+      {
+        action: result.action,
+        ...(sentPrompt && { repair_prompt_version: REPAIR_PROMPT_VERSION }),
+      },
     ),
   ];
 }
