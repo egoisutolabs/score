@@ -22,6 +22,15 @@ export interface LandingServiceOptions {
   readonly maxMerges: number;
   /** Consecutive green ticks required before merging (legacy soaked on wall clock). */
   readonly soakTicks: number;
+  /**
+   * Wall-clock time a head must have been visible to landing before it may
+   * merge, so late reviewer rounds land on the PR instead of on main. Codex
+   * posts a review only when it has findings (never on a clean run), so a
+   * "Codex reviewed this head" signal cannot exist for a mergeable PR and the
+   * wait is a timeout alone; p95 of Codex latency in the baseline was 12 min.
+   */
+  readonly settleMs: number;
+  readonly now?: () => number;
   readonly skipLabels: readonly string[];
   readonly onlyIssueBranches: boolean;
 }
@@ -36,6 +45,13 @@ export class LandingService {
    * implements as policy: a new head always restarts soak from zero.
    */
   readonly #readyTicks = new Map<number, { readonly headSha: string; readonly ticks: number }>();
+
+  /**
+   * When landing first saw each PR's current head, in any state — the settle
+   * clock starts at the push, not at the first green tick. In memory like
+   * soak: a restart restarts the wait, which only ever delays a merge.
+   */
+  readonly #headSeen = new Map<number, { readonly headSha: string; readonly at: number }>();
 
   /**
    * D1: a committed merge whose push failed halts the remaining candidates
@@ -66,6 +82,9 @@ export class LandingService {
     const live = new Set(changes.map((change) => change.number));
     for (const number of this.#readyTicks.keys()) {
       if (!live.has(number)) this.#readyTicks.delete(number);
+    }
+    for (const number of this.#headSeen.keys()) {
+      if (!live.has(number)) this.#headSeen.delete(number);
     }
 
     const results: LandingResult[] = [];
@@ -99,6 +118,7 @@ export class LandingService {
   }
 
   async #land(change: PullRequestObservation): Promise<LandingResult> {
+    const seenAt = this.#noteHead(change);
     const gates = gatesFor(this.options.repositoryRoot);
     const gateNames = gates.map((gate) => gate.name).join("+");
     // Legacy performs cheap checks before the GraphQL review-thread query.
@@ -118,6 +138,17 @@ export class LandingService {
     }
     blocker = evaluatePreconditions(change, unresolvedThreads);
     if (blocker) return blocker;
+
+    const settleRemaining =
+      seenAt === undefined ? 0 : this.options.settleMs - (this.#now() - seenAt);
+    if (settleRemaining > 0) {
+      return {
+        pullRequestNumber: change.number,
+        tag: "settling",
+        note: `clean+resolved; waiting ${Math.ceil(settleRemaining / 60_000)} min more for late reviews on ${change.headSha?.slice(0, 7)}`,
+        keepTimer: true,
+      };
+    }
 
     if (this.options.dryRun) {
       return {
@@ -198,6 +229,20 @@ export class LandingService {
       tag: "merged",
       note: `soak complete (${gateNames})`,
     };
+  }
+
+  #now(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
+  /** Records a first sighting of the PR's head; returns when it was first seen, or undefined without a head. */
+  #noteHead(change: PullRequestObservation): number | undefined {
+    if (change.headSha === undefined) return undefined;
+    const seen = this.#headSeen.get(change.number);
+    if (seen?.headSha === change.headSha) return seen.at;
+    const at = this.#now();
+    this.#headSeen.set(change.number, { headSha: change.headSha, at });
+    return at;
   }
 
   async #mainCheckoutReady(): Promise<boolean> {

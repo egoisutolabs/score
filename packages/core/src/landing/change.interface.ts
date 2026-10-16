@@ -66,6 +66,7 @@ export type LandingTag =
   | "checks-red"
   | "checks-pending"
   | "unresolved"
+  | "settling"
   | "build-red"
   | "soaking"
   | "ready"

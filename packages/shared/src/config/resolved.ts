@@ -64,6 +64,7 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
       "maxParallel",
       "agent",
       "autoMerge",
+      "reviewSettleMs",
       "logRetentionDays",
       "configHash",
     ],
@@ -83,6 +84,7 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
     maxParallel: positiveIntegerValue(record.maxParallel, `${path}.maxParallel`),
     agent: { harness, model },
     autoMerge: booleanValue(record.autoMerge, `${path}.autoMerge`),
+    reviewSettleMs: positiveIntegerValue(record.reviewSettleMs, `${path}.reviewSettleMs`),
     logRetentionDays: positiveIntegerValue(record.logRetentionDays, `${path}.logRetentionDays`),
     configHash: stringValue(record.configHash, `${path}.configHash`),
   };

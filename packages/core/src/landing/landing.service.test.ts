@@ -105,6 +105,7 @@ test("landing re-stages and gates until soakTicks consecutive green ticks, then 
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: ["hold", "wip", "do-not-merge"],
       onlyIssueBranches: false,
     },
@@ -149,6 +150,7 @@ test("a new head mid-soak restarts soak from zero instead of inheriting green ti
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -183,6 +185,7 @@ test("an observation without a head SHA is refused before any merge effect", asy
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -213,6 +216,7 @@ test("a lapse resets the green-tick counter, so soaking restarts from zero", asy
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -263,6 +267,7 @@ test("dirty main skips the PR before host checks or merge effects", async () => 
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -307,6 +312,7 @@ test("a cheap conflict blocker wins before the review-thread query", async () =>
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -334,6 +340,7 @@ test("a failed review-thread observation skips the PR instead of assuming zero t
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -377,6 +384,7 @@ test("a failed push halts the remaining landing candidates for that tick (D1)", 
       noMerge: false,
       maxMerges: 5,
       soakTicks: 2,
+      settleMs: 0,
       skipLabels: [],
       onlyIssueBranches: false,
     },
@@ -398,4 +406,91 @@ test("a failed push halts the remaining landing candidates for that tick (D1)", 
   const tickTwo = workspace.effects.slice(workspace.effects.indexOf("commit"));
   expect(tickTwo).toEqual(["commit", "push"]);
   expect(workspace.effects.filter((effect) => effect === "stage:bbb222")).toHaveLength(1);
+});
+
+// Settle wait (review-loop analysis §2.5): late reviewer rounds must land on the PR, not on main.
+
+function settling(workspace: FakeWorkspace, changes: ChangeHost, clock: { now: number }) {
+  return new LandingService(
+    {
+      repositoryRoot: "/repo",
+      repository: "owner/repo",
+      defaultBranch: "main",
+      dryRun: false,
+      noMerge: false,
+      maxMerges: 5,
+      soakTicks: 1,
+      settleMs: 10 * 60_000,
+      now: () => clock.now,
+      skipLabels: [],
+      onlyIssueBranches: false,
+    },
+    changes,
+    workspace,
+    runner,
+  );
+}
+
+test("a clean PR settles for settleMs after its head was first seen before it stages", async () => {
+  const workspace = new FakeWorkspace();
+  const clock = { now: 1_000_000 };
+  const service = settling(workspace, host(), clock);
+
+  const first = (await service.runTick())[0];
+  expect(first?.tag).toBe("settling");
+  expect(first?.note).toContain("10 min more");
+  clock.now += 9 * 60_000;
+  expect((await service.runTick())[0]?.tag).toBe("settling");
+  // Nothing was staged while settling: no stage/abort effects, only the pass preamble.
+  expect(workspace.effects.filter((effect) => effect.startsWith("stage:"))).toEqual([]);
+
+  clock.now += 60_000;
+  expect((await service.runTick())[0]?.tag).toBe("merged");
+});
+
+test("a new head restarts the settle clock; the clock starts when the head is first seen, even while checks pend", async () => {
+  const workspace = new FakeWorkspace();
+  const clock = { now: 0 };
+  let change = pullRequest({
+    headSha: "aaa111",
+    statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: null }],
+  });
+  const changes: ChangeHost = {
+    ...host(),
+    async observeOpenChanges() {
+      return [change];
+    },
+  };
+  const service = settling(workspace, changes, clock);
+
+  // Seen at t=0 with checks running: the settle clock is already ticking.
+  expect((await service.runTick())[0]?.tag).toBe("checks-pending");
+  clock.now = 10 * 60_000;
+  change = pullRequest({ headSha: "aaa111" });
+  expect((await service.runTick())[0]?.tag).toBe("merged");
+
+  // A fresh push after a merge-ready wait starts over from zero.
+  change = pullRequest({ headSha: "bbb222" });
+  expect((await service.runTick())[0]?.tag).toBe("settling");
+  clock.now += 10 * 60_000;
+  expect((await service.runTick())[0]?.tag).toBe("merged");
+});
+
+test("a PR that leaves the candidate list is forgotten, so its return pays a fresh settle", async () => {
+  const workspace = new FakeWorkspace();
+  const clock = { now: 0 };
+  let present = true;
+  const changes: ChangeHost = {
+    ...host(),
+    async observeOpenChanges() {
+      return present ? [pullRequest()] : [];
+    },
+  };
+  const service = settling(workspace, changes, clock);
+  expect((await service.runTick())[0]?.tag).toBe("settling");
+  present = false;
+  await service.runTick();
+  clock.now += 10 * 60_000;
+  present = true;
+  expect((await service.runTick())[0]?.tag).toBe("settling");
 });

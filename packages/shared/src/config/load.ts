@@ -72,7 +72,11 @@ function validateProject(value: unknown, path: string): ProjectConfig {
 
 function validateRuntimeConfig(value: unknown, path: string): ProjectRuntimeConfig {
   const config = objectValue(value, path);
-  assertNoUnknownKeys(config, ["tick_interval_ms", "max_parallel", "agent", "auto_merge"], path);
+  assertNoUnknownKeys(
+    config,
+    ["tick_interval_ms", "max_parallel", "agent", "auto_merge", "review_settle_ms"],
+    path,
+  );
   const agent = objectValue(config.agent, `${path}.agent`);
   assertNoUnknownKeys(agent, ["harness", "model"], `${path}.agent`);
   const harness = enumValue(agent.harness, MANAGED_HARNESSES, `${path}.agent.harness`);
@@ -88,6 +92,9 @@ function validateRuntimeConfig(value: unknown, path: string): ProjectRuntimeConf
     agent: { harness, model },
     ...(config.auto_merge !== undefined && {
       auto_merge: booleanValue(config.auto_merge, `${path}.auto_merge`),
+    }),
+    ...(config.review_settle_ms !== undefined && {
+      review_settle_ms: positiveIntegerValue(config.review_settle_ms, `${path}.review_settle_ms`),
     }),
   };
 }

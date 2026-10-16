@@ -10,6 +10,7 @@ const LANDING_ICONS: Record<LandingTag, string> = {
   "checks-red": "✗",
   "checks-pending": "⏳",
   unresolved: "⏳",
+  settling: "⏳",
   "changes-requested": "⚠",
   "push-failed": "⚠",
   "would-merge": "·",

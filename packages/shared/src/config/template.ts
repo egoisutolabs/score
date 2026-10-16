@@ -19,6 +19,7 @@ export const CONFIG_TEMPLATE = `// Score fleet configuration — edit, then run 
     //     "max_parallel": 2, // how many issues may be in flight at once
     //     "agent": { "harness": "claude", "model": "claude-sonnet-5" }, // harness: "claude" or "opencode"; opencode's model must be "provider/model", e.g. "anthropic/claude-sonnet-5"
     //     "auto_merge": true, // merge green approved PRs automatically
+    //     "review_settle_ms": 900000, // wait this long after a push before a clean PR may merge, so late reviews land on the PR
     //   },
     // },
   },

@@ -9,6 +9,8 @@ export interface ProjectRuntimeConfig {
   max_parallel?: number;
   agent: AgentConfig;
   auto_merge?: boolean;
+  /** Wall-clock wait after a head is first seen before a clean PR may stage (late reviewer rounds). */
+  review_settle_ms?: number;
 }
 
 export interface ProjectConfig {
@@ -34,6 +36,7 @@ export interface ResolvedProject {
   maxParallel: number;
   agent: AgentConfig;
   autoMerge: boolean;
+  reviewSettleMs: number;
   logRetentionDays: number;
   configHash: string;
 }

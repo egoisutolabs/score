@@ -45,6 +45,7 @@ import {
   telemetryDir,
 } from "@score/shared/config/layout";
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
+import { DEFAULT_REVIEW_SETTLE_MS } from "@score/shared/config/resolve";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
 import { createFileLogger } from "@score/shared/file-log";
@@ -124,6 +125,8 @@ export interface DaemonBootstrap {
   readonly workspaceRoot: string;
   readonly tickIntervalMs: number;
   readonly maxParallelIssues: number;
+  /** Managed: resolved config; unmanaged: REVIEW_SETTLE_MS. See LandingServiceOptions.settleMs. */
+  readonly reviewSettleMs: number;
   readonly noMerge: boolean;
   readonly managed: boolean;
   readonly agent: AgentConfig;
@@ -156,6 +159,7 @@ export async function bootstrapDaemon(
       ),
       tickIntervalMs: positiveEnvironment("TICK_INTERVAL_MS", 60_000),
       maxParallelIssues: positiveEnvironment("MAX_PARALLEL", 1),
+      reviewSettleMs: positiveEnvironment("REVIEW_SETTLE_MS", DEFAULT_REVIEW_SETTLE_MS),
       noMerge: parsed.noMerge,
       managed: false,
       agent: agentConfigFromCommand(process.env.AGENT_CMD),
@@ -173,6 +177,7 @@ export async function bootstrapDaemon(
     workspaceRoot: project.worktreeLocation,
     tickIntervalMs: project.tickIntervalMs,
     maxParallelIssues: project.maxParallel,
+    reviewSettleMs: project.reviewSettleMs,
     noMerge: parsed.noMerge || !project.autoMerge,
     managed: true,
     agent: project.agent,
@@ -587,6 +592,7 @@ export async function runDaemonLoop(
     workspaceRoot,
     tickIntervalMs,
     maxParallelIssues,
+    reviewSettleMs,
     noMerge,
     managed,
     agent,
@@ -629,6 +635,7 @@ export async function runDaemonLoop(
     managed ? fallback : positiveEnvironment(name, fallback);
   const maxMerges = positiveTuning("MAX_MERGES", 5);
   const soakTicks = positiveTuning("SOAK_TICKS", 2);
+  const settleMs = reviewSettleMs;
   const staleTicks = positiveTuning("REPAIR_STALE_TICKS", 10);
   // Four: in the baseline, 9 of 14 PRs with findings landed within four rounds,
   // and the 25 findings opened after round four were fix-induced regressions
@@ -774,6 +781,7 @@ export async function runDaemonLoop(
         noMerge,
         maxMerges,
         soakTicks,
+        settleMs,
         skipLabels,
         onlyIssueBranches: tuning("ONLY_ISSUE_BRANCHES") === "1",
       },

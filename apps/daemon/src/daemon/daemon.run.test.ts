@@ -142,6 +142,8 @@ async function managedFixture(
           tick_interval_ms: tickIntervalMs,
           max_parallel: 2,
           agent,
+          // The tests drive merges within seconds; the settle wait is covered in landing.service.test.ts.
+          review_settle_ms: 1,
         },
       },
     },

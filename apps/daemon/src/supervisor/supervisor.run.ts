@@ -259,6 +259,7 @@ async function reconcileFleetServer(
     maxParallel: 0,
     agent: { harness: "claude" },
     autoMerge: false,
+    reviewSettleMs: 0,
     logRetentionDays: 0,
     configHash: "fleet-server",
   };

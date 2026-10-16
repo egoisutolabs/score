@@ -71,6 +71,7 @@ const LANDING_TAGS: ReadonlySet<string> = new Set([
   "checks-red",
   "checks-pending",
   "unresolved",
+  "settling",
   "build-red",
   "soaking",
   "ready",

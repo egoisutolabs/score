@@ -168,3 +168,43 @@ later finding in `withProjectLock` and `runDown` keyed to the same symbol
 the previous fix touched, which is the analysis' "patches the example"
 pattern made countable. Online: the class mix per wave, segmented by prompt
 version once step 6 records it.
+
+## Phase 1 step 4: landing settle wait
+
+Evidence: Codex posted no review on any of the 13 PRs with zero findings, so
+a "Codex reviewed this head" signal does not exist for a PR that is clean
+enough to merge. Of the 38 merged PRs with any Codex activity, 22 merged with
+the head commit never reviewed by Codex. Codex latency from commit to review
+across 85 reviews:
+
+| Percentile | Minutes |
+| --- | --- |
+| p50 | 6.8 |
+| p75 | 8.9 |
+| p90 | 11.3 |
+| p95 | 12.0 |
+| p99 | 25.6 |
+
+The Claude reviewer runs as a check, so `checks-pending` already covers it
+(p50 8.1 min, max 26 min).
+
+Decision: landing records when it first sees each PR's head, in any state,
+and refuses to stage a clean PR until `REVIEW_SETTLE_MS` (default 15 min)
+has passed since then. The clock starts at the push, not at the first green
+tick, so a PR whose checks took longer than the window pays nothing extra. A
+new head restarts it. The plan's "or a Codex review on the head commit"
+branch is dropped: with Codex silent on clean runs it could never fire for a
+mergeable PR, and a mechanism that cannot fire is one more thing to be wrong.
+Landing's unresolved count stays GitHub's; the ledger's self-resolved state
+feeds the convergence rules, not this gate, because Codex never resolves its
+own threads and a ledger-count gate would park every PR it ever commented on.
+
+Rejected: commit time from git as the clock start (an agent commits minutes
+before it pushes, which would shorten the wait); a per-PR GitHub reviews
+query to detect a Codex round on the head (never true for a clean head);
+persisting the clock (a restart only lengthens the wait).
+
+External check: `landing.service.test.ts` proves the wait, the restart on a
+new head, the clock starting under pending checks, and the forget-on-leave.
+Online: the share of merged PRs whose head commit Codex never reviewed, from
+the baseline's 22 of 38, must fall to the latency tail past 15 minutes.

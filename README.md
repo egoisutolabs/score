@@ -33,7 +33,10 @@ triage stage (not yet a pass phase) rewrites them into `epic:` work.
 
 Landing stages the exact head SHA it vetted (never the mutable branch name) and
 soaks per commit: a new push mid-soak restarts the count from zero, and an
-observation without a head SHA is refused outright. Every command the daemon
+observation without a head SHA is refused outright. Before staging, a clean PR
+also settles for `REVIEW_SETTLE_MS` after landing first saw its head, so a
+reviewer round that arrives minutes after the push lands on the PR instead of
+on main. Every command the daemon
 runs is bounded by a deadline (120s default, 30min for `make verify`) and killed
 as a whole process tree on timeout — a hung `gh` or wedged verify can't stall a
 phase.
@@ -67,6 +70,7 @@ agent is respawned in place to finish the preserved work.
 |---|---|---|
 | `TICK_INTERVAL_MS` | `60000` | The daemon's only clock; phases declare tick multiples. |
 | `SOAK_TICKS` | `2` | Consecutive green landing ticks before a merge. |
+| `REVIEW_SETTLE_MS` | `900000` | Wall-clock wait after a head is first seen before a clean PR may stage (15 min covers 95% of observed Codex review latency). Managed projects set `review_settle_ms` in config.jsonc instead. |
 | `REPAIR_STALE_TICKS` | `10` | Ticks before a silent agent is re-pinged; also each window of cleanup's stranded ladder (ping, then reclaim a clean no-PR worktree). |
 | `REPAIR_ROUND_BUDGET` | `4` | Repair waves a PR may receive before it is parked under `repair-exhausted` for a human. |
 | `MAX_PARALLEL` | `1` | Issues in flight at once. |
