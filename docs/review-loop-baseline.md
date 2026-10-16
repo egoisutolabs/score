@@ -337,3 +337,48 @@ External check: `review-loop.metrics.test.ts` proves the segmentation, the
 The first live numbers come from the next batch of PRs under this branch.
 
 Tier 2, the offline judge over the labeled findings, is the next change.
+
+## Phase 1 step 7: evals, tier 2
+
+The offline judge lives in `evals/review-loop/` with two scripts:
+`scripts/export-findings.ts` writes reviewer root comments (path, line,
+commit, author, the diff hunk GitHub attached, the text) as a JSONL corpus;
+`scripts/review-loop-judge.ts` grades each item with the Claude CLI in JSON
+mode against `rubric.md` and the live briefing's Defect Prevention and Test
+Integrity sections, caches verdicts per item, rubric, briefing, and model,
+and reports the prevention rate, the class mix, the false-positive rate on
+`known-negatives.jsonl`, and judge-human agreement (percent and Cohen's
+kappa) on `calibration.jsonl`.
+
+The corpus holds 253 findings from both repos. First run, 25 findings from
+PRs 71 and 85 plus the ten known negatives:
+
+| Figure | Haiku 5.5 | Sonnet 5.5 |
+| --- | --- | --- |
+| Known negatives judged real | 0 of 10 | 0 of 10 |
+| Corpus judged real | — | 23 of 25 |
+| Judged prevented by the briefing | — | 22 of 25 |
+| Class mix | — | validation 17, numeric-logic 3, other 3, boundaries 1, test-integrity 1 |
+
+Read the prevention rate as untrustworthy until the calibration set is
+labeled: the rubric marks a finding prevented whenever it is real, in a
+named class, and in changed code, and a judge that is also the implementer's
+model will say yes to that readily. Two signs the rubric is too loose: 22
+of 25 prevented, and 17 of 25 in one class. The twenty-item calibration
+template is seeded with null labels; the run reports agreement per field
+once they are filled, and the rubric says a kappa under 0.6 on `prevented`
+means fix the rubric before reading the rate. That labeling is the one step
+in Phase 1 only a human can do.
+
+Repair-plan quality on real waves is not judged yet: it needs the new
+prompt's own waves as input, and none exist before the branch runs live. The
+wave telemetry from tier 3 is what will feed it.
+
+Rejected: grading the repair prompt's text against each wave without an
+agent output (it would grade the template, which the contract tests already
+pin); an open-ended judge prompt (the three typed fields are what the
+calibration can check).
+
+External check: the harness ran end to end against the CLI with cached,
+reproducible verdicts; the known-negative rate is 0 of 10 on both models.
+The number that matters, judge-human agreement, is waiting on labels.

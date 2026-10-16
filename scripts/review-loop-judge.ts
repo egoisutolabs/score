@@ -1,0 +1,197 @@
+#!/usr/bin/env bun
+/**
+ * Offline LLM judge over exported findings (evals/review-loop/rubric.md):
+ *
+ *   bun scripts/review-loop-judge.ts [--limit N] [--model claude-sonnet-5-5] [--negatives-only]
+ *
+ * Reads evals/review-loop/corpus.jsonl, known-negatives.jsonl, and
+ * calibration.jsonl; runs `claude -p --output-format json` once per item
+ * (cached under evals/review-loop/cache by item + rubric + briefing hash);
+ * prints the briefing prevention rate, the class mix, the false-positive
+ * rate on known negatives, and judge-human agreement on the calibration set.
+ * Uses the operator's Claude login; --limit bounds the spend.
+ */
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { BRIEFING_VERSION, renderBriefing } from "../packages/core/src/prompts/briefing.render";
+import { createWorkIdentity } from "../packages/core/src/dispatch/dispatch.identity";
+
+const ROOT = join(import.meta.dirname, "..");
+const EVALS = join(ROOT, "evals", "review-loop");
+const args = process.argv.slice(2);
+const flag = (name: string) => {
+  const i = args.indexOf(name);
+  return i === -1 ? undefined : args[i + 1];
+};
+const limit = Number(flag("--limit") ?? Number.POSITIVE_INFINITY);
+const model = flag("--model") ?? "claude-sonnet-5-5";
+const negativesOnly = args.includes("--negatives-only");
+
+interface Item {
+  id: string;
+  path: string;
+  line: number | null;
+  hunk: string;
+  body: string;
+}
+interface Verdict {
+  real: boolean;
+  class: string;
+  prevented: boolean;
+  confidence: "high" | "low";
+  because: string;
+}
+interface Label {
+  id: string;
+  real: boolean | null;
+  class: string | null;
+  prevented: boolean | null;
+}
+
+async function jsonl<T>(path: string): Promise<T[]> {
+  if (!existsSync(path)) return [];
+  return (await readFile(path, "utf8"))
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as T);
+}
+
+// The briefing sections the rubric grades against, from the live template so
+// the rubric tracks BRIEFING_VERSION rather than a stale copy.
+const briefing = renderBriefing(
+  {
+    number: 0,
+    title: "",
+    body: "",
+    labels: [],
+    state: "OPEN",
+    stateReason: null,
+    url: "https://github.com/owner/repo/issues/0",
+    comments: [],
+  },
+  createWorkIdentity("/", {
+    number: 0,
+    title: "",
+    body: "",
+    labels: [],
+    state: "OPEN",
+    stateReason: null,
+    url: "https://github.com/owner/repo/issues/0",
+    comments: [],
+  }, undefined),
+  { harness: "claude" },
+);
+const section = (heading: string) => {
+  const start = briefing.indexOf(`## ${heading}`);
+  const next = briefing.indexOf("\n## ", start + 1);
+  return briefing.slice(start, next === -1 ? undefined : next).trim();
+};
+const briefingExcerpt = `${section("Defect Prevention")}\n\n${section("Test Integrity")}`;
+const rubric = await readFile(join(EVALS, "rubric.md"), "utf8");
+const rubricHash = createHash("sha256").update(rubric).update(briefingExcerpt).digest("hex").slice(0, 12);
+
+function prompt(item: Item): string {
+  return `${rubric}
+
+---
+BRIEFING EXCERPT (version ${BRIEFING_VERSION}):
+
+${briefingExcerpt}
+
+---
+FINDING
+path: ${item.path}
+line: ${item.line ?? "file-level"}
+hunk:
+${item.hunk}
+
+reviewer text:
+${item.body}
+
+Answer with the JSON object only.`;
+}
+
+async function judge(item: Item): Promise<Verdict> {
+  const cacheDir = join(EVALS, "cache");
+  await mkdir(cacheDir, { recursive: true });
+  const key = createHash("sha256").update(item.id).update(rubricHash).update(model).digest("hex").slice(0, 16);
+  const cached = join(cacheDir, `${key}.json`);
+  if (existsSync(cached)) return JSON.parse(await readFile(cached, "utf8")) as Verdict;
+  const proc = Bun.spawn(
+    ["claude", "-p", prompt(item), "--output-format", "json", "--model", model, "--max-turns", "1"],
+    { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } },
+  );
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`claude failed for ${item.id}: ${err.trim() || out.trim()}`);
+  const envelope = JSON.parse(out) as { result?: string };
+  const text = envelope.result ?? out;
+  const match = /\{[\s\S]*\}/.exec(text);
+  if (!match) throw new Error(`no JSON in judge output for ${item.id}: ${text.slice(0, 200)}`);
+  const verdict = JSON.parse(match[0]) as Verdict;
+  await writeFile(cached, JSON.stringify(verdict));
+  return verdict;
+}
+
+const corpus = negativesOnly ? [] : (await jsonl<Item>(join(EVALS, "corpus.jsonl"))).slice(0, limit);
+const negatives = await jsonl<Item>(join(EVALS, "known-negatives.jsonl"));
+const labels = new Map((await jsonl<Label>(join(EVALS, "calibration.jsonl"))).map((l) => [l.id, l]));
+
+const verdicts = new Map<string, Verdict>();
+for (const item of [...corpus, ...negatives]) {
+  verdicts.set(item.id, await judge(item));
+  process.stderr.write(`judged ${verdicts.size}/${corpus.length + negatives.length}\r`);
+}
+process.stderr.write("\n");
+
+const pct = (a: number, b: number) => (b === 0 ? "-" : `${Math.round((100 * a) / b)}%`);
+console.log(`model ${model}  briefing ${BRIEFING_VERSION}  rubric+briefing ${rubricHash}`);
+if (corpus.length > 0) {
+  const real = corpus.filter((i) => verdicts.get(i.id)?.real).length;
+  const prevented = corpus.filter((i) => verdicts.get(i.id)?.prevented).length;
+  const classes: Record<string, number> = {};
+  for (const i of corpus) {
+    const c = verdicts.get(i.id)?.class ?? "?";
+    classes[c] = (classes[c] ?? 0) + 1;
+  }
+  console.log(`corpus: ${corpus.length} findings  judged real: ${pct(real, corpus.length)}  prevented by briefing: ${pct(prevented, corpus.length)} (${pct(prevented, real)} of real)`);
+  console.log("classes:", JSON.stringify(classes));
+}
+const fp = negatives.filter((i) => verdicts.get(i.id)?.real).length;
+console.log(`known negatives: ${negatives.length}  judged real (false positives): ${fp} (${pct(fp, negatives.length)})`);
+for (const i of negatives) {
+  const v = verdicts.get(i.id);
+  if (v?.real) console.log(`  FP ${i.id}: ${v.because}`);
+}
+
+// Agreement with human labels on the calibration subset, per field.
+function kappa(pairs: readonly (readonly [string, string])[]): number {
+  const n = pairs.length;
+  if (n === 0) return Number.NaN;
+  const agree = pairs.filter(([a, b]) => a === b).length / n;
+  const cats = new Set(pairs.flat());
+  let expected = 0;
+  for (const c of cats) {
+    const pa = pairs.filter(([a]) => a === c).length / n;
+    const pb = pairs.filter(([, b]) => b === c).length / n;
+    expected += pa * pb;
+  }
+  return expected === 1 ? 1 : (agree - expected) / (1 - expected);
+}
+const labeled = [...labels.values()].filter((l) => verdicts.has(l.id));
+for (const field of ["real", "prevented", "class"] as const) {
+  const pairs = labeled
+    .filter((l) => l[field] !== null)
+    .map((l) => [String(l[field]), String(verdicts.get(l.id)?.[field])] as const);
+  if (pairs.length === 0) {
+    console.log(`agreement on ${field}: no human labels yet — fill evals/review-loop/calibration.jsonl`);
+    continue;
+  }
+  const agree = pairs.filter(([a, b]) => a === b).length;
+  console.log(`agreement on ${field}: ${pct(agree, pairs.length)} over ${pairs.length}  kappa ${kappa(pairs).toFixed(2)}`);
+}
