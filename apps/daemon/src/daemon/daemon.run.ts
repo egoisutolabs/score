@@ -905,6 +905,10 @@ export async function runDaemonLoop(
     // (runPass carries on to repair after a phase error), it observed no head,
     // so the repair ledger's clean clock must not count that pass.
     let landingRan = false;
+    // The PRs that pass noted heads for: a draft or a hold-labeled PR is not
+    // a landing candidate, so landing is not settling it either, and the
+    // repair ledger must not count its clean passes toward a reset.
+    let landingObserved: ReadonlySet<number> = new Set();
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -970,6 +974,7 @@ export async function runDaemonLoop(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
           pass.soaking += results.filter((result) => result.tag === "soaking").length;
+          landingObserved = new Set(results.map((result) => result.pullRequestNumber));
           landingRan = true;
         },
       },
@@ -986,7 +991,7 @@ export async function runDaemonLoop(
             log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
             return;
           }
-          ledger.finishPass(results, { landingIdle: !landingRan });
+          ledger.finishPass(results, { landingIdle: !landingRan, landingObserved });
           await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => {

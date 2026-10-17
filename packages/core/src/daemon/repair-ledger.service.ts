@@ -61,11 +61,19 @@ function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
 
 export interface RepairPassContext {
   /**
-   * Landing did not run alongside this pass (suppressed while an unreconciled
-   * commit sits ahead of origin), so no head it would settle is being timed:
-   * the clean clock neither starts nor advances until landing runs again.
+   * Landing's last due pass did not run to completion (suppressed while an
+   * unreconciled commit sits ahead of origin, or it threw), so no head it
+   * would settle is being timed: the clean clock neither starts nor advances
+   * until landing runs again.
    */
   readonly landingIdle?: boolean;
+  /**
+   * The PRs landing's last completed pass noted heads for. A PR outside it
+   * (a draft, a hold label) is not being settled by landing either, so its
+   * clock is held the same way; omitted, landing's view is unknown and the
+   * clock runs on repair's own observations.
+   */
+  readonly landingObserved?: ReadonlySet<number>;
 }
 
 export interface RepairLedgerOptions {
@@ -278,8 +286,11 @@ export class RepairLedger implements FindingLedger {
         result.headSha !== undefined &&
         entry.cleanHead !== undefined &&
         result.headSha !== entry.cleanHead;
+      const unsettled =
+        pass.landingIdle === true ||
+        (pass.landingObserved !== undefined && !pass.landingObserved.has(result.pullRequestNumber));
       if (
-        (result.action !== "NOT_NEEDED" || newHead || pass.landingIdle === true) &&
+        (result.action !== "NOT_NEEDED" || newHead || unsettled) &&
         entry.cleanSince !== undefined
       ) {
         const { cleanSince: _, cleanHead: __, ...rest } = entry;
@@ -302,7 +313,7 @@ export class RepairLedger implements FindingLedger {
         continue;
       }
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
-        if (pass.landingIdle === true && this.#options.settleMs > 0) continue;
+        if (unsettled && this.#options.settleMs > 0) continue;
         if (entry.waves.length > 0 || entry.labeled) {
           const now = this.#options.now();
           const cleanSince = entry.cleanSince ?? now;

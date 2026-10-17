@@ -259,6 +259,39 @@ test("while landing sits out, the clean clock neither starts nor advances; it st
   expect(ledger.waveCount(9)).toBe(0);
 });
 
+test("a PR landing's pass did not note (a draft, a hold label) is held like an idle pass", () => {
+  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
+  const ledger = new RepairLedger({
+    staleTicks: 10,
+    roundBudget: 1,
+    settleMs: 10 * 60_000,
+    now: () => new Date(clock.now).toISOString(),
+  });
+  const clean: RepairResult = {
+    pullRequestNumber: 9,
+    action: "NOT_NEEDED",
+    dryRun: false,
+    headSha: "aaa",
+  };
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+
+  // Landing ran, but filtered PR 9 out: nothing is settling its head.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    clock.now += 10 * 60_000;
+    ledger.startPass(tick, new Set());
+    ledger.finishPass([clean], { landingObserved: new Set([4]) });
+  }
+  expect(ledger.waveCount(9)).toBe(1);
+
+  // Landable again: landing notes it, and the window runs from here.
+  ledger.startPass(4, new Set());
+  ledger.finishPass([clean], { landingObserved: new Set([4, 9]) });
+  clock.now += 10 * 60_000;
+  ledger.startPass(5, new Set());
+  ledger.finishPass([clean], { landingObserved: new Set([4, 9]) });
+  expect(ledger.waveCount(9)).toBe(0);
+});
+
 test("a restart inside the settle window starts it over, as landing's in-memory clock does", () => {
   const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
   const options = {

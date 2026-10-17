@@ -43,9 +43,11 @@ class FakeBlame implements BlameSource {
     return this.files.get(`${commit}:${path}`);
   }
   // "base" and anything blamed to "old" predate the first head; "fix" does
-  // not; "lost" is an object git can no longer find.
-  async ancestry(ancestor: string, _descendant: string) {
+  // not; "lost" is an object git can no longer find; "orphan" is on a rebased
+  // history that shares no ancestry with the heads the ledger recorded.
+  async ancestry(ancestor: string, descendant: string) {
     if (ancestor === "lost") return undefined;
+    if (ancestor === "orphan" || descendant === "orphan") return false;
     return ancestor !== "fix";
   }
 }
@@ -194,6 +196,41 @@ test("fromLastFix compares the origin against the latest wave's head, and a clas
   lastHeads.push(undefined);
   const [second] = await tracker.observe(9, [thread("T2")]);
   expect(second).toMatchObject({ fromLastFix: false });
+});
+
+test("a same-key thread the reviewer confirmed this pass is read in that state: the new thread is not fix-failed", async () => {
+  const blame = new FakeBlame();
+  blame.origins.set("rev:src/a.ts:3", "old");
+  blame.origins.set("rev2:src/a.ts:3", "old");
+  blame.files.set("rev:src/a.ts", SOURCE);
+  blame.files.set("rev2:src/a.ts", SOURCE);
+  const ledger = new MemoryLedger();
+  ledger.waves = 1;
+  ledger.head = "base";
+  const tracker = new FindingTracker(blame, ledger);
+
+  await tracker.observe(9, [thread("T1", { isResolved: true, resolvedBy: "gendev1" })]);
+  ledger.waves = 2;
+  // Same observation: the reviewer resolves T1 and opens T2 on the same key.
+  const records = await tracker.observe(9, [
+    thread("T1", { isResolved: true, resolvedBy: "chatgpt-codex-connector" }),
+    thread("T2", { originalCommit: "rev2" }),
+  ]);
+  expect(records.map((record) => [record.threadId, record.resolution, record.class])).toEqual([
+    ["T1", "reviewer-resolved", "missed-earlier"],
+    ["T2", "open", "missed-earlier"],
+  ]);
+});
+
+test("a line on a rebased history is not from the last fix: divergence from that head is unknown", async () => {
+  const blame = new FakeBlame();
+  blame.origins.set("rev:src/a.ts:3", "orphan");
+  blame.files.set("rev:src/a.ts", SOURCE);
+  const ledger = new MemoryLedger();
+  ledger.waves = 1;
+  ledger.head = "base";
+  const [record] = await new FindingTracker(blame, ledger).observe(9, [thread("T1")]);
+  expect(record).toMatchObject({ origin: "orphan", fromLastFix: false });
 });
 
 test("git failing to decide ancestry is unknown: not a regression, not written by the fix", async () => {

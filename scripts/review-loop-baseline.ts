@@ -171,6 +171,9 @@ for (const n of await prNumbers()) {
   }
   if (unplaced > 0) console.error(`PR ${n}: ${unplaced} thread(s) cite commits the PR no longer has; skipped`);
   const placed = threads.length - unplaced;
+  // Every thread unplaceable: the PR contributes no finding to any share, so
+  // it must not count as a PR with findings or add its rounds to the mean.
+  if (placed === 0) continue;
   const rounded = [...byRound.entries()].sort((a, b) => a[0] - b[0]).map(([r, c]) => `${r}:${c}`).join(" ");
   console.log(
     `${String(n).padStart(4)} ${String(shas.length).padStart(8)} ${String(rounds.length).padStart(6)} ${String(placed).padStart(7)} ${String(late).padStart(4)} ${String(regress).padStart(7)} ${String(selfResolved).padStart(7)} ${String(openAtMerge).padStart(13)}  ${rounded}`,

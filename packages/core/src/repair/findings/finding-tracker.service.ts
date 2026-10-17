@@ -50,13 +50,24 @@ export class FindingTracker {
       const originAfterFirstHead = beforeFirstHead === undefined ? undefined : !beforeFirstHead;
       // The latest wave's head is what the agent was sent to fix; a line
       // blame places after it was written by that fix (convergence rule 3).
+      // "After" needs both directions: not an ancestor of that head, and that
+      // head an ancestor of it. A rebased or force-pushed branch fails the
+      // first alone for every line, and divergence is unknown, not a fix.
       const fromLastFix =
         origin !== undefined && lastWaveHead !== undefined
-          ? (await this.blame.ancestry(origin, lastWaveHead)) === false
+          ? (await this.blame.ancestry(origin, lastWaveHead)) === false &&
+            (await this.blame.ancestry(lastWaveHead, origin)) === true
           : false;
       // Prior includes this pass's earlier threads so two reviewers raising
-      // one defect in the same round read as a duplicate, not two findings.
-      const priorRecords = [...known.values(), ...records];
+      // one defect in the same round read as a duplicate, not two findings —
+      // in their refreshed state, one record per thread: a same-key thread the
+      // reviewer confirmed this pass must not still read as self-resolved.
+      const priorRecords = [
+        ...new Map([
+          ...known,
+          ...records.map((record) => [record.threadId, record] as const),
+        ]).values(),
+      ];
       const record: FindingRecord = {
         threadId: thread.id,
         key,
