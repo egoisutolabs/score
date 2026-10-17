@@ -16,6 +16,7 @@
  *
  * Needs `gh` authenticated. Read-only.
  */
+import { isReviewerBot } from "../packages/core/src/repair/findings/finding.policy";
 
 interface Review {
   readonly state: string;
@@ -74,10 +75,9 @@ async function gh(args: readonly string[]): Promise<string> {
 const api = async <T>(path: string): Promise<T> =>
   JSON.parse(await gh(["api", path, "--paginate", "--slurp"])).flat() as T;
 
-// A thread whose root author GitHub no longer names (deleted account) is
-// unknown, not a bot: it stays out of a bot-only baseline.
-const isBot = (login: string | undefined) =>
-  login !== undefined && (login.endsWith("[bot]") || /codex|claude|coderabbit|copilot/i.test(login));
+// The ledger's own predicate, so the baseline and the live figures agree on
+// what a bot is; an unnamed root author (deleted account) is not one.
+const isBot = isReviewerBot;
 
 async function prNumbers(): Promise<number[]> {
   const explicit = arg("--prs");

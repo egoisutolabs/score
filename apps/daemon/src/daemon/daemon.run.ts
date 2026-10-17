@@ -901,6 +901,10 @@ export async function runDaemonLoop(
     // failed), landing must not run: it would see a clean tree, commit a new
     // merge on top, and build — or even push — the chain D1 forbids.
     let landingBlocked = false;
+    // Whether landing's last due pass ran to completion. Suppressed or thrown
+    // (runPass carries on to repair after a phase error), it observed no head,
+    // so the repair ledger's clean clock must not count that pass.
+    let landingRan = false;
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -923,6 +927,7 @@ export async function runDaemonLoop(
         name: "landing",
         everyTicks: LANDING_EVERY_TICKS,
         run: async () => {
+          landingRan = false;
           if (landingBlocked) {
             log.warn(
               "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
@@ -965,6 +970,7 @@ export async function runDaemonLoop(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
           pass.soaking += results.filter((result) => result.tag === "soaking").length;
+          landingRan = true;
         },
       },
       {
@@ -980,7 +986,7 @@ export async function runDaemonLoop(
             log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
             return;
           }
-          ledger.finishPass(results, { landingIdle: landingBlocked });
+          ledger.finishPass(results, { landingIdle: !landingRan });
           await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => {

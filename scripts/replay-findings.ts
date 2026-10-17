@@ -14,6 +14,7 @@
  */
 import { ExecRunner } from "../packages/core/src/adapters/fixtures/staged-merge.fixture";
 import { GitService } from "../packages/core/src/adapters/git.service";
+import { isReviewerBot } from "../packages/core/src/repair/findings/finding.policy";
 import { FindingTracker } from "../packages/core/src/repair/findings/finding-tracker.service";
 import type {
   FindingLedger,
@@ -48,7 +49,7 @@ const reviews = ((await gh(["api", `repos/${repo}/pulls/${pr}/reviews`, "--pagin
   state: string;
   user: { login: string } | null;
 }[][]).flat();
-const isBot = (login: string) => /\[bot\]$|codex|claude|coderabbit/i.test(login);
+const isBot = isReviewerBot;
 // A review on a commit the PR no longer has (force-pushed away) cannot be
 // placed in the sequence, so it is not a round; a review whose author GitHub
 // no longer names is unknown, not a bot's.

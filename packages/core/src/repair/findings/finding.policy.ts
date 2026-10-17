@@ -78,15 +78,18 @@ export function findingKey(
   return `${commit}:${thread.path}:${symbol ?? `L${thread.originalLine ?? 0}`}`;
 }
 
-const BOT_LOGIN = /\[bot\]$|^(?:claude|chatgpt-codex-connector|coderabbitai|copilot)/i;
+// The baseline's heuristic (docs/review-loop-baseline.md), unanchored so a
+// reviewer automation named around a marker (`review-claude`) counts as the
+// baseline counted it; the scripts import this predicate, so the offline
+// figures and the live ledger cannot drift apart.
+const BOT_LOGIN = /\[bot\]$|codex|claude|coderabbit|copilot/i;
 
 /**
- * The baseline (docs/review-loop-baseline.md) counts a finding only when a
- * bot reviewer opened the thread: a human's inline comment is review the
- * agent must still answer, but recording it would inflate every share the
- * telemetry is meant to re-measure against that baseline. One notion of
- * "bot" with resolutionOf below; an unnamed author (deleted account) is
- * unknown, not a bot.
+ * The baseline counts a finding only when a bot reviewer opened the thread: a
+ * human's inline comment is review the agent must still answer, but recording
+ * it would inflate every share the telemetry is meant to re-measure against
+ * that baseline. One notion of "bot" with resolutionOf below; an unnamed
+ * author (deleted account) is unknown, not a bot.
  */
 export function isReviewerBot(login: string | undefined): boolean {
   return login !== undefined && BOT_LOGIN.test(login);

@@ -12,6 +12,7 @@ test("a finding is a thread a bot reviewer opened; a human's or an unnamed autho
   expect(isReviewerBot("chatgpt-codex-connector[bot]")).toBe(true);
   expect(isReviewerBot("claude")).toBe(true);
   expect(isReviewerBot("coderabbitai")).toBe(true);
+  expect(isReviewerBot("review-claude")).toBe(true);
   expect(isReviewerBot("gendev1")).toBe(false);
   expect(isReviewerBot(undefined)).toBe(false);
 });

@@ -10,6 +10,8 @@
  * created_at, hunk (the diff context GitHub attached), body. Needs `gh`.
  * Read-only; writes to stdout.
  */
+import { isReviewerBot } from "../packages/core/src/repair/findings/finding.policy";
+
 const [repo, ...rest] = process.argv.slice(2);
 if (!repo?.includes("/")) {
   console.error("usage: bun scripts/export-findings.ts owner/repo [--prs a,b,c] [--since YYYY-MM-DD]");
@@ -29,7 +31,7 @@ async function gh(args: readonly string[]): Promise<string> {
   if (code !== 0) throw new Error(`gh ${args.join(" ")} failed: ${err.trim()}`);
   return out;
 }
-const isBot = (login: string) => /\[bot\]$|codex|claude|coderabbit|copilot/i.test(login);
+const isBot = isReviewerBot;
 
 let prs: number[];
 const explicit = arg("--prs");
