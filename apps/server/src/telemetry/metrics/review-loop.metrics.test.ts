@@ -22,9 +22,11 @@ test("metrics segment PRs by the prompt version of their last wave and count the
   const records = [
     event("score.dispatch.decision", undefined, { decision: "started", briefing_version: "b1" }),
     event("score.dispatch.decision", undefined, { decision: "started", briefing_version: "b1" }),
-    // PR 9: two waves on v1, three findings (one late regression), merged with one open.
+    // PR 9: two waves (v0 then v1), three findings (one late regression),
+    // merged with one open. The whole PR, first-round finding and first wave
+    // included, counts under v1, the version that finished it.
     event("score.repair.finding", 9, { class: "first-round", wave: 0 }),
-    event("score.repair.wave", 9, { prompt_version: "v1", wave: 1 }),
+    event("score.repair.wave", 9, { prompt_version: "v0", wave: 1 }),
     event("score.repair.finding", 9, { class: "regression-from-fix", wave: 1 }),
     event("score.repair.finding", 9, { class: "missed-earlier", wave: 1 }),
     event("score.repair.wave", 9, { prompt_version: "v1", wave: 2 }),
@@ -55,21 +57,10 @@ test("metrics segment PRs by the prompt version of their last wave and count the
   expect(metrics.dispatchesByBriefing).toEqual({ b1: 2 });
   expect(metrics.segments).toEqual([
     {
-      promptVersion: "none",
-      pullRequests: 3,
-      waves: 0,
-      findings: 1,
-      lateFindings: 0,
-      lateRegressions: 0,
-      parkedByRule: { budget: 1 },
-      mergedPullRequests: 1,
-      openAtMerge: 0,
-    },
-    {
       promptVersion: "v1",
       pullRequests: 1,
       waves: 2,
-      findings: 2,
+      findings: 3,
       lateFindings: 2,
       lateRegressions: 1,
       parkedByRule: {},
@@ -85,6 +76,17 @@ test("metrics segment PRs by the prompt version of their last wave and count the
       lateRegressions: 1,
       parkedByRule: { "regression-from-fix": 1 },
       mergedPullRequests: 0,
+      openAtMerge: 0,
+    },
+    {
+      promptVersion: "none",
+      pullRequests: 2,
+      waves: 0,
+      findings: 0,
+      lateFindings: 0,
+      lateRegressions: 0,
+      parkedByRule: { budget: 1 },
+      mergedPullRequests: 1,
       openAtMerge: 0,
     },
   ]);

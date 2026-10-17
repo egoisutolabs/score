@@ -43,9 +43,22 @@ const LATE_REGRESSION_CLASSES = new Set(["fix-failed", "regression-from-fix"]);
 
 export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLoopMetrics {
   const tallies = new Map<string, Tally>();
-  // A PR's findings, parks, and merge are attributed to the prompt version
-  // of the last wave it received; a PR with no wave yet lands under "none".
+  // Every record of a PR — its first-round findings included — is attributed
+  // to the prompt version of the last wave it received, so the version is
+  // settled over all records before any is tallied; a PR with no wave in the
+  // window lands under "none".
   const versionByPullRequest = new Map<number, string>();
+  for (const record of records) {
+    const pr = record.subject?.pull_request_number;
+    if (
+      record.signal === "event" &&
+      record.name === "score.repair.wave" &&
+      pr !== undefined &&
+      record.attributes?.dry_run !== true
+    ) {
+      versionByPullRequest.set(pr, String(record.attributes?.prompt_version ?? "none"));
+    }
+  }
   const dispatchesByBriefing: Record<string, number> = {};
   const tally = (version: string): Tally => {
     let entry = tallies.get(version);
@@ -78,15 +91,12 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
       continue;
     }
     if (pr === undefined) continue;
+    const entry = tally(versionByPullRequest.get(pr) ?? "none");
     if (record.name === "score.repair.wave") {
-      const version = String(attributes.prompt_version ?? "none");
-      versionByPullRequest.set(pr, version);
-      const entry = tally(version);
       entry.pullRequests.add(pr);
       entry.waves += 1;
       continue;
     }
-    const entry = tally(versionByPullRequest.get(pr) ?? "none");
     if (record.name === "score.repair.finding") {
       entry.pullRequests.add(pr);
       entry.findings += 1;

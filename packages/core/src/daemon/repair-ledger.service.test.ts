@@ -156,7 +156,12 @@ test("a wait on pending checks or a failed thread query keeps the wave count; a 
   ledger.finishPass([{ pullRequestNumber: 9, action: "UNOBSERVED", dryRun: false }]);
   expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
 
-  ledger.startPass(3, new Set(["score-issue-3"]));
+  // Still defective, but no session and no worktree to send to: not clean.
+  ledger.startPass(3, new Set());
+  ledger.finishPass([{ pullRequestNumber: 9, action: "SKIPPED", dryRun: false }]);
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
+
+  ledger.startPass(4, new Set(["score-issue-3"]));
   ledger.finishPass([{ pullRequestNumber: 9, action: "NOT_NEEDED", dryRun: false }]);
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });

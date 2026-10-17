@@ -25,6 +25,7 @@ import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import { FindingTracker } from "@score/core/repair/findings/finding-tracker.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
@@ -809,6 +810,22 @@ export async function runDaemonLoop(
       }
     }
     const findings = new FindingTracker(git, git, ledger);
+    // Threads into the ledger, and a finding record for each thread seen for
+    // the first time — from repair's scan and from landing's merge refresh
+    // alike, so a thread opened and resolved between repair ticks still
+    // reaches the metrics once.
+    const recordThreads = async (
+      number: number,
+      threads: readonly ReviewThreadObservation[],
+    ): Promise<void> => {
+      const known = new Set(ledger.findings(number).map((record) => record.threadId));
+      const records = await findings.observe(number, threads);
+      telemetry?.decisions((ctx) =>
+        records
+          .filter((record) => !known.has(record.threadId))
+          .flatMap((record) => renderFindingTelemetry(number, record, ctx)),
+      );
+    };
     // Set by the service when `gh pr list` itself failed this pass; read and
     // cleared by the repair phase below.
     let scanFailure: unknown;
@@ -825,15 +842,7 @@ export async function runDaemonLoop(
         onScanFailed: (error) => {
           scanFailure = error;
         },
-        onThreads: async (number, threads) => {
-          const known = new Set(ledger.findings(number).map((record) => record.threadId));
-          const records = await findings.observe(number, threads);
-          telemetry?.decisions((ctx) =>
-            records
-              .filter((record) => !known.has(record.threadId))
-              .flatMap((record) => renderFindingTelemetry(number, record, ctx)),
-          );
-        },
+        onThreads: recordThreads,
         buildRed: (number) => gateVerdicts.get(number),
       },
       github,
@@ -905,7 +914,7 @@ export async function runDaemonLoop(
             const threads = await github
               .observeReviewThreads(result.pullRequestNumber)
               .catch(() => undefined);
-            if (threads !== undefined) await findings.observe(result.pullRequestNumber, threads);
+            if (threads !== undefined) await recordThreads(result.pullRequestNumber, threads);
           }
           telemetry?.decisions((ctx) =>
             merged.flatMap((result) =>

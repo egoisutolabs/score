@@ -194,7 +194,8 @@ export class RepairLedger implements FindingLedger {
    * Call with the pass's results. A PR that went clean keeps its findings and
    * first head (history) but starts a fresh budget; a PR no longer reported
    * (merged or closed) is forgotten entirely. A PR the pass could not judge
-   * (checks pending, thread query failed, agent still working) is held as is.
+   * (checks pending, thread query failed, agent still working) or could not
+   * reach (defective, but no session and no worktree to send to) is held as is.
    */
   finishPass(results: readonly RepairResult[]): void {
     const seen = new Set<number>();
@@ -211,7 +212,8 @@ export class RepairLedger implements FindingLedger {
       if (
         result.action === "WORKING" ||
         result.action === "CHECKS_PENDING" ||
-        result.action === "UNOBSERVED"
+        result.action === "UNOBSERVED" ||
+        result.action === "SKIPPED"
       ) {
         continue;
       }

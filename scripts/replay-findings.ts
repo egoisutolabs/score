@@ -117,7 +117,8 @@ for (let wave = 0; wave <= lastWave; wave += 1) {
       tick: wave,
       headSha: head,
       defects: DEFECTS,
-      openFindings: recs.filter((r) => r.resolution !== "reviewer-resolved").length,
+      // Distinct keys, as RepairLedger.openFindingCount counts them.
+      openFindings: new Set(recs.filter((r) => r.resolution !== "reviewer-resolved").map((r) => r.key)).size,
       diffSize: await diffSizeAt(head),
     });
   }

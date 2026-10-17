@@ -41,4 +41,10 @@ test("a malformed ledger file is an error, not an empty ledger", async () => {
   await expect(new RepairLedgerStore(path).read()).rejects.toThrow("not a v1 repair ledger");
   await writeFile(path, "{not json");
   await expect(new RepairLedgerStore(path).read()).rejects.toThrow();
+  // A well-formed envelope around a malformed entry is rejected here, not
+  // restored to throw on every later tick.
+  await writeFile(path, '{"v":1,"pullRequests":{"9":{}}}');
+  await expect(new RepairLedgerStore(path).read()).rejects.toThrow("entry for PR 9");
+  await writeFile(path, '{"v":1,"pullRequests":{"9":{"waves":"two"}}}');
+  await expect(new RepairLedgerStore(path).read()).rejects.toThrow("entry for PR 9");
 });
