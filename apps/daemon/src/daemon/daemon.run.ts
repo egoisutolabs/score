@@ -794,7 +794,9 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget });
+    // The same window landing settles a clean head for: a review posted
+    // inside it meets the budget the earlier waves spent, not a fresh one.
+    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget, settleMs });
     // Managed only: unmanaged discovery mode has no project dir to persist
     // into, so its budgets reset with the process as before.
     const ledgerStore =

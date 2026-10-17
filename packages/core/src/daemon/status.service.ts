@@ -56,6 +56,10 @@ export function applyGateVerdicts(
   for (const result of results) {
     if (result.tag === "build-red") verdicts.set(result.pullRequestNumber, result.note);
     else if (GREEN_GATE_TAGS.has(result.tag)) verdicts.delete(result.pullRequestNumber);
+    // Settle precedes staging, so a settling head has never been gated: the
+    // standing verdict belongs to the head the agent already replaced, and
+    // keeping it would send repair after a fix nobody has built yet.
+    else if (result.tag === "settling") verdicts.delete(result.pullRequestNumber);
   }
 }
 

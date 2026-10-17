@@ -36,10 +36,20 @@ const explicit = arg("--prs");
 if (explicit) prs = explicit.split(",").map(Number);
 else {
   const since = arg("--since") ?? "1970-01-01";
-  const list = JSON.parse(
-    await gh(["pr", "list", "-R", repo, "--state", "all", "--limit", "200", "--json", "number,createdAt"]),
-  ) as { number: number; createdAt: string }[];
-  prs = list.filter((p) => p.createdAt >= since).map((p) => p.number).sort((a, b) => a - b);
+  // `gh pr list --limit` is a cap, not a page: newest first, so the list is
+  // complete only once it reaches a PR older than the cutoff or runs out.
+  let limit = 200;
+  for (;;) {
+    const list = JSON.parse(
+      await gh(["pr", "list", "-R", repo, "--state", "all", "--limit", String(limit), "--json", "number,createdAt"]),
+    ) as { number: number; createdAt: string }[];
+    const oldest = list.at(-1)?.createdAt;
+    if (list.length < limit || (oldest !== undefined && oldest < since)) {
+      prs = list.filter((p) => p.createdAt >= since).map((p) => p.number).sort((a, b) => a - b);
+      break;
+    }
+    limit *= 2;
+  }
 }
 
 interface Comment {

@@ -71,6 +71,7 @@ function isLedgerEntry(value: unknown): value is RepairLedgerEntry {
     typeof value.labeled === "boolean" &&
     typeof value.tick === "number" &&
     (value.headSha === undefined || typeof value.headSha === "string") &&
-    (value.firstHead === undefined || typeof value.firstHead === "string")
+    (value.firstHead === undefined || typeof value.firstHead === "string") &&
+    (value.cleanSince === undefined || typeof value.cleanSince === "string")
   );
 }

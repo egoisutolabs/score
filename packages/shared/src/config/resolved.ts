@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { MANAGED_HARNESSES, parseOpencodeModel } from "@score/shared/agent-command";
 import type { ResolvedProject } from "@score/shared/config/config.interface";
 import { resolvedPath } from "@score/shared/config/layout";
-import { configHash } from "@score/shared/config/resolve";
+import { configHash, DEFAULT_REVIEW_SETTLE_MS } from "@score/shared/config/resolve";
 import {
   assertNoUnknownKeys,
   booleanValue,
@@ -41,7 +41,14 @@ export async function readResolvedProject(
   if (project.key !== key) {
     throw new Error(`resolved.key is "${project.key}", expected "${key}" (${path})`);
   }
-  const { configHash: stored, ...bare } = project;
+  const { configHash: stored, reviewSettleMs, ...rest } = project;
+  // A file written before reviewSettleMs existed was hashed without it; the
+  // daemon must still start from it (a reboot after an upgrade comes before
+  // the next `score up`), so the hash is re-checked over the shape on disk.
+  const bare =
+    (parsed as { reviewSettleMs?: unknown }).reviewSettleMs === undefined
+      ? rest
+      : { ...rest, reviewSettleMs };
   if (configHash(bare) !== stored) {
     throw new Error(
       `resolved.configHash does not match the resolved values in ${path} — hand-edited? run: score up`,
@@ -84,7 +91,12 @@ export function validateResolvedProject(value: unknown): ResolvedProject {
     maxParallel: positiveIntegerValue(record.maxParallel, `${path}.maxParallel`),
     agent: { harness, model },
     autoMerge: booleanValue(record.autoMerge, `${path}.autoMerge`),
-    reviewSettleMs: positiveIntegerValue(record.reviewSettleMs, `${path}.reviewSettleMs`),
+    // Absent in files written before the field existed: the default, until
+    // the next `score up` rewrites the file with it.
+    reviewSettleMs:
+      record.reviewSettleMs === undefined
+        ? DEFAULT_REVIEW_SETTLE_MS
+        : positiveIntegerValue(record.reviewSettleMs, `${path}.reviewSettleMs`),
     logRetentionDays: positiveIntegerValue(record.logRetentionDays, `${path}.logRetentionDays`),
     configHash: stringValue(record.configHash, `${path}.configHash`),
   };

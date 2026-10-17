@@ -17,6 +17,8 @@ export interface RepairLedgerEntry {
   /** Head when the first wave was sent; blame after it is a regression from a fix. */
   readonly firstHead: string | undefined;
   readonly findings: readonly FindingRecord[];
+  /** When the PR was first seen clean with its checks reported; absent while anything is wrong or pending. */
+  readonly cleanSince?: string;
 }
 
 /** The on-disk shape; additive changes only, bump `v` for anything else. */
@@ -45,6 +47,14 @@ export interface RepairLedgerOptions {
   readonly namespace?: string;
   /** Pings or spawns a PR may receive before repair parks it for a human. */
   readonly roundBudget?: number;
+  /**
+   * How long a PR must stay clean, checks reported, before its wave history
+   * resets. Codex posts no check run, so "every check reported and nothing
+   * is wrong" does not mean the review round is over (analysis §2.5): a
+   * finding it posts inside landing's settle window must meet the budget
+   * the earlier waves spent, not a fresh one. Zero resets at once.
+   */
+  readonly settleMs?: number;
   readonly now?: () => string;
 }
 
@@ -74,6 +84,7 @@ export class RepairLedger implements FindingLedger {
       staleTicks: options.staleTicks,
       namespace: options.namespace ?? "",
       roundBudget: options.roundBudget ?? Number.POSITIVE_INFINITY,
+      settleMs: options.settleMs ?? 0,
       now: options.now ?? (() => new Date().toISOString()),
     };
   }
@@ -192,16 +203,24 @@ export class RepairLedger implements FindingLedger {
 
   /**
    * Call with the pass's results. A PR that went clean keeps its findings and
-   * first head (history) but starts a fresh budget; a PR no longer reported
-   * (merged or closed) is forgotten entirely. A PR the pass could not judge
-   * (checks pending, thread query failed, agent still working) or could not
-   * reach (defective, but no session and no worktree to send to) is held as is.
+   * first head (history) but starts a fresh budget once it has stayed clean
+   * for settleMs; a PR no longer reported (merged or closed) is forgotten
+   * entirely. A PR the pass could not judge (checks pending, thread query
+   * failed, agent still working) or could not reach (defective, but no
+   * session and no worktree to send to) is held as is.
    */
   finishPass(results: readonly RepairResult[]): void {
     const seen = new Set<number>();
     for (const result of results) {
       seen.add(result.pullRequestNumber);
-      const entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
+      let entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
+      // Anything but a clean pass restarts the clean clock: a push sends the
+      // checks pending again, and the window is measured from their report.
+      if (result.action !== "NOT_NEEDED" && entry.cleanSince !== undefined) {
+        const { cleanSince: _, ...rest } = entry;
+        entry = rest;
+        this.#entries.set(result.pullRequestNumber, entry);
+      }
       if (result.action === "EXHAUSTED") {
         // Seen or put on: either way the label now governs this PR.
         if (!result.dryRun) {
@@ -219,7 +238,17 @@ export class RepairLedger implements FindingLedger {
       }
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
         if (entry.waves.length > 0 || entry.labeled) {
-          this.#entries.set(result.pullRequestNumber, { ...entry, waves: [], labeled: false });
+          const now = this.#options.now();
+          const cleanSince = entry.cleanSince ?? now;
+          if (
+            this.#options.settleMs > 0 &&
+            Date.parse(now) - Date.parse(cleanSince) < this.#options.settleMs
+          ) {
+            this.#entries.set(result.pullRequestNumber, { ...entry, cleanSince });
+            continue;
+          }
+          const { cleanSince: _, ...rest } = entry;
+          this.#entries.set(result.pullRequestNumber, { ...rest, waves: [], labeled: false });
         }
         continue;
       }

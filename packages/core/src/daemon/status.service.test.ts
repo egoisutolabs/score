@@ -64,6 +64,11 @@ test("applyGateVerdicts sets on build-red, keeps while gates idle, clears on gre
   applyGateVerdicts(verdicts, [result(7, "conflict")]);
   expect(verdicts.get(7)).toBe("daemon:check — TS2345");
 
+  // A new head settling has not been gated: the old head's verdict is stale.
+  applyGateVerdicts(verdicts, [result(7, "settling")]);
+  expect(verdicts.has(7)).toBe(false);
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345")]);
+
   // A green gate run clears it; a later failure sets the new tail.
   applyGateVerdicts(verdicts, [result(7, "soaking")]);
   expect(verdicts.has(7)).toBe(false);

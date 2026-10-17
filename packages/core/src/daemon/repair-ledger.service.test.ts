@@ -166,6 +166,47 @@ test("a wait on pending checks or a failed thread query keeps the wave count; a 
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
 
+test("with a settle window, a clean PR keeps its waves until it has stayed clean that long", () => {
+  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
+  const ledger = new RepairLedger({
+    staleTicks: 10,
+    roundBudget: 1,
+    settleMs: 10 * 60_000,
+    now: () => new Date(clock.now).toISOString(),
+  });
+  const clean: RepairResult = { pullRequestNumber: 9, action: "NOT_NEEDED", dryRun: false };
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+
+  // Checks reported, nothing wrong — but Codex posts no check, so its review
+  // of this head may still be coming: the budget stands.
+  ledger.startPass(1, new Set());
+  ledger.finishPass([clean]);
+  clock.now += 9 * 60_000;
+  ledger.startPass(2, new Set());
+  ledger.finishPass([clean]);
+  expect(ledger.waveCount(9)).toBe(1);
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
+
+  // A push restarts the clock: pending checks, then clean again from zero.
+  ledger.startPass(3, new Set());
+  ledger.finishPass([{ pullRequestNumber: 9, action: "CHECKS_PENDING", dryRun: false }]);
+  clock.now += 5 * 60_000;
+  ledger.startPass(4, new Set());
+  ledger.finishPass([clean]);
+  clock.now += 9 * 60_000;
+  ledger.startPass(5, new Set());
+  ledger.finishPass([clean]);
+  expect(ledger.waveCount(9)).toBe(1);
+
+  // Clean for the whole window: fresh budget, history kept.
+  clock.now += 60_000;
+  ledger.startPass(6, new Set());
+  ledger.finishPass([clean]);
+  expect(ledger.waveCount(9)).toBe(0);
+  expect(ledger.firstHead(9)).toBe("aaa");
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+});
+
 test("an exhausted PR stays parked while labeled; removing the label grants a fresh budget", () => {
   const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));

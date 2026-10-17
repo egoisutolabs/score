@@ -80,10 +80,19 @@ async function prNumbers(): Promise<number[]> {
   const explicit = arg("--prs");
   if (explicit) return explicit.split(",").map(Number);
   const since = arg("--since") ?? "1970-01-01";
-  const list = JSON.parse(
-    await gh(["pr", "list", "-R", repo, "--state", "all", "--limit", "200", "--json", "number,createdAt"]),
-  ) as { number: number; createdAt: string }[];
-  return list.filter((p) => p.createdAt >= since).map((p) => p.number).sort((a, b) => a - b);
+  // `gh pr list --limit` is a cap, not a page: newest first, so the list is
+  // complete only once it reaches a PR older than the cutoff or runs out.
+  let limit = 200;
+  for (;;) {
+    const list = JSON.parse(
+      await gh(["pr", "list", "-R", repo, "--state", "all", "--limit", String(limit), "--json", "number,createdAt"]),
+    ) as { number: number; createdAt: string }[];
+    const oldest = list.at(-1)?.createdAt;
+    if (list.length < limit || (oldest !== undefined && oldest < since)) {
+      return list.filter((p) => p.createdAt >= since).map((p) => p.number).sort((a, b) => a - b);
+    }
+    limit *= 2;
+  }
 }
 
 const THREADS_QUERY = `query($n:Int!){repository(owner:"${owner}",name:"${name}"){pullRequest(number:$n){mergedAt reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved resolvedBy{login} comments(first:1){nodes{author{login} originalCommit{oid} commit{oid}}}}}}}}`;

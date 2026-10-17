@@ -2,7 +2,11 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResolvedProject } from "@score/shared/config/config.interface";
-import { resolveProjects } from "@score/shared/config/resolve";
+import {
+  configHash,
+  DEFAULT_REVIEW_SETTLE_MS,
+  resolveProjects,
+} from "@score/shared/config/resolve";
 import { readResolvedProject, validateResolvedProject } from "@score/shared/config/resolved";
 import { expect, test } from "vitest";
 
@@ -38,6 +42,16 @@ test("a supervisor-written resolved.json reads back verbatim", async () => {
   const project = fixtureProject();
   const path = await writeFixture(project);
   expect(await readResolvedProject("demo", path)).toEqual(project);
+});
+
+test("a resolved.json written before reviewSettleMs existed reads with the default and its own hash", async () => {
+  const { reviewSettleMs: _, configHash: __, ...legacy } = fixtureProject();
+  const path = await writeFixture({ ...legacy, configHash: configHash(legacy) });
+  const project = await readResolvedProject("demo", path);
+  expect(project.reviewSettleMs).toBe(DEFAULT_REVIEW_SETTLE_MS);
+  // Still hash-checked: a hand edit to the legacy shape is caught.
+  const edited = await writeFixture({ ...legacy, maxParallel: 9, configHash: configHash(legacy) });
+  await expect(readResolvedProject("demo", edited)).rejects.toThrow(/configHash does not match/);
 });
 
 test("missing resolved.json fails with the path and 'score up'", async () => {
