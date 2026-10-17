@@ -867,16 +867,13 @@ export async function runDaemonLoop(
         // Landing runs every second tick and repair every tick, so repair can
         // see a head landing has not: a verdict on an older head is not this
         // head's defect, and with a round budget sending it would cost a wave.
+        // Either head unknown fails closed for the same reason: a verdict
+        // repair cannot tie to the head it is looking at is not proven stale,
+        // but it is not proven current either, and a wave is the cost.
         buildRed: (number, headSha) => {
           const verdict = gateVerdicts.get(number);
           if (verdict === undefined) return undefined;
-          if (
-            verdict.headSha !== undefined &&
-            headSha !== undefined &&
-            verdict.headSha !== headSha
-          ) {
-            return undefined;
-          }
+          if (headSha === undefined || verdict.headSha !== headSha) return undefined;
           return verdict.note;
         },
       },

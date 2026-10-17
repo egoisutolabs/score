@@ -43,20 +43,18 @@ export class FindingTracker {
       // Git failing to answer is "unknown", never "after": both readings below
       // feed the convergence rules, and an unproven regression must not park
       // the PR (the same benefit of the doubt classifyFinding gives blame).
-      const beforeFirstHead =
+      // "After" a head needs both directions: not an ancestor of it, and it an
+      // ancestor of the line's commit. A rebased or force-pushed branch fails
+      // the first alone for every line; divergence is unknown, not a fix.
+      const originAfterFirstHead =
         origin !== undefined && firstHead !== undefined
-          ? await this.blame.ancestry(origin, firstHead)
+          ? await this.#after(origin, firstHead)
           : undefined;
-      const originAfterFirstHead = beforeFirstHead === undefined ? undefined : !beforeFirstHead;
       // The latest wave's head is what the agent was sent to fix; a line
       // blame places after it was written by that fix (convergence rule 3).
-      // "After" needs both directions: not an ancestor of that head, and that
-      // head an ancestor of it. A rebased or force-pushed branch fails the
-      // first alone for every line, and divergence is unknown, not a fix.
       const fromLastFix =
         origin !== undefined && lastWaveHead !== undefined
-          ? (await this.blame.ancestry(origin, lastWaveHead)) === false &&
-            (await this.blame.ancestry(lastWaveHead, origin)) === true
+          ? (await this.#after(origin, lastWaveHead)) === true
           : false;
       // Prior includes this pass's earlier threads so two reviewers raising
       // one defect in the same round read as a duplicate, not two findings —
@@ -91,6 +89,14 @@ export class FindingTracker {
     }
     this.ledger.recordFindings(pullRequestNumber, records);
     return records;
+  }
+
+  /** Whether `commit` descends from `head`: true, false (an ancestor of it), or undefined (git could not say, or divergent). */
+  async #after(commit: string, head: string): Promise<boolean | undefined> {
+    const before = await this.blame.ancestry(commit, head);
+    if (before !== false) return before === undefined ? undefined : false;
+    const descends = await this.blame.ancestry(head, commit);
+    return descends === true ? true : undefined;
   }
 
   /** A blame or show failure degrades the key to the reviewed commit; it never fails the pass. */

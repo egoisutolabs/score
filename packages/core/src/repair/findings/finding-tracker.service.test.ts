@@ -222,7 +222,7 @@ test("a same-key thread the reviewer confirmed this pass is read in that state: 
   ]);
 });
 
-test("a line on a rebased history is not from the last fix: divergence from that head is unknown", async () => {
+test("a line on a rebased history is neither a regression nor from the last fix: divergence is unknown", async () => {
   const blame = new FakeBlame();
   blame.origins.set("rev:src/a.ts:3", "orphan");
   blame.files.set("rev:src/a.ts", SOURCE);
@@ -230,7 +230,7 @@ test("a line on a rebased history is not from the last fix: divergence from that
   ledger.waves = 1;
   ledger.head = "base";
   const [record] = await new FindingTracker(blame, ledger).observe(9, [thread("T1")]);
-  expect(record).toMatchObject({ origin: "orphan", fromLastFix: false });
+  expect(record).toMatchObject({ origin: "orphan", class: "missed-earlier", fromLastFix: false });
 });
 
 test("git failing to decide ancestry is unknown: not a regression, not written by the fix", async () => {
