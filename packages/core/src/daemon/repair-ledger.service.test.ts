@@ -221,6 +221,43 @@ test("with a settle window, a clean PR keeps its waves until it has stayed clean
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
 
+test("a restart inside the settle window starts it over, as landing's in-memory clock does", () => {
+  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
+  const options = {
+    staleTicks: 10,
+    roundBudget: 1,
+    settleMs: 10 * 60_000,
+    now: () => new Date(clock.now).toISOString(),
+  };
+  const ledger = new RepairLedger(options);
+  const clean: RepairResult = {
+    pullRequestNumber: 9,
+    action: "NOT_NEEDED",
+    dryRun: false,
+    headSha: "aaa",
+  };
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  ledger.startPass(1, new Set());
+  ledger.finishPass([clean]);
+  clock.now += 9 * 60_000;
+
+  // One minute short of the window at the restart: a restored clock would
+  // reset the budget on the next pass while landing waits ten more minutes.
+  const restored = new RepairLedger(options);
+  restored.restore(JSON.parse(JSON.stringify(ledger.snapshot())));
+  clock.now += 2 * 60_000;
+  restored.startPass(0, new Set());
+  restored.finishPass([clean]);
+  clock.now += 9 * 60_000;
+  restored.startPass(1, new Set());
+  restored.finishPass([clean]);
+  expect(restored.waveCount(9)).toBe(1);
+  clock.now += 60_000;
+  restored.startPass(2, new Set());
+  restored.finishPass([clean]);
+  expect(restored.waveCount(9)).toBe(0);
+});
+
 test("an exhausted PR stays parked while labeled; removing the label grants a fresh budget", () => {
   const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));

@@ -123,13 +123,17 @@ export class RepairLedger implements FindingLedger {
    * Ticks restart at zero with the process, so a restored entry's tick is
    * clamped to zero: a live, unchanged agent is left alone for one more
    * staleTicks window rather than for the whole gap the old tick would imply.
+   *
+   * The clean clock restarts too: landing keeps its settle clock in memory, so
+   * after a restart it waits a whole window again, and a clock restored from
+   * before the restart would reset the budget while landing still waits.
    */
   restore(snapshot: RepairLedgerSnapshot): void {
     this.#entries = new Map(
-      Object.entries(snapshot.pullRequests).map(([number, entry]) => [
-        Number(number),
-        { ...entry, tick: 0 },
-      ]),
+      Object.entries(snapshot.pullRequests).map(([number, entry]) => {
+        const { cleanSince: _, cleanHead: __, ...rest } = entry;
+        return [Number(number), { ...rest, tick: 0 }];
+      }),
     );
   }
 

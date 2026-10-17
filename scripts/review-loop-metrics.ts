@@ -20,7 +20,14 @@ if (!key) {
   process.exit(2);
 }
 const dir = telemetryDir(key);
-const segments = (await readdir(dir).catch(() => [] as string[]))
+// A project that never wrote telemetry is an empty dataset; a directory that
+// exists but cannot be read is not, and a zero-record table for it would
+// pass as "no activity". Only ENOENT is tolerated.
+const names = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
+  if (error.code === "ENOENT") return [] as string[];
+  throw error;
+});
+const segments = names
   .filter((name) => name.endsWith(".jsonl") && name.slice(0, 10) >= since)
   .sort();
 const records: TelemetryRecord[] = [];
