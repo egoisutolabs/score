@@ -206,7 +206,11 @@ test("readiness is per head: landing's verdict on the old head does not reset th
   ledger.startPass(1, new Set());
   ledger.finishPass([clean], { landingReady: new Map([[9, "aaa"]]) });
   expect(ledger.waveCount(9)).toBe(1);
+  // A pass that learned no head cannot tie the verdict to what it sees either.
   ledger.startPass(2, new Set());
+  ledger.finishPass([{ ...clean, headSha: undefined }], { landingReady: new Map([[9, "aaa"]]) });
+  expect(ledger.waveCount(9)).toBe(1);
+  ledger.startPass(3, new Set());
   ledger.finishPass([clean], { landingReady: new Map([[9, "bbb"]]) });
   expect(ledger.waveCount(9)).toBe(0);
 });

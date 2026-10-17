@@ -108,102 +108,117 @@ export class RepairService {
           ...result,
         });
 
-      // The full threads replace shepherd's bare count so the finding ledger
-      // sees every thread the gate counts, from one query. A failed query saw
-      // nothing: shepherd read it as zero unresolved, but here that zero would
-      // reach the ledger as a clean verdict (budget reset) or as a changed
-      // defect set (a live agent re-pinged, a wave spent), so the PR waits a
-      // tick instead.
-      const threads = await this.host.observeReviewThreads(change.number).catch(() => undefined);
-      if (threads === undefined) {
-        report({ action: "UNOBSERVED" });
-        continue;
-      }
-      await this.options.onThreads?.(change.number, threads);
-      const unresolvedThreads = threads.filter((thread) => !thread.isResolved).length;
-      const checks = countChecks(change.statusCheckRollup);
-      // With the head: landing gated a specific commit, and repair runs more
-      // often than landing, so the head repair sees may already be a newer one.
-      const buildRed = this.options.buildRed?.(change.number, change.headSha);
-      const defects: RepairDefects = {
-        conflicting: change.mergeable === "CONFLICTING",
-        unresolvedThreads,
-        failingChecks: checks.failing,
-        ...(buildRed !== undefined && { buildRed }),
-      };
-      if (!this.options.includeClean && !needsRepair(defects)) {
-        // A clean verdict resets the ledger's wave history, so it must be a
-        // real one. After the agent resolves its threads and pushes, every
-        // defect reads zero while the reviewer's check is still running — the
-        // next round is being written, not finished (analysis §1).
-        report({ action: checks.pending > 0 ? "CHECKS_PENDING" : "NOT_NEEDED" });
-        continue;
-      }
-      // The label outlives the in-memory ledger: a labeled PR stays parked
-      // across daemon restarts until a human removes the label. It parks the
-      // daemon's loop only: the manual subcommand (no budget, no `exhaustion`)
-      // is a human acting, which is what the label asked for.
-      // Case-insensitive like landing's skip labels: GitHub lets a label be
-      // renamed `Repair-Exhausted` in place, and an exact miss would read as
-      // a human removing it — a fresh budget for a PR still parked.
-      const labeled = change.labels.some(
-        (label) => label.name.toLowerCase() === REPAIR_EXHAUSTED_LABEL,
-      );
-      if (labeled && this.options.exhaustion !== undefined) {
-        report({ action: "EXHAUSTED", target: REPAIR_EXHAUSTED_LABEL });
-        continue;
-      }
-      // A ping while the reviewer's check is still running makes the agent
-      // fix round N while round N+1 is being written (analysis §1): in PR 99
-      // every fix commit landed 2–6 minutes after the previous review.
-      if (checks.pending > 0) {
-        report({ action: "CHECKS_PENDING" });
-        continue;
-      }
-      const exhaustion = this.options.exhaustion?.(change.number, labeled);
-      if (exhaustion !== undefined) {
-        if (!dryRun) await this.#markExhausted(change.number, exhaustion);
-        report({
-          action: "EXHAUSTED",
-          target: REPAIR_EXHAUSTED_LABEL,
-          parked: { rule: exhaustion.rule, detail: exhaustion.detail },
-        });
-        continue;
-      }
-      const diffSize =
-        change.additions !== undefined && change.deletions !== undefined
-          ? change.additions + change.deletions
-          : undefined;
-      if (this.options.shouldAct?.(change.number, defects, change.headSha, diffSize) === false) {
-        report({ action: "WORKING" });
-        continue;
-      }
-
-      const suffix = this.options.sessionSuffix.replace("%N", String(issueNumber));
-      let sessionPattern: RegExp | undefined;
       try {
-        sessionPattern = new RegExp(`${suffix}$`);
-      } catch {
-        // grep -E failure was swallowed by the legacy pipeline.
-      }
-      const session = sessionPattern
-        ? (await this.agents.listSessions()).find((name) => sessionPattern.test(name))
-        : undefined;
-      const worktree = (await this.workspace.observeWorktrees()).find(
-        (candidate) => candidate.branch === change.headRefName,
-      );
-      const message = renderRepairPrompt(change.number, buildRed);
-
-      if (session) {
-        if (!dryRun) await this.agents.ping(session, message);
-        report({ action: "PINGED", target: session });
-      } else if (worktree && !this.options.noSpawn) {
-        if (!dryRun) {
-          await this.agents.startRepair(change.number, worktree.path, message, this.options.agent);
+        // The full threads replace shepherd's bare count so the finding ledger
+        // sees every thread the gate counts, from one query. A failed query saw
+        // nothing: shepherd read it as zero unresolved, but here that zero would
+        // reach the ledger as a clean verdict (budget reset) or as a changed
+        // defect set (a live agent re-pinged, a wave spent), so the PR waits a
+        // tick instead.
+        const threads = await this.host.observeReviewThreads(change.number).catch(() => undefined);
+        if (threads === undefined) {
+          report({ action: "UNOBSERVED" });
+          continue;
         }
-        report({ action: "SPAWNED", target: worktree.path });
-      } else {
-        report({ action: "SKIPPED" });
+        await this.options.onThreads?.(change.number, threads);
+        const unresolvedThreads = threads.filter((thread) => !thread.isResolved).length;
+        const checks = countChecks(change.statusCheckRollup);
+        // With the head: landing gated a specific commit, and repair runs more
+        // often than landing, so the head repair sees may already be a newer one.
+        const buildRed = this.options.buildRed?.(change.number, change.headSha);
+        const defects: RepairDefects = {
+          conflicting: change.mergeable === "CONFLICTING",
+          unresolvedThreads,
+          failingChecks: checks.failing,
+          ...(buildRed !== undefined && { buildRed }),
+        };
+        if (!this.options.includeClean && !needsRepair(defects)) {
+          // A clean verdict resets the ledger's wave history, so it must be a
+          // real one. After the agent resolves its threads and pushes, every
+          // defect reads zero while the reviewer's check is still running — the
+          // next round is being written, not finished (analysis §1).
+          report({ action: checks.pending > 0 ? "CHECKS_PENDING" : "NOT_NEEDED" });
+          continue;
+        }
+        // The label outlives the in-memory ledger: a labeled PR stays parked
+        // across daemon restarts until a human removes the label. It parks the
+        // daemon's loop only: the manual subcommand (no budget, no `exhaustion`)
+        // is a human acting, which is what the label asked for.
+        // Case-insensitive like landing's skip labels: GitHub lets a label be
+        // renamed `Repair-Exhausted` in place, and an exact miss would read as
+        // a human removing it — a fresh budget for a PR still parked.
+        const labeled = change.labels.some(
+          (label) => label.name.toLowerCase() === REPAIR_EXHAUSTED_LABEL,
+        );
+        if (labeled && this.options.exhaustion !== undefined) {
+          report({ action: "EXHAUSTED", target: REPAIR_EXHAUSTED_LABEL });
+          continue;
+        }
+        // A ping while the reviewer's check is still running makes the agent
+        // fix round N while round N+1 is being written (analysis §1): in PR 99
+        // every fix commit landed 2–6 minutes after the previous review.
+        if (checks.pending > 0) {
+          report({ action: "CHECKS_PENDING" });
+          continue;
+        }
+        const exhaustion = this.options.exhaustion?.(change.number, labeled);
+        if (exhaustion !== undefined) {
+          if (!dryRun) await this.#markExhausted(change.number, exhaustion);
+          report({
+            action: "EXHAUSTED",
+            target: REPAIR_EXHAUSTED_LABEL,
+            parked: { rule: exhaustion.rule, detail: exhaustion.detail },
+          });
+          continue;
+        }
+        const diffSize =
+          change.additions !== undefined && change.deletions !== undefined
+            ? change.additions + change.deletions
+            : undefined;
+        if (this.options.shouldAct?.(change.number, defects, change.headSha, diffSize) === false) {
+          report({ action: "WORKING" });
+          continue;
+        }
+
+        const suffix = this.options.sessionSuffix.replace("%N", String(issueNumber));
+        let sessionPattern: RegExp | undefined;
+        try {
+          sessionPattern = new RegExp(`${suffix}$`);
+        } catch {
+          // grep -E failure was swallowed by the legacy pipeline.
+        }
+        const session = sessionPattern
+          ? (await this.agents.listSessions()).find((name) => sessionPattern.test(name))
+          : undefined;
+        const worktree = (await this.workspace.observeWorktrees()).find(
+          (candidate) => candidate.branch === change.headRefName,
+        );
+        const message = renderRepairPrompt(change.number, buildRed);
+
+        if (session) {
+          if (!dryRun) await this.agents.ping(session, message);
+          report({ action: "PINGED", target: session });
+        } else if (worktree && !this.options.noSpawn) {
+          if (!dryRun) {
+            await this.agents.startRepair(
+              change.number,
+              worktree.path,
+              message,
+              this.options.agent,
+            );
+          }
+          report({ action: "SPAWNED", target: worktree.path });
+        } else {
+          report({ action: "SKIPPED" });
+        }
+      } catch (error) {
+        // One PR's failure must not lose the pass: the pings already sent for
+        // earlier PRs are results the ledger counts only when run() returns,
+        // and a throw here would re-send them every tick past any budget.
+        report({
+          action: "UNOBSERVED",
+          note: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

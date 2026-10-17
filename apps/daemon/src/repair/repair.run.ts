@@ -51,8 +51,8 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
       });
     } else if (result.action === "UNOBSERVED") {
       lines.push({
-        level: "debug",
-        text: `· #${result.pullRequestNumber} -> review-thread query failed; not known clean, no ping`,
+        level: "warn",
+        text: `· #${result.pullRequestNumber} -> ${result.note ?? "review-thread query failed"}; not known clean, no ping`,
       });
     } else if (result.action === "EXHAUSTED") {
       lines.push({
@@ -120,6 +120,12 @@ export async function runRepair(args: readonly string[]): Promise<void> {
   log.lines(renderRepairRun(results));
   if (parsed.dryRun) log.info("dry run — no sessions were touched.");
   log.debug(JSON.stringify(results));
+  // The daemon waits a tick for a PR it could not judge; this one-shot has no
+  // next tick, so a pass that judged nothing for some PR is not a success.
+  if (results.some((result) => result.action === "UNOBSERVED")) {
+    log.warn("some PRs could not be judged this run; rerun to repair them");
+    process.exitCode = 1;
+  }
 }
 
 function parseRepairArguments(args: readonly string[]) {

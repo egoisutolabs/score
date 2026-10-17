@@ -48,7 +48,9 @@ class RepairAgents implements AgentRuntime {
     return this.sessions;
   }
   async startImplementation() {}
+  failPing: string | undefined;
   async ping(sessionName: string, message: string) {
+    if (sessionName === this.failPing) throw new Error("tmux send-keys died");
     this.pinged.push(sessionName);
     this.pingedMessages.push(message);
   }
@@ -134,6 +136,26 @@ test("repair pings the matching live issue session even without a worktree", asy
     new RecordingHost(),
   ).run();
   expect(result[0]?.action).toBe("PINGED");
+  expect(agents.pinged).toEqual(["score-issue-3"]);
+});
+
+test("one PR's failure does not lose the pass: earlier pings are reported, the failed PR is UNOBSERVED", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3", "score-issue-4"];
+  agents.failPing = "score-issue-4";
+  const second = { ...change(), number: 10, headRefName: "issue-4-more" };
+  const results = await new RepairService(
+    options,
+    { ...changes(), observeRepairChanges: async () => [change(), second] },
+    new RepairWorkspace(),
+    agents,
+    new RecordingHost(),
+  ).run();
+  expect(results.map((result) => [result.pullRequestNumber, result.action])).toEqual([
+    [9, "PINGED"],
+    [10, "UNOBSERVED"],
+  ]);
+  expect(results[1]?.note).toBe("tmux send-keys died");
   expect(agents.pinged).toEqual(["score-issue-3"]);
 });
 
@@ -451,7 +473,9 @@ test("death after the comment, before the label — next tick labels without a s
     agents,
     github,
   );
-  await expect(service.run()).rejects.toThrow("gh pr edit died");
+  // The death is this PR's result, not the pass's: the ledger still hears it.
+  const died = await service.run();
+  expect(died[0]).toMatchObject({ action: "UNOBSERVED", note: "gh pr edit died" });
   expect(github.comments).toHaveLength(1);
 
   github.failAt = undefined;
@@ -475,7 +499,8 @@ test("death at the comment — next tick comments and labels; nothing was half-d
     agents,
     github,
   );
-  await expect(service.run()).rejects.toThrow("gh pr comment died");
+  const died = await service.run();
+  expect(died[0]).toMatchObject({ action: "UNOBSERVED", note: "gh pr comment died" });
   expect(github.labels).toEqual([]);
 
   github.failAt = undefined;

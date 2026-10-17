@@ -131,12 +131,16 @@ export class RepairLedger implements FindingLedger {
     );
   }
 
-  /** Whether landing has finished waiting on the head this result is about; without landing's view, at once. */
+  /**
+   * Whether landing has finished waiting on the head this result is about;
+   * without landing's view, at once. Both heads must be known and equal: a
+   * verdict repair cannot tie to the head it sees may be for the head before
+   * a push, and landing will settle the new one from scratch.
+   */
   #landingReady(pass: RepairPassContext, result: RepairResult): boolean {
     if (pass.landingReady === undefined) return true;
-    if (!pass.landingReady.has(result.pullRequestNumber)) return false;
     const head = pass.landingReady.get(result.pullRequestNumber);
-    return head === undefined || result.headSha === undefined || head === result.headSha;
+    return head !== undefined && head === result.headSha;
   }
 
   /** Call once before each repair pass with the tick and the live tmux sessions. */
