@@ -42,14 +42,13 @@ class FakeBlame implements BlameSource {
     if (this.fail) throw new Error("show died");
     return this.files.get(`${commit}:${path}`);
   }
-}
-
-const ancestry = {
-  // "base" and anything blamed to "old" predate the first head; "fix" does not.
-  async isAncestor(ancestor: string, _descendant: string) {
+  // "base" and anything blamed to "old" predate the first head; "fix" does
+  // not; "lost" is an object git can no longer find.
+  async ancestry(ancestor: string, _descendant: string) {
+    if (ancestor === "lost") return undefined;
     return ancestor !== "fix";
-  },
-};
+  }
+}
 
 function thread(
   id: string,
@@ -77,7 +76,7 @@ test("a new thread is blamed once, keyed by origin + path + symbol, and classifi
   const ledger = new MemoryLedger();
   ledger.waves = 1;
   ledger.head = "base";
-  const tracker = new FindingTracker(blame, ancestry, ledger);
+  const tracker = new FindingTracker(blame, ledger);
 
   const first = await tracker.observe(9, [thread("T1")]);
   expect(first[0]).toMatchObject({
@@ -108,7 +107,7 @@ test("the same key after a self-resolve is fix-failed; two reviewers in one roun
   const ledger = new MemoryLedger();
   ledger.waves = 1;
   ledger.head = "base";
-  const tracker = new FindingTracker(blame, ancestry, ledger);
+  const tracker = new FindingTracker(blame, ledger);
 
   await tracker.observe(9, [thread("T1", { isResolved: true, resolvedBy: "gendev1" })]);
   ledger.waves = 2;
@@ -127,7 +126,7 @@ test("the same key after a self-resolve is fix-failed; two reviewers in one roun
   const ledger2 = new MemoryLedger();
   ledger2.waves = 1;
   ledger2.head = "base";
-  const pair = await new FindingTracker(blame, ancestry, ledger2).observe(9, [
+  const pair = await new FindingTracker(blame, ledger2).observe(9, [
     thread("T2", { originalCommit: "rev2" }),
     thread("T3", { originalCommit: "rev2", author: "claude[bot]" }),
   ]);
@@ -140,7 +139,7 @@ test("a blame failure degrades the key to the reviewed commit and never fails th
   const ledger = new MemoryLedger();
   ledger.waves = 1;
   ledger.head = "base";
-  const records = await new FindingTracker(blame, ancestry, ledger).observe(9, [thread("T1")]);
+  const records = await new FindingTracker(blame, ledger).observe(9, [thread("T1")]);
   expect(records[0]).toMatchObject({
     key: "rev:src/a.ts:L3",
     origin: undefined,
@@ -152,7 +151,7 @@ test("a blame failure degrades the key to the reviewed commit and never fails th
 test("a thread GitHub stopped returning drops out of the ledger; a file-level thread is keyed by line 0", async () => {
   const blame = new FakeBlame();
   const ledger = new MemoryLedger();
-  const tracker = new FindingTracker(blame, ancestry, ledger);
+  const tracker = new FindingTracker(blame, ledger);
   await tracker.observe(9, [thread("T1"), thread("T2", { originalLine: null })]);
   expect(ledger.findings(9).map((record) => record.key)).toEqual([
     "rev:src/a.ts:L3",
@@ -184,7 +183,7 @@ test("fromLastFix compares the origin against the latest wave's head, and a clas
       return { real: 0.3 };
     },
   };
-  const tracker = new FindingTracker(blame, ancestry, ledgerWithLast, classifier);
+  const tracker = new FindingTracker(blame, ledgerWithLast, classifier);
 
   // Latest wave head "base": "fix" is not its ancestor → written by the fix.
   lastHeads.push("base");
@@ -195,4 +194,15 @@ test("fromLastFix compares the origin against the latest wave's head, and a clas
   lastHeads.push(undefined);
   const [second] = await tracker.observe(9, [thread("T2")]);
   expect(second).toMatchObject({ fromLastFix: false });
+});
+
+test("git failing to decide ancestry is unknown: not a regression, not written by the fix", async () => {
+  const blame = new FakeBlame();
+  blame.origins.set("rev:src/a.ts:3", "lost");
+  blame.files.set("rev:src/a.ts", SOURCE);
+  const ledger = new MemoryLedger();
+  ledger.waves = 1;
+  ledger.head = "base";
+  const [record] = await new FindingTracker(blame, ledger).observe(9, [thread("T1")]);
+  expect(record).toMatchObject({ origin: "lost", class: "missed-earlier", fromLastFix: false });
 });

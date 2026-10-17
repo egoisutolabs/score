@@ -811,7 +811,7 @@ export async function runDaemonLoop(
         log.warn(`repair ledger not restored, starting empty: ${String(error)}`);
       }
     }
-    const findings = new FindingTracker(git, git, ledger);
+    const findings = new FindingTracker(git, ledger);
     // Threads into the ledger, and a finding record for each thread seen for
     // the first time — from repair's scan and from landing's merge refresh
     // alike, so a thread opened and resolved between repair ticks still
@@ -967,9 +967,14 @@ export async function runDaemonLoop(
           const acted = results.filter(
             (result) => result.action === "PINGED" || result.action === "SPAWNED",
           ).length;
+          // The pass that parked a PR is as loud as a ping: an operator reading
+          // the log must see why repair stopped, not "none need fixing".
+          const parked = results.some(
+            (result) => result.action === "EXHAUSTED" && result.parked !== undefined,
+          );
           // renderRepairRun always prints a summary line; at one tick apiece that
           // is noise, so a tick with nothing to fix stays at debug.
-          if (acted > 0) log.lines(renderRepairRun(results));
+          if (acted > 0 || parked) log.lines(renderRepairRun(results));
           else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => renderRepairTelemetry(result, ctx)),

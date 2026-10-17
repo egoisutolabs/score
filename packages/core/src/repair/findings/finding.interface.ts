@@ -60,6 +60,13 @@ export interface BlameSource {
   blameOrigin(commit: string, path: string, line: number): Promise<string | undefined>;
   /** Full contents of `path` at `commit`; undefined when the path is absent there. */
   fileAt(commit: string, path: string): Promise<string | undefined>;
+  /**
+   * Whether `ancestor` is an ancestor of (or equal to) `descendant`; undefined
+   * when git could not decide (a missing object, a timeout). Distinct from the
+   * workspace port's isAncestor, whose callers want a failure to read as
+   * "unproven, refuse": here a failure must not read as "written by the fix".
+   */
+  ancestry(ancestor: string, descendant: string): Promise<boolean | undefined>;
 }
 
 /** The per-PR finding memory the tracker reads and writes; the daemon's RepairLedger implements it. */

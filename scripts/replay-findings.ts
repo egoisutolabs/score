@@ -77,7 +77,7 @@ class ReplayLedger implements FindingLedger {
   }
 }
 const ledger = new ReplayLedger();
-const tracker = new FindingTracker(git, git, ledger);
+const tracker = new FindingTracker(git, ledger);
 const byWave = new Map<number, ReviewThreadObservation[]>();
 for (const t of threads) {
   const idx = commits.indexOf(t.originalCommit ?? "");

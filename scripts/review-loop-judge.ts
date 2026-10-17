@@ -121,7 +121,8 @@ async function judge(item: Item): Promise<Verdict> {
   // or text changed under the same id is judged again, not served stale.
   const key = createHash("sha256").update(prompt(item)).update(model).digest("hex").slice(0, 16);
   const cached = join(cacheDir, `${key}.json`);
-  if (existsSync(cached)) return JSON.parse(await readFile(cached, "utf8")) as Verdict;
+  // A cache written before the validator existed is as untrusted as fresh output.
+  if (existsSync(cached)) return parseVerdict(JSON.parse(await readFile(cached, "utf8")), item.id);
   const proc = Bun.spawn(
     ["claude", "-p", prompt(item), "--output-format", "json", "--model", model, "--max-turns", "1"],
     { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" } },

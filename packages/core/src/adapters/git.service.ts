@@ -325,6 +325,13 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace, BlameS
     return result.exitCode === 0 ? result.stdout : undefined;
   }
 
+  async ancestry(ancestor: string, descendant: string): Promise<boolean | undefined> {
+    // merge-base --is-ancestor answers with its exit code: 0 yes, 1 no;
+    // anything else is git failing to answer at all.
+    const { exitCode } = await this.#run(["merge-base", "--is-ancestor", ancestor, descendant]);
+    return exitCode === 0 ? true : exitCode === 1 ? false : undefined;
+  }
+
   /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */
   async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
     // Exit 1 means "not an ancestor"; any other failure (e.g. a bad ref) also

@@ -1,6 +1,5 @@
 import type { FindingClassifier } from "@score/core/repair/convergence/finding-classifier.interface";
 import { NO_CLASSIFIER } from "@score/core/repair/convergence/finding-classifier.interface";
-import type { WorktreeProvisioner } from "@score/core/workspace-driver.interface";
 import type {
   BlameSource,
   FindingLedger,
@@ -18,7 +17,6 @@ import { classifyFinding, enclosingSymbol, findingKey, resolutionOf } from "./fi
 export class FindingTracker {
   constructor(
     private readonly blame: BlameSource,
-    private readonly ancestry: Pick<WorktreeProvisioner, "isAncestor">,
     private readonly ledger: FindingLedger,
     private readonly classifier: FindingClassifier = NO_CLASSIFIER,
   ) {}
@@ -42,15 +40,19 @@ export class FindingTracker {
       }
       const { origin, symbol } = await this.#locate(thread);
       const key = findingKey(origin, thread, symbol);
-      const originAfterFirstHead =
+      // Git failing to answer is "unknown", never "after": both readings below
+      // feed the convergence rules, and an unproven regression must not park
+      // the PR (the same benefit of the doubt classifyFinding gives blame).
+      const beforeFirstHead =
         origin !== undefined && firstHead !== undefined
-          ? !(await this.ancestry.isAncestor(origin, firstHead))
+          ? await this.blame.ancestry(origin, firstHead)
           : undefined;
+      const originAfterFirstHead = beforeFirstHead === undefined ? undefined : !beforeFirstHead;
       // The latest wave's head is what the agent was sent to fix; a line
       // blame places after it was written by that fix (convergence rule 3).
       const fromLastFix =
         origin !== undefined && lastWaveHead !== undefined
-          ? !(await this.ancestry.isAncestor(origin, lastWaveHead))
+          ? (await this.blame.ancestry(origin, lastWaveHead)) === false
           : false;
       // Prior includes this pass's earlier threads so two reviewers raising
       // one defect in the same round read as a duplicate, not two findings.

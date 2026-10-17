@@ -58,7 +58,8 @@ interface Comment {
   original_line: number | null;
   original_commit_id: string;
   in_reply_to_id?: number;
-  user: { login: string };
+  /** null once the author's account is deleted. */
+  user: { login: string } | null;
   created_at: string;
   diff_hunk: string;
   body: string;
@@ -68,7 +69,8 @@ for (const pr of prs) {
     await gh(["api", `repos/${repo}/pulls/${pr}/comments`, "--paginate", "--slurp"]),
   ) as Comment[][];
   for (const comment of pages.flat()) {
-    if (comment.in_reply_to_id !== undefined || !isBot(comment.user.login)) continue;
+    // An authorless comment is unknown, not a bot's: skipped, as the baseline and replay do.
+    if (comment.in_reply_to_id !== undefined || comment.user === null || !isBot(comment.user.login)) continue;
     console.log(
       JSON.stringify({
         id: `${repo}#${pr}:${comment.id}`,
