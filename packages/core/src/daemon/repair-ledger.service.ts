@@ -29,6 +29,25 @@ export interface RepairLedgerSnapshot {
 
 const NO_DEFECTS: RepairDefects = { conflicting: false, unresolvedThreads: 0, failingChecks: 0 };
 
+/**
+ * A fresh budget (the PR went clean, or a human removed the label) keeps the
+ * findings as history but ends the repair episode they belonged to: a record
+ * still marked as blaming to "the last fix" would otherwise re-park the PR
+ * (convergence rule 3) as soon as the new episode's wave count caught up
+ * with the wave the old record was seen at.
+ */
+function freshBudget(entry: RepairLedgerEntry): RepairLedgerEntry {
+  const { cleanSince: _, ...rest } = entry;
+  return {
+    ...rest,
+    waves: [],
+    labeled: false,
+    findings: entry.findings.map((record) =>
+      record.fromLastFix ? { ...record, fromLastFix: false } : record,
+    ),
+  };
+}
+
 function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
   return (
     a.conflicting === b.conflicting &&
@@ -169,7 +188,7 @@ export class RepairLedger implements FindingLedger {
     const entry = this.#entries.get(pullRequestNumber);
     if (!entry) return undefined;
     if (entry.labeled && !labeled) {
-      this.#entries.set(pullRequestNumber, { ...entry, waves: [], labeled: false });
+      this.#entries.set(pullRequestNumber, freshBudget(entry));
       return undefined;
     }
     const verdict = convergenceVerdict({
@@ -247,8 +266,7 @@ export class RepairLedger implements FindingLedger {
             this.#entries.set(result.pullRequestNumber, { ...entry, cleanSince });
             continue;
           }
-          const { cleanSince: _, ...rest } = entry;
-          this.#entries.set(result.pullRequestNumber, { ...rest, waves: [], labeled: false });
+          this.#entries.set(result.pullRequestNumber, freshBudget(entry));
         }
         continue;
       }

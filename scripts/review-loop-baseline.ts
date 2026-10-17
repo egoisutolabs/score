@@ -41,7 +41,7 @@ interface ThreadsResponse {
       readonly pullRequest: {
         readonly mergedAt: string | null;
         readonly reviewThreads: {
-          readonly pageInfo: { readonly hasNextPage: boolean };
+          readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
           readonly nodes: readonly Thread[];
         };
       };
@@ -73,8 +73,10 @@ async function gh(args: readonly string[]): Promise<string> {
 const api = async <T>(path: string): Promise<T> =>
   JSON.parse(await gh(["api", path, "--paginate", "--slurp"])).flat() as T;
 
+// A thread whose root author GitHub no longer names (deleted account) is
+// unknown, not a bot: it stays out of a bot-only baseline.
 const isBot = (login: string | undefined) =>
-  login === undefined || login.endsWith("[bot]") || /codex|claude|coderabbit|copilot/i.test(login);
+  login !== undefined && (login.endsWith("[bot]") || /codex|claude|coderabbit|copilot/i.test(login));
 
 async function prNumbers(): Promise<number[]> {
   const explicit = arg("--prs");
@@ -95,16 +97,30 @@ async function prNumbers(): Promise<number[]> {
   }
 }
 
-const THREADS_QUERY = `query($n:Int!){repository(owner:"${owner}",name:"${name}"){pullRequest(number:$n){mergedAt reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved resolvedBy{login} comments(first:1){nodes{author{login} originalCommit{oid} commit{oid}}}}}}}}`;
+const THREADS_QUERY = `query($n:Int!,$cursor:String){repository(owner:"${owner}",name:"${name}"){pullRequest(number:$n){mergedAt reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{isResolved resolvedBy{login} comments(first:1){nodes{author{login} originalCommit{oid} commit{oid}}}}}}}}`;
+
+/** Every review thread of a PR, following the connection to its end so a 100+ thread PR is not folded in truncated. */
+async function allThreads(n: number): Promise<{ mergedAt: string | null; threads: Thread[] }> {
+  const threads: Thread[] = [];
+  let cursor: string | null = null;
+  let mergedAt: string | null = null;
+  do {
+    const args = ["api", "graphql", "-f", `query=${THREADS_QUERY}`, "-F", `n=${n}`];
+    if (cursor !== null) args.push("-f", `cursor=${cursor}`);
+    const pr = (JSON.parse(await gh(args)) as ThreadsResponse).data.repository.pullRequest;
+    mergedAt = pr.mergedAt;
+    threads.push(...pr.reviewThreads.nodes);
+    cursor = pr.reviewThreads.pageInfo.hasNextPage ? pr.reviewThreads.pageInfo.endCursor : null;
+  } while (cursor !== null);
+  return { mergedAt, threads };
+}
 
 const totals = { prs: 0, rounds: 0, threads: 0, late: 0, regress: 0, selfResolved: 0, openAtMerge: 0 };
 const reviewers = new Map<string, number>();
 console.log("PR    commits rounds threads late regress selfRes unresolvedNow  by_round");
 for (const n of await prNumbers()) {
-  const threadsRes = JSON.parse(await gh(["api", "graphql", "-f", `query=${THREADS_QUERY}`, "-F", `n=${n}`])) as ThreadsResponse;
-  const pr = threadsRes.data.repository.pullRequest;
-  if (pr.reviewThreads.pageInfo.hasNextPage) console.error(`PR ${n}: more than 100 threads; counts truncated`);
-  const threads = pr.reviewThreads.nodes.filter((t) => isBot(t.comments.nodes[0]?.author?.login));
+  const pr = await allThreads(n);
+  const threads = pr.threads.filter((t) => isBot(t.comments.nodes[0]?.author?.login));
   if (threads.length === 0) continue;
   const commits = await api<Commit[]>(`repos/${repo}/pulls/${n}/commits`);
   const reviews = await api<Review[]>(`repos/${repo}/pulls/${n}/reviews`);

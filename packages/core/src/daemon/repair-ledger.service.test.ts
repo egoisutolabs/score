@@ -229,6 +229,43 @@ test("an exhausted PR stays parked while labeled; removing the label grants a fr
   expect(ledger.shouldAct(9, BROKEN, "aaa")).toBe(true);
 });
 
+test("a fresh budget ends the old episode: a regression from its last fix cannot re-park the PR", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 4 });
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+  // The reviewer blamed a finding to that fix: rule 3 parks the PR.
+  ledger.recordFindings(9, [
+    {
+      threadId: "T1",
+      key: "k",
+      path: "a.ts",
+      symbol: "f",
+      origin: "bbb",
+      author: "codex",
+      createdAt: "",
+      class: "regression-from-fix",
+      wave: 1,
+      fromLastFix: true,
+      resolution: "open",
+      resolvedBy: undefined,
+    },
+  ]);
+  ledger.startPass(1, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toMatchObject({ rule: "regression-from-fix" });
+  ledger.finishPass([
+    { pullRequestNumber: 9, action: "EXHAUSTED", dryRun: false, target: "repair-exhausted" },
+  ]);
+
+  // Label removed, one new wave sent: the new episode is at wave 1 too, but
+  // the old record no longer blames to anything the new budget sent.
+  ledger.startPass(2, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+  expect(ledger.shouldAct(9, BROKEN, "bbb")).toBe(true);
+  ledger.finishPass([pinged("score-issue-3")]);
+  ledger.startPass(3, new Set(["score-issue-3"]));
+  expect(ledger.exhaustion(9, false)).toBeUndefined();
+  expect(ledger.findings(9)[0]?.fromLastFix).toBe(false);
+});
+
 test("a dry-run exhaustion records nothing, so the next real pass still marks the PR", () => {
   const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));

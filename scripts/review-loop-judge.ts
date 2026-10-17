@@ -136,9 +136,29 @@ async function judge(item: Item): Promise<Verdict> {
   const text = envelope.result ?? out;
   const match = /\{[\s\S]*\}/.exec(text);
   if (!match) throw new Error(`no JSON in judge output for ${item.id}: ${text.slice(0, 200)}`);
-  const verdict = JSON.parse(match[0]) as Verdict;
+  const verdict = parseVerdict(JSON.parse(match[0]), item.id);
   await writeFile(cached, JSON.stringify(verdict));
   return verdict;
+}
+
+const CLASSES = new Set(["error-paths", "validation", "boundaries", "numeric-logic", "concurrency", "test-integrity", "scope", "structure", "other"]);
+const PREVENTABLE = new Set(["error-paths", "validation", "boundaries", "numeric-logic", "concurrency", "test-integrity"]);
+
+/** Model output is untrusted: a verdict off the rubric's shape is a judge error to surface, not a tally to cache. */
+function parseVerdict(value: unknown, id: string): Verdict {
+  const fail = (why: string): never => {
+    throw new Error(`judge verdict for ${id} ${why}: ${JSON.stringify(value)}`);
+  };
+  if (typeof value !== "object" || value === null) return fail("is not an object");
+  const v = value as Record<string, unknown>;
+  if (typeof v.real !== "boolean") return fail("has a non-boolean real");
+  if (typeof v.class !== "string" || !CLASSES.has(v.class)) return fail("names a class outside the rubric");
+  if (typeof v.prevented !== "boolean") return fail("has a non-boolean prevented");
+  if (v.confidence !== "high" && v.confidence !== "low") return fail("has a confidence other than high/low");
+  if (typeof v.because !== "string") return fail("has a non-string because");
+  // Rubric §3: prevented requires a real defect in a class the briefing names.
+  if (v.prevented && (!v.real || !PREVENTABLE.has(v.class))) return fail("marks prevented without a real, briefing-named defect");
+  return { real: v.real, class: v.class, prevented: v.prevented, confidence: v.confidence, because: v.because };
 }
 
 // --limit caps each set, so a bounded run still measures both rates.
