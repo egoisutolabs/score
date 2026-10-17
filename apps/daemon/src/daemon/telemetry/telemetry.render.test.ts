@@ -191,7 +191,8 @@ describe("review-loop records", () => {
     );
     expect(records[0]?.attributes).toMatchObject({
       thread_id: "PRRT_1",
-      fingerprint: "o:src/a.ts:save",
+      // A hash of the key, never the key: bounded, and the same for the same key.
+      fingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
       class: "regression-from-fix",
       wave: 1,
       from_last_fix: true,
@@ -202,6 +203,29 @@ describe("review-loop records", () => {
     });
     expect(records[0]?.attributes).not.toHaveProperty("real");
     for (const record of records) expect(recordViolations(record)).toEqual([]);
+
+    // A deep path and a long symbol must not have the record rejected.
+    const deep = `${"a/".repeat(200)}file.ts`;
+    const [long] = renderFindingTelemetry(
+      9,
+      {
+        threadId: "PRRT_2",
+        key: `o:${deep}:${"s".repeat(300)}`,
+        path: deep,
+        symbol: "s".repeat(300),
+        origin: "o",
+        author: undefined,
+        createdAt: TS,
+        class: "first-round",
+        wave: 0,
+        fromLastFix: false,
+        resolution: "open",
+        resolvedBy: undefined,
+      },
+      ctx,
+    );
+    expect(long === undefined ? [] : recordViolations(long)).toEqual([]);
+    expect(String(long?.attributes?.path).endsWith("file.ts")).toBe(true);
   });
 
   test("a park record names the rule as an attribute and keeps the numbers in the body; a seen label emits nothing", () => {

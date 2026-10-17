@@ -8,6 +8,8 @@
  * dropped.
  */
 
+import { createHash } from "node:crypto";
+
 import type { CleanupResult } from "@score/core/cleanup/cleanup-result.interface";
 import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interface";
 import type { LandingResult } from "@score/core/landing/change.interface";
@@ -22,6 +24,7 @@ import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import type { WaveRecord } from "@score/core/repair/wave.interface";
 import type { TelemetryEvent, TelemetrySubject } from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
+import { MAX_ATTRIBUTE_VALUE_LENGTH } from "@score/core/telemetry/telemetry.policy";
 import type { AgentConfig } from "@score/shared/config/config.interface";
 
 /** Everything a pure mapper cannot know; the composition caller supplies it. */
@@ -33,6 +36,13 @@ export interface TelemetryRenderContext {
   readonly dryRun: boolean;
   /** The project's harness: the briefing an agent is sent differs by it, so its version does too. */
   readonly harness: AgentConfig["harness"];
+}
+
+/** Keeps the tail of a path or symbol that would exceed the attribute limit; the tail is the part that names the thing. */
+function bounded(value: string): string {
+  return value.length > MAX_ATTRIBUTE_VALUE_LENGTH
+    ? value.slice(-MAX_ATTRIBUTE_VALUE_LENGTH)
+    : value;
 }
 
 function decisionEvent(
@@ -269,14 +279,17 @@ export function renderFindingTelemetry(
       { pull_request_number: pullRequestNumber },
       {
         thread_id: finding.threadId,
-        // "key" is a secret-shaped attribute name to the policy; the content is a blame fingerprint.
-        fingerprint: finding.key,
+        // "key" is a secret-shaped attribute name to the policy; the content
+        // is a blame fingerprint. Hashed: the key concatenates commit, path
+        // and symbol, and a value over the attribute limit would have the
+        // whole record rejected — a finding the ledger has and metrics lack.
+        fingerprint: createHash("sha256").update(finding.key).digest("hex").slice(0, 16),
         class: finding.class,
         wave: finding.wave,
         from_last_fix: finding.fromLastFix,
         resolution: finding.resolution,
-        path: finding.path,
-        ...(finding.symbol !== undefined && { symbol: finding.symbol }),
+        path: bounded(finding.path),
+        ...(finding.symbol !== undefined && { symbol: bounded(finding.symbol) }),
         ...(finding.author !== undefined && { author: finding.author }),
         ...(finding.real !== undefined && { real: finding.real }),
       },
