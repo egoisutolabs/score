@@ -19,6 +19,8 @@ export interface RepairLedgerEntry {
   readonly findings: readonly FindingRecord[];
   /** When the PR was first seen clean with its checks reported; absent while anything is wrong or pending. */
   readonly cleanSince?: string;
+  /** The head that clock is for: a push whose checks finished between passes still restarts it. */
+  readonly cleanHead?: string;
 }
 
 /** The on-disk shape; additive changes only, bump `v` for anything else. */
@@ -37,7 +39,7 @@ const NO_DEFECTS: RepairDefects = { conflicting: false, unresolvedThreads: 0, fa
  * with the wave the old record was seen at.
  */
 function freshBudget(entry: RepairLedgerEntry): RepairLedgerEntry {
-  const { cleanSince: _, ...rest } = entry;
+  const { cleanSince: _, cleanHead: __, ...rest } = entry;
   return {
     ...rest,
     waves: [],
@@ -253,10 +255,15 @@ export class RepairLedger implements FindingLedger {
     for (const result of results) {
       seen.add(result.pullRequestNumber);
       let entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
-      // Anything but a clean pass restarts the clean clock: a push sends the
-      // checks pending again, and the window is measured from their report.
-      if (result.action !== "NOT_NEEDED" && entry.cleanSince !== undefined) {
-        const { cleanSince: _, ...rest } = entry;
+      // Anything but a clean pass on the same head restarts the clean clock: a
+      // push usually shows as pending checks first, but a head whose checks
+      // finished between two passes shows only as a new sha on a clean result.
+      const newHead =
+        result.headSha !== undefined &&
+        entry.cleanHead !== undefined &&
+        result.headSha !== entry.cleanHead;
+      if ((result.action !== "NOT_NEEDED" || newHead) && entry.cleanSince !== undefined) {
+        const { cleanSince: _, cleanHead: __, ...rest } = entry;
         entry = rest;
         this.#entries.set(result.pullRequestNumber, entry);
       }
@@ -283,7 +290,11 @@ export class RepairLedger implements FindingLedger {
             this.#options.settleMs > 0 &&
             Date.parse(now) - Date.parse(cleanSince) < this.#options.settleMs
           ) {
-            this.#entries.set(result.pullRequestNumber, { ...entry, cleanSince });
+            this.#entries.set(result.pullRequestNumber, {
+              ...entry,
+              cleanSince,
+              ...(result.headSha !== undefined && { cleanHead: result.headSha }),
+            });
             continue;
           }
           this.#entries.set(result.pullRequestNumber, freshBudget(entry));

@@ -98,6 +98,15 @@ export class RepairService {
       }
       const issueNumber = issueNumberFromBranch(change.headRefName);
       if (issueNumber === null) continue;
+      // Every result names the head it was observed on, so the ledger can tell
+      // a clean pass on this head from one on the head before it.
+      const report = (result: Omit<RepairResult, "pullRequestNumber" | "dryRun" | "headSha">) =>
+        results.push({
+          pullRequestNumber: change.number,
+          dryRun,
+          ...(change.headSha !== undefined && { headSha: change.headSha }),
+          ...result,
+        });
 
       // The full threads replace shepherd's bare count so the finding ledger
       // sees every thread the gate counts, from one query. A failed query saw
@@ -107,7 +116,7 @@ export class RepairService {
       // tick instead.
       const threads = await this.host.observeReviewThreads(change.number).catch(() => undefined);
       if (threads === undefined) {
-        results.push({ pullRequestNumber: change.number, action: "UNOBSERVED", dryRun });
+        report({ action: "UNOBSERVED" });
         continue;
       }
       await this.options.onThreads?.(change.number, threads);
@@ -127,8 +136,7 @@ export class RepairService {
         // real one. After the agent resolves its threads and pushes, every
         // defect reads zero while the reviewer's check is still running — the
         // next round is being written, not finished (analysis §1).
-        const action = checks.pending > 0 ? "CHECKS_PENDING" : "NOT_NEEDED";
-        results.push({ pullRequestNumber: change.number, action, dryRun });
+        report({ action: checks.pending > 0 ? "CHECKS_PENDING" : "NOT_NEEDED" });
         continue;
       }
       // The label outlives the in-memory ledger: a labeled PR stays parked
@@ -137,28 +145,21 @@ export class RepairService {
       // is a human acting, which is what the label asked for.
       const labeled = change.labels.some((label) => label.name === REPAIR_EXHAUSTED_LABEL);
       if (labeled && this.options.exhaustion !== undefined) {
-        results.push({
-          pullRequestNumber: change.number,
-          action: "EXHAUSTED",
-          dryRun,
-          target: REPAIR_EXHAUSTED_LABEL,
-        });
+        report({ action: "EXHAUSTED", target: REPAIR_EXHAUSTED_LABEL });
         continue;
       }
       // A ping while the reviewer's check is still running makes the agent
       // fix round N while round N+1 is being written (analysis §1): in PR 99
       // every fix commit landed 2–6 minutes after the previous review.
       if (checks.pending > 0) {
-        results.push({ pullRequestNumber: change.number, action: "CHECKS_PENDING", dryRun });
+        report({ action: "CHECKS_PENDING" });
         continue;
       }
       const exhaustion = this.options.exhaustion?.(change.number, labeled);
       if (exhaustion !== undefined) {
         if (!dryRun) await this.#markExhausted(change.number, exhaustion);
-        results.push({
-          pullRequestNumber: change.number,
+        report({
           action: "EXHAUSTED",
-          dryRun,
           target: REPAIR_EXHAUSTED_LABEL,
           parked: { rule: exhaustion.rule, detail: exhaustion.detail },
         });
@@ -169,7 +170,7 @@ export class RepairService {
           ? change.additions + change.deletions
           : undefined;
       if (this.options.shouldAct?.(change.number, defects, change.headSha, diffSize) === false) {
-        results.push({ pullRequestNumber: change.number, action: "WORKING", dryRun });
+        report({ action: "WORKING" });
         continue;
       }
 
@@ -190,24 +191,14 @@ export class RepairService {
 
       if (session) {
         if (!dryRun) await this.agents.ping(session, message);
-        results.push({
-          pullRequestNumber: change.number,
-          action: "PINGED",
-          dryRun,
-          target: session,
-        });
+        report({ action: "PINGED", target: session });
       } else if (worktree && !this.options.noSpawn) {
         if (!dryRun) {
           await this.agents.startRepair(change.number, worktree.path, message, this.options.agent);
         }
-        results.push({
-          pullRequestNumber: change.number,
-          action: "SPAWNED",
-          dryRun,
-          target: worktree.path,
-        });
+        report({ action: "SPAWNED", target: worktree.path });
       } else {
-        results.push({ pullRequestNumber: change.number, action: "SKIPPED", dryRun });
+        report({ action: "SKIPPED" });
       }
     }
 

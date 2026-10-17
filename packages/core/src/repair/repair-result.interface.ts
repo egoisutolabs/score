@@ -15,6 +15,8 @@ export interface RepairResult {
   readonly pullRequestNumber: number;
   readonly action: RepairAction;
   readonly dryRun: boolean;
+  /** The head the pass observed, when GitHub reported one; the ledger's clean clock belongs to one head. */
+  readonly headSha?: string;
   readonly target?: string;
   /** EXHAUSTED only, and only on the pass that parked the PR: the convergence rule and its numbers. */
   readonly parked?: { readonly rule: string; readonly detail: string };

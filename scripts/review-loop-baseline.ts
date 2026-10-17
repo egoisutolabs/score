@@ -131,8 +131,11 @@ for (const n of await prNumbers()) {
     const login = r.user?.login ?? "unknown";
     reviewers.set(login, (reviewers.get(login) ?? 0) + 1);
   }
-  const rounds = [...new Set(botReviews.map((r) => r.commit_id))].sort(
-    (a, b) => (shas.indexOf(a) === -1 ? 999 : shas.indexOf(a)) - (shas.indexOf(b) === -1 ? 999 : shas.indexOf(b)),
+  // A review on a commit the PR no longer has (force-pushed away) has no
+  // place in the sequence and is not a round; it would otherwise inflate
+  // rounds per PR while its findings are already excluded below.
+  const rounds = [...new Set(botReviews.map((r) => r.commit_id).filter((sha) => shas.includes(sha)))].sort(
+    (a, b) => shas.indexOf(a) - shas.indexOf(b),
   );
   const byRound = new Map<number, number>();
   let late = 0;

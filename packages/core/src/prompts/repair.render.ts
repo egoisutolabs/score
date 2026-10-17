@@ -58,5 +58,11 @@ export function renderRepairPrompt(pullRequestNumber: number, buildRed?: string)
   );
 }
 
-/** Content hash of the template over a canonical render (PR 0, no build-red tail). */
-export const REPAIR_PROMPT_VERSION = promptVersion(renderRepairPrompt(0));
+/**
+ * Content hash of the template over canonical renders of both variants (PR 0,
+ * without and with the build-red tail), so an edit to the conditional gate
+ * text changes the version of the waves that carry it.
+ */
+export const REPAIR_PROMPT_VERSION = promptVersion(
+  `${renderRepairPrompt(0)}\n${renderRepairPrompt(0, "GATE")}`,
+);

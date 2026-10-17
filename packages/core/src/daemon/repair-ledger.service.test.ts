@@ -174,7 +174,12 @@ test("with a settle window, a clean PR keeps its waves until it has stayed clean
     settleMs: 10 * 60_000,
     now: () => new Date(clock.now).toISOString(),
   });
-  const clean: RepairResult = { pullRequestNumber: 9, action: "NOT_NEEDED", dryRun: false };
+  const clean: RepairResult = {
+    pullRequestNumber: 9,
+    action: "NOT_NEEDED",
+    dryRun: false,
+    headSha: "aaa",
+  };
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
 
   // Checks reported, nothing wrong — but Codex posts no check, so its review
@@ -198,10 +203,19 @@ test("with a settle window, a clean PR keeps its waves until it has stayed clean
   ledger.finishPass([clean]);
   expect(ledger.waveCount(9)).toBe(1);
 
-  // Clean for the whole window: fresh budget, history kept.
-  clock.now += 60_000;
+  // A push whose checks finished between passes never showed as pending: the
+  // new head on a clean result restarts the clock all the same.
   ledger.startPass(6, new Set());
-  ledger.finishPass([clean]);
+  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
+  clock.now += 9 * 60_000;
+  ledger.startPass(7, new Set());
+  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
+  expect(ledger.waveCount(9)).toBe(1);
+
+  // Clean for the whole window on one head: fresh budget, history kept.
+  clock.now += 60_000;
+  ledger.startPass(8, new Set());
+  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
   expect(ledger.waveCount(9)).toBe(0);
   expect(ledger.firstHead(9)).toBe("aaa");
   expect(ledger.exhaustion(9, false)).toBeUndefined();
