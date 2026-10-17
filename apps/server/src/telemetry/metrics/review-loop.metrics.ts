@@ -95,9 +95,14 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
         if (LATE_REGRESSION_CLASSES.has(String(attributes.class))) entry.lateRegressions += 1;
       }
     } else if (record.name === "score.repair.parked") {
+      // A park or a merge counts its PR too: under a `since` cutoff the
+      // waves that preceded it may lie outside the window, and a segment
+      // must not report a merged PR against a denominator of zero.
+      entry.pullRequests.add(pr);
       const rule = String(attributes.rule ?? "unknown");
       entry.parkedByRule[rule] = (entry.parkedByRule[rule] ?? 0) + 1;
     } else if (record.name === "score.repair.open_at_merge") {
+      entry.pullRequests.add(pr);
       entry.merged.add(pr);
       entry.openAtMerge += Number(attributes.open_findings ?? 0);
     }

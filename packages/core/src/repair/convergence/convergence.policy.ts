@@ -42,7 +42,13 @@ export function convergenceVerdict(input: ConvergenceInput): ConvergenceVerdict 
   const prev = waves.at(-2);
   const prev2 = waves.at(-3);
   if (last && prev && prev2) {
-    if (last.openFindings >= prev.openFindings && prev.openFindings >= prev2.openFindings) {
+    // Zero findings cannot be "flat": waves sent for conflicts or red checks
+    // alone have nothing to converge, and the budget bounds those.
+    if (
+      last.openFindings > 0 &&
+      last.openFindings >= prev.openFindings &&
+      prev.openFindings >= prev2.openFindings
+    ) {
       return {
         rule: "findings-flat",
         detail: `open findings ${prev2.openFindings} → ${prev.openFindings} → ${last.openFindings} over the last three waves`,

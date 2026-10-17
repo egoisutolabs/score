@@ -1,8 +1,11 @@
 /**
  * Daemon: the tick loop's shared machinery — phase scheduling, status
- * heartbeat, per-pass observation cache, and the repair ledger that stops
- * re-pinging a live agent. Holds no facts of record — pacing state
- * resets on restart by design; durable truth lives in files and GitHub.
+ * heartbeat, per-pass observation cache, and the repair ledger that paces
+ * pings, spends each PR's round budget, and keys its findings. The ledger is
+ * the one piece of daemon state that outlives the process: the store
+ * persists it per managed project, so a restart keeps budgets, wave history,
+ * and findings while the liveness tick is clamped to the new process. Facts
+ * about code and PRs still live in files and GitHub, never here.
  */
 export * from "./daemon.service";
 export * from "./observations.service";

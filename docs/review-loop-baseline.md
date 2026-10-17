@@ -19,7 +19,7 @@ carry reviewer threads: 71, 85, 86, 89, 90, 94, 95, 97, 99, 101, 102, 104,
 | Findings citing a commit after the first | 75% |
 | Threads resolved by the human login (agent or human) | 80% |
 | Threads resolved by a reviewer bot | 1 |
-| Findings still open when the PR merged | 26 |
+| Findings on merged PRs still unresolved at measurement time (a floor for "open at merge": GitHub keeps no resolution timestamp) | 26 |
 
 Limen (`gendev1/marvelous-monkey`, 61 PRs with reviewer threads):
 
@@ -28,7 +28,7 @@ Limen (`gendev1/marvelous-monkey`, 61 PRs with reviewer threads):
 | Findings | 173 |
 | Rounds per PR | 1.72 |
 | Findings opened in round 2 or later | 32% |
-| Findings still open when the PR merged | 55 |
+| Findings on merged PRs still unresolved at measurement time | 55 |
 
 Both repos together: 311 findings over 75 PRs. The analysis cites 377
 findings over 25 PRs; that count could not be reproduced from the threads

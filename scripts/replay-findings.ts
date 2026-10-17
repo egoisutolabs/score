@@ -98,7 +98,11 @@ const out = new Map<string, FindingRecord>();
 const waves: WaveRecord[] = [];
 const verdicts: string[] = [];
 const DEFECTS = { conflicting: false, unresolvedThreads: 0, failingChecks: 0 } as never;
-for (const wave of [...byWave.keys()].sort((a, b) => a - b)) {
+// Every round is a wave the ledger would have recorded, including a round
+// that opened no inline thread; a thread cited after the last round is wave
+// rounds.length, so the walk runs to whichever is later.
+const lastWave = Math.max(rounds.length - 1, ...byWave.keys());
+for (let wave = 0; wave <= lastWave; wave += 1) {
   ledger.waves = wave;
   seen = [...seen, ...(byWave.get(wave) ?? [])];
   const recs = await tracker.observe(pr, seen);

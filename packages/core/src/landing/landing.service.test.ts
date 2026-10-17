@@ -476,6 +476,20 @@ test("a new head restarts the settle clock; the clock starts when the head is fi
   expect((await service.runTick())[0]?.tag).toBe("merged");
 });
 
+test("a candidate landing saw but skipped (dirty checkout) has been settling all along", async () => {
+  const workspace = new FakeWorkspace();
+  const clock = { now: 0 };
+  const service = settling(workspace, host(), clock);
+  workspace.checkout = { branch: "main", status: " M src/dirty.ts" };
+  expect((await service.runTick())[0]?.tag).toBe("skipped");
+
+  // Ten minutes later the checkout is clean: the head was visible the whole
+  // time, so it stages now rather than starting a fresh fifteen-minute wait.
+  clock.now += 10 * 60_000;
+  workspace.checkout = { branch: "main", status: "" };
+  expect((await service.runTick())[0]?.tag).toBe("merged");
+});
+
 test("a PR that leaves the candidate list is forgotten, so its return pays a fresh settle", async () => {
   const workspace = new FakeWorkspace();
   const clock = { now: 0 };

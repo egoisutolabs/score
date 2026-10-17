@@ -11,3 +11,4 @@ export * from "./repair.policy";
 export * from "./repair.service";
 export * from "./repair-host.interface";
 export * from "./repair-result.interface";
+export * from "./wave.interface";

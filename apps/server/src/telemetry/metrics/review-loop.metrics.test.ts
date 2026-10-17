@@ -33,6 +33,10 @@ test("metrics segment PRs by the prompt version of their last wave and count the
     event("score.repair.wave", 10, { prompt_version: "v2", wave: 1 }),
     event("score.repair.finding", 10, { class: "fix-failed", wave: 1 }),
     event("score.repair.parked", 10, { rule: "regression-from-fix" }),
+    // PRs 11 and 12: only a merge, only a park, in the window (a `since`
+    // cutoff hid their waves). Each still counts as a PR of its segment.
+    event("score.repair.open_at_merge", 11, { open_findings: 0, total_findings: 0 }),
+    event("score.repair.parked", 12, { rule: "budget" }),
     // Noise: a span and an unrelated event change nothing.
     { ...event("score.phase", undefined, {}), signal: "span", span_id: "s" } as TelemetryRecord,
     event("score.cleanup.decision", 9, { action: "NOT_FOUND" }),
@@ -52,13 +56,13 @@ test("metrics segment PRs by the prompt version of their last wave and count the
   expect(metrics.segments).toEqual([
     {
       promptVersion: "none",
-      pullRequests: 1,
+      pullRequests: 3,
       waves: 0,
       findings: 1,
       lateFindings: 0,
       lateRegressions: 0,
-      parkedByRule: {},
-      mergedPullRequests: 0,
+      parkedByRule: { budget: 1 },
+      mergedPullRequests: 1,
       openAtMerge: 0,
     },
     {

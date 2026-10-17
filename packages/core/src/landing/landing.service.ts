@@ -90,6 +90,10 @@ export class LandingService {
     const results: LandingResult[] = [];
     let merges = 0;
     for (const change of changes) {
+      // Noted before the skip below: the settle clock measures how long a head
+      // has been visible to landing, and a candidate skipped for a dirty
+      // checkout, a halted tick, or the merge cap was visible all the same.
+      const seenAt = this.#noteHead(change);
       if (
         !canMerge ||
         this.#pushFailedThisTick ||
@@ -101,7 +105,7 @@ export class LandingService {
 
       let result: LandingResult;
       try {
-        result = await this.#land(change);
+        result = await this.#land(change, seenAt);
       } catch (error) {
         await this.workspace.abortMerge().catch(() => undefined);
         result = {
@@ -117,8 +121,7 @@ export class LandingService {
     return results;
   }
 
-  async #land(change: PullRequestObservation): Promise<LandingResult> {
-    const seenAt = this.#noteHead(change);
+  async #land(change: PullRequestObservation, seenAt: number | undefined): Promise<LandingResult> {
     const gates = gatesFor(this.options.repositoryRoot);
     const gateNames = gates.map((gate) => gate.name).join("+");
     // Legacy performs cheap checks before the GraphQL review-thread query.

@@ -75,6 +75,10 @@ test("rule 1: findings that do not decrease for two waves", () => {
   expect(
     convergenceVerdict({ waves: [wave(3), wave(2), wave(2)], findings: [], budget: 8 }),
   ).toBeUndefined();
+  // Three waves for conflicts or red checks alone: no findings, nothing flat.
+  expect(
+    convergenceVerdict({ waves: [wave(0), wave(0), wave(0)], findings: [], budget: 8 }),
+  ).toBeUndefined();
 });
 
 test("rule 2: the diff grows with each of the last three waves", () => {

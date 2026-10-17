@@ -90,7 +90,7 @@ const THREADS_QUERY = `query($n:Int!){repository(owner:"${owner}",name:"${name}"
 
 const totals = { prs: 0, rounds: 0, threads: 0, late: 0, regress: 0, selfResolved: 0, openAtMerge: 0 };
 const reviewers = new Map<string, number>();
-console.log("PR    commits rounds threads late regress selfRes openMerged  by_round");
+console.log("PR    commits rounds threads late regress selfRes unresolvedNow  by_round");
 for (const n of await prNumbers()) {
   const threadsRes = JSON.parse(await gh(["api", "graphql", "-f", `query=${THREADS_QUERY}`, "-F", `n=${n}`])) as ThreadsResponse;
   const pr = threadsRes.data.repository.pullRequest;
@@ -124,11 +124,14 @@ for (const n of await prNumbers()) {
     if (round > 1) late += 1;
     if (shas.indexOf(cited) > 0) regress += 1;
     if (t.isResolved && t.resolvedBy && !isBot(t.resolvedBy.login)) selfResolved += 1;
+    // GitHub reports a thread's current state only, not when it was resolved:
+    // this is "still unresolved today on a merged PR", a floor for the
+    // number open at the moment of merge.
     if (!t.isResolved && pr.mergedAt) openAtMerge += 1;
   }
   const rounded = [...byRound.entries()].sort((a, b) => a[0] - b[0]).map(([r, c]) => `${r}:${c}`).join(" ");
   console.log(
-    `${String(n).padStart(4)} ${String(shas.length).padStart(8)} ${String(rounds.length).padStart(6)} ${String(threads.length).padStart(7)} ${String(late).padStart(4)} ${String(regress).padStart(7)} ${String(selfResolved).padStart(7)} ${String(openAtMerge).padStart(10)}  ${rounded}`,
+    `${String(n).padStart(4)} ${String(shas.length).padStart(8)} ${String(rounds.length).padStart(6)} ${String(threads.length).padStart(7)} ${String(late).padStart(4)} ${String(regress).padStart(7)} ${String(selfResolved).padStart(7)} ${String(openAtMerge).padStart(13)}  ${rounded}`,
   );
   totals.prs += 1;
   totals.rounds += rounds.length;
@@ -140,5 +143,5 @@ for (const n of await prNumbers()) {
 }
 const pct = (a: number, b: number) => `${Math.round((100 * a) / Math.max(1, b))}%`;
 console.log(`\nPRs with findings: ${totals.prs}  findings: ${totals.threads}  rounds/PR: ${(totals.rounds / Math.max(1, totals.prs)).toFixed(2)}`);
-console.log(`late-round share: ${pct(totals.late, totals.threads)}  cites-later-commit share: ${pct(totals.regress, totals.threads)}  self-resolved: ${pct(totals.selfResolved, totals.threads)}  open at merge: ${totals.openAtMerge}`);
+console.log(`late-round share: ${pct(totals.late, totals.threads)}  cites-later-commit share: ${pct(totals.regress, totals.threads)}  self-resolved: ${pct(totals.selfResolved, totals.threads)}  still unresolved on merged PRs (floor for open at merge): ${totals.openAtMerge}`);
 console.log("reviewer submissions:", Object.fromEntries(reviewers));

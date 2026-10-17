@@ -9,7 +9,8 @@
  * (cached under evals/review-loop/cache by item + rubric + briefing hash);
  * prints the briefing prevention rate, the class mix, the false-positive
  * rate on known negatives, and judge-human agreement on the calibration set.
- * Uses the operator's Claude login; --limit bounds the spend.
+ * Uses the operator's Claude login; --limit N judges at most N corpus items
+ * and N known negatives.
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -140,8 +141,9 @@ async function judge(item: Item): Promise<Verdict> {
   return verdict;
 }
 
+// --limit caps each set, so a bounded run still measures both rates.
 const corpus = negativesOnly ? [] : (await jsonl<Item>(join(EVALS, "corpus.jsonl"))).slice(0, limit);
-const negatives = await jsonl<Item>(join(EVALS, "known-negatives.jsonl"));
+const negatives = (await jsonl<Item>(join(EVALS, "known-negatives.jsonl"))).slice(0, limit);
 const labels = new Map((await jsonl<Label>(join(EVALS, "calibration.jsonl"))).map((l) => [l.id, l]));
 
 const verdicts = new Map<string, Verdict>();
