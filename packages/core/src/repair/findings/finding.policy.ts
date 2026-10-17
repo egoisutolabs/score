@@ -81,26 +81,23 @@ export function findingKey(
 const BOT_LOGIN = /\[bot\]$|^(?:claude|chatgpt-codex-connector|coderabbitai|copilot)/i;
 
 /**
+ * The baseline (docs/review-loop-baseline.md) counts a finding only when a
+ * bot reviewer opened the thread: a human's inline comment is review the
+ * agent must still answer, but recording it would inflate every share the
+ * telemetry is meant to re-measure against that baseline. One notion of
+ * "bot" with resolutionOf below; an unnamed author (deleted account) is
+ * unknown, not a bot.
+ */
+export function isReviewerBot(login: string | undefined): boolean {
+  return login !== undefined && BOT_LOGIN.test(login);
+}
+
+/**
  * Who closed the thread decides whether it counts as closed. The thread's
  * author (a reviewer bot) or any bot pass closes it; anyone else is the agent
  * on the operator's token, or the operator — indistinguishable on GitHub, so
  * both read as a self-resolve the next review must confirm.
  */
-/**
- * The baseline (docs/review-loop-baseline.md) counts a finding only when a
- * bot reviewer opened the thread: a human's inline comment is review the
- * agent must still answer, but recording it would inflate every share the
- * telemetry is meant to re-measure against that baseline. Same heuristic as
- * scripts/review-loop-baseline.ts; an unnamed author (deleted account) is
- * unknown, not a bot.
- */
-export function isReviewerBot(login: string | undefined): boolean {
-  return (
-    login !== undefined &&
-    (login.endsWith("[bot]") || /codex|claude|coderabbit|copilot/i.test(login))
-  );
-}
-
 export function resolutionOf(thread: ReviewThreadObservation): FindingResolution {
   if (!thread.isResolved) return "open";
   const by = thread.resolvedBy;
