@@ -139,9 +139,17 @@ for (const n of await prNumbers()) {
   let regress = 0;
   let selfResolved = 0;
   let openAtMerge = 0;
+  let unplaced = 0;
   for (const t of threads) {
     const c0 = t.comments.nodes[0];
     const cited = c0?.originalCommit?.oid ?? c0?.commit?.oid ?? "";
+    // A thread on a commit the PR no longer has (force-pushed away) has no
+    // round and no ancestry; counting it as round one and non-regression
+    // would understate both shares, so it leaves the denominator too.
+    if (!shas.includes(cited)) {
+      unplaced += 1;
+      continue;
+    }
     // Round of a finding = position of its cited commit among reviewed commits;
     // a cited commit no reviewer submitted on folds into the nearest earlier round.
     let round = rounds.indexOf(cited) + 1;
@@ -158,13 +166,15 @@ for (const n of await prNumbers()) {
     // number open at the moment of merge.
     if (!t.isResolved && pr.mergedAt) openAtMerge += 1;
   }
+  if (unplaced > 0) console.error(`PR ${n}: ${unplaced} thread(s) cite commits the PR no longer has; skipped`);
+  const placed = threads.length - unplaced;
   const rounded = [...byRound.entries()].sort((a, b) => a[0] - b[0]).map(([r, c]) => `${r}:${c}`).join(" ");
   console.log(
-    `${String(n).padStart(4)} ${String(shas.length).padStart(8)} ${String(rounds.length).padStart(6)} ${String(threads.length).padStart(7)} ${String(late).padStart(4)} ${String(regress).padStart(7)} ${String(selfResolved).padStart(7)} ${String(openAtMerge).padStart(13)}  ${rounded}`,
+    `${String(n).padStart(4)} ${String(shas.length).padStart(8)} ${String(rounds.length).padStart(6)} ${String(placed).padStart(7)} ${String(late).padStart(4)} ${String(regress).padStart(7)} ${String(selfResolved).padStart(7)} ${String(openAtMerge).padStart(13)}  ${rounded}`,
   );
   totals.prs += 1;
   totals.rounds += rounds.length;
-  totals.threads += threads.length;
+  totals.threads += placed;
   totals.late += late;
   totals.regress += regress;
   totals.selfResolved += selfResolved;
