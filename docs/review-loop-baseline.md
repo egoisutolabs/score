@@ -132,8 +132,11 @@ wave, then `fix-failed` (same key as a thread the agent resolved itself),
 `duplicate` (same key open from the other reviewer), `regression-from-fix`
 (blame places the line after the first wave's head), else `missed-earlier`.
 A thread resolved by anyone but a reviewer bot is recorded as
-`self-resolved` and still counts as open in the ledger's own count. The
-ledger (waves, budget state, first head, findings) is persisted per project
+`self-resolved`: it still counts in the ledger's "open at merge" figure and
+makes the same key's return `fix-failed`, but the convergence rules count
+only threads the reviewer still holds open, since reviewer bots almost never
+resolve a thread and a count that kept self-resolves open could never fall.
+The ledger (waves, budget state, first head, findings) is persisted per project
 at `~/.score/projects/<key>/repair-ledger.json`, written whole via tmp and
 rename, and restored at daemon start with the pacing tick clamped so a
 restart neither re-pings early nor waits out the old tick gap.

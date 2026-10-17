@@ -45,12 +45,20 @@ const commits = ((await gh(["api", `repos/${repo}/pulls/${pr}/commits`, "--pagin
 const reviews = ((await gh(["api", `repos/${repo}/pulls/${pr}/reviews`, "--paginate", "--slurp"])) as {
   commit_id: string;
   state: string;
-  user: { login: string };
+  user: { login: string } | null;
 }[][]).flat();
 const isBot = (login: string) => /\[bot\]$|codex|claude|coderabbit/i.test(login);
-const rounds = [...new Set(reviews.filter((r) => r.state !== "PENDING" && isBot(r.user.login)).map((r) => r.commit_id))].sort(
-  (a, b) => commits.indexOf(a) - commits.indexOf(b),
-);
+// A review on a commit the PR no longer has (force-pushed away) cannot be
+// placed in the sequence, so it is not a round; a review whose author GitHub
+// no longer names is unknown, not a bot's.
+const rounds = [
+  ...new Set(
+    reviews
+      .filter((r) => r.state !== "PENDING" && r.user !== null && isBot(r.user.login))
+      .map((r) => r.commit_id)
+      .filter((sha) => commits.includes(sha)),
+  ),
+].sort((a, b) => commits.indexOf(a) - commits.indexOf(b));
 const firstHead = rounds[0];
 // An author GitHub no longer names (deleted account) is unknown, not a bot.
 const threads = [...(await github.observeReviewThreads(pr))]
@@ -88,7 +96,9 @@ for (const t of threads) {
 const base = ((await gh(["pr", "view", String(pr), "-R", repo, "--json", "baseRefOid"])) as { baseRefOid: string })
   .baseRefOid;
 const diffSizeAt = async (sha: string) => {
-  const r = await runner.run(["git", "diff", "--shortstat", base, sha], { cwd: checkout });
+  // Three dots: from the merge base, so a base branch that moved under the
+  // PR does not count as the PR's own growth.
+  const r = await runner.run(["git", "diff", "--shortstat", `${base}...${sha}`], { cwd: checkout });
   const m = /(\d+) insertions?\(\+\)|(\d+) deletions?\(-\)/g;
   let total = 0;
   for (const hit of r.stdout.matchAll(m)) total += Number(hit[1] ?? hit[2] ?? 0);

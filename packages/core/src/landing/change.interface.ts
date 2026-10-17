@@ -81,4 +81,6 @@ export interface LandingResult {
   readonly tag: LandingTag;
   readonly note: string;
   readonly keepTimer?: boolean;
+  /** The head this verdict is about, when the observation carried one; a gate verdict is only ever about one head. */
+  readonly headSha?: string;
 }

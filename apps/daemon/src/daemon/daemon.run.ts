@@ -15,6 +15,7 @@ import { RepairLedger } from "@score/core/daemon/repair-ledger.service";
 import { RepairLedgerStore } from "@score/core/daemon/repair-ledger.store";
 import {
   applyGateVerdicts,
+  type GateVerdict,
   gateFailureFrom,
   StatusWriter,
 } from "@score/core/daemon/status.service";
@@ -845,7 +846,7 @@ export async function runDaemonLoop(
           scanFailure = error;
         },
         onThreads: recordThreads,
-        buildRed: (number) => gateVerdicts.get(number),
+        buildRed: (number) => gateVerdicts.get(number)?.note,
       },
       github,
       git,
@@ -860,7 +861,7 @@ export async function runDaemonLoop(
     let lastGateFailure: string | null = null;
     // Landing → repair build-red handoff (epic decision 11): repair's own scan
     // sees only GitHub facts, so landing's merged-tree verdicts ride this map.
-    const gateVerdicts = new Map<number, string>();
+    const gateVerdicts = new Map<number, GateVerdict>();
     let passError: string | null = null;
     let stopping = false;
     // Set per pass by the D1 reconciliation below. While an unreconciled
@@ -922,7 +923,7 @@ export async function runDaemonLoop(
             merged.flatMap((result) =>
               renderOpenAtMergeTelemetry(
                 result.pullRequestNumber,
-                ledger.openFindingCount(result.pullRequestNumber),
+                ledger.unconfirmedFindingCount(result.pullRequestNumber),
                 ledger.findings(result.pullRequestNumber).length,
                 ctx,
               ),

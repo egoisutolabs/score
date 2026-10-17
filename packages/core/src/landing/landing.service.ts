@@ -94,12 +94,20 @@ export class LandingService {
       // has been visible to landing, and a candidate skipped for a dirty
       // checkout, a halted tick, or the merge cap was visible all the same.
       const seenAt = this.#noteHead(change);
+      // Every result names the head it is about, so the daemon can tell a
+      // verdict on the head the agent already replaced from one on this head.
+      const head = change.headSha !== undefined ? { headSha: change.headSha } : {};
       if (
         !canMerge ||
         this.#pushFailedThisTick ||
         (!this.options.dryRun && !this.options.noMerge && merges >= this.options.maxMerges)
       ) {
-        results.push({ pullRequestNumber: change.number, tag: "skipped", note: "not processed" });
+        results.push({
+          pullRequestNumber: change.number,
+          tag: "skipped",
+          note: "not processed",
+          ...head,
+        });
         continue;
       }
 
@@ -116,7 +124,7 @@ export class LandingService {
       }
       if (!result.keepTimer) this.#readyTicks.delete(change.number);
       if (result.tag === "merged") merges += 1;
-      results.push(result);
+      results.push({ ...result, ...head });
     }
     return results;
   }

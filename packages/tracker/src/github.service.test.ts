@@ -204,6 +204,37 @@ test("addLabel creates the label idempotently before adding it to the PR", async
   expect(runner.commands[1]?.slice(-2)).toEqual(["--add-label", "repair-exhausted"]);
 });
 
+test("addLabel: death after `label create`, before `pr edit` — the retry re-creates (an upsert) and attaches once (RETRIED)", async () => {
+  class DyingRunner extends RecordingRunner {
+    dieOnEdit = true;
+    override async run(command: readonly string[], options: RunCommandOptions) {
+      const result = await super.run(command, options);
+      if (this.dieOnEdit && command[1] === "pr" && command[2] === "edit") {
+        return { ...result, exitCode: 1, stderr: "connection reset" };
+      }
+      return result;
+    }
+  }
+  const runner = new DyingRunner();
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await expect(github.addLabel(9, "repair-exhausted")).rejects.toThrow();
+  expect(runner.commands.map((command) => command[1])).toEqual(["label", "pr"]);
+
+  // Next tick: `label create --force` is an upsert, so re-running it over the
+  // label the first attempt created changes nothing; the attach then lands.
+  runner.dieOnEdit = false;
+  await github.addLabel(9, "repair-exhausted");
+  expect(runner.commands.map((command) => command.slice(1, 3))).toEqual([
+    ["label", "create"],
+    ["pr", "edit"],
+    ["label", "create"],
+    ["pr", "edit"],
+  ]);
+  expect(runner.commands.filter((command) => command[2] === "edit")).toHaveLength(2);
+  expect(runner.commands[2]).toContain("--force");
+});
+
 test("hasComment finds the marker anywhere in the PR conversation, and only there", async () => {
   const runner = new RecordingRunner();
   runner.responses = [

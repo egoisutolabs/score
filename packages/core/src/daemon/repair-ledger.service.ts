@@ -165,14 +165,34 @@ export class RepairLedger implements FindingLedger {
   }
 
   /**
-   * Defects the convergence rules count as open: GitHub-open threads plus the
-   * agent's own resolves, counted once per finding key — two reviewers
-   * raising the same defect are one thing left to fix, not two.
+   * Defects the convergence rules count as open: threads the reviewer still
+   * holds open on GitHub, once per finding key — two reviewers raising the
+   * same defect are one thing left to fix, not two. The agent's own resolves
+   * are left out here on purpose: reviewer bots almost never resolve a thread
+   * (one of 138 in the baseline), so a count that kept self-resolves open
+   * could only ever grow, and "did not decrease over three waves" would park
+   * every PR at its third wave whatever the agent did.
    */
   openFindingCount(pullRequestNumber: number): number {
+    return this.#distinctKeys(pullRequestNumber, (record) => record.resolution === "open");
+  }
+
+  /**
+   * Findings nobody but the agent has closed: GitHub-open plus self-resolved.
+   * The "open at merge" figure the baseline counted by hand, where an agent's
+   * own resolve is not a reviewer's confirmation.
+   */
+  unconfirmedFindingCount(pullRequestNumber: number): number {
+    return this.#distinctKeys(
+      pullRequestNumber,
+      (record) => record.resolution !== "reviewer-resolved",
+    );
+  }
+
+  #distinctKeys(pullRequestNumber: number, keep: (record: FindingRecord) => boolean): number {
     return new Set(
       this.findings(pullRequestNumber)
-        .filter((record) => record.resolution !== "reviewer-resolved")
+        .filter(keep)
         .map((record) => record.key),
     ).size;
   }

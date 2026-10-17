@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyGateVerdicts,
+  type GateVerdict,
   gateFailureFrom,
   StatusWriter,
 } from "@score/core/daemon/status.service";
@@ -47,33 +48,38 @@ test("gateFailureFrom carries the latest build-red tail and clears only on a gre
   expect(gateFailureFrom([landing("skipped", "not processed"), landing("ready", "ok")])).toBeNull();
 });
 
-test("applyGateVerdicts sets on build-red, keeps while gates idle, clears on green or gone", () => {
-  const verdicts = new Map<number, string>();
+test("applyGateVerdicts sets on build-red, keeps while gates idle on the same head, clears on green, a new head, or gone", () => {
+  const verdicts = new Map<number, GateVerdict>();
   const result = (
     pullRequestNumber: number,
     tag: LandingResult["tag"],
     note = "",
-  ): LandingResult => ({ pullRequestNumber, tag, note });
+    headSha = "aaa",
+  ): LandingResult => ({ pullRequestNumber, tag, note, headSha });
 
   applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345")]);
-  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+  expect(verdicts.get(7)).toEqual({ headSha: "aaa", note: "daemon:check — TS2345" });
 
-  // A tick where gates never ran keeps the last verdict standing.
+  // A tick where gates never ran keeps the last verdict standing on the same head.
   applyGateVerdicts(verdicts, [result(7, "skipped", "not processed")]);
-  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+  expect(verdicts.get(7)?.note).toBe("daemon:check — TS2345");
   applyGateVerdicts(verdicts, [result(7, "conflict")]);
-  expect(verdicts.get(7)).toBe("daemon:check — TS2345");
+  expect(verdicts.get(7)?.note).toBe("daemon:check — TS2345");
 
-  // A new head settling has not been gated: the old head's verdict is stale.
-  applyGateVerdicts(verdicts, [result(7, "settling")]);
+  // The agent pushed: whatever state the new head is in, the verdict was
+  // about the old one and repair must not be sent after it.
+  applyGateVerdicts(verdicts, [result(7, "checks-red", "", "bbb")]);
   expect(verdicts.has(7)).toBe(false);
-  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345")]);
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345", "bbb")]);
+  applyGateVerdicts(verdicts, [result(7, "settling", "", "ccc")]);
+  expect(verdicts.has(7)).toBe(false);
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:check — TS2345", "ccc")]);
 
   // A green gate run clears it; a later failure sets the new tail.
-  applyGateVerdicts(verdicts, [result(7, "soaking")]);
+  applyGateVerdicts(verdicts, [result(7, "soaking", "", "ccc")]);
   expect(verdicts.has(7)).toBe(false);
-  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:test — 2 failed")]);
-  expect(verdicts.get(7)).toBe("daemon:test — 2 failed");
+  applyGateVerdicts(verdicts, [result(7, "build-red", "daemon:test — 2 failed", "ccc")]);
+  expect(verdicts.get(7)?.note).toBe("daemon:test — 2 failed");
 
   // A PR no longer among the candidates (closed, merged, label-skipped) is forgotten.
   applyGateVerdicts(verdicts, [result(8, "skipped", "not processed")]);
@@ -133,7 +139,9 @@ test("a reader polling during continuous writes never sees a partial file", asyn
 test("push-failed is a green gate outcome: it clears a stale verdict and the standing failure", () => {
   // The merged tree passed every gate; only the push to origin failed. A
   // retained build-red would send repair after an already-green PR.
-  const verdicts = new Map<number, string>([[7, "daemon:check — TS2345"]]);
+  const verdicts = new Map<number, GateVerdict>([
+    [7, { headSha: "aaa", note: "daemon:check — TS2345" }],
+  ]);
   applyGateVerdicts(verdicts, [
     { pullRequestNumber: 7, tag: "push-failed", note: "merge committed but push failed" },
   ]);

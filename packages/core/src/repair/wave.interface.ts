@@ -6,7 +6,7 @@ export interface WaveRecord {
   readonly tick: number;
   readonly headSha: string | undefined;
   readonly defects: RepairDefects;
-  /** Ledger-open findings (GitHub-open plus the agent's own resolves) when the wave was sent. */
+  /** Findings the reviewer still held open on GitHub when the wave was sent, once per key. */
   readonly openFindings: number;
   /** additions + deletions of the head the wave was sent to fix; undefined when GitHub did not say. */
   readonly diffSize: number | undefined;

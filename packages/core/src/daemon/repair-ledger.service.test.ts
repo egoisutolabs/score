@@ -327,7 +327,7 @@ test("a PR that goes clean keeps its findings and first head but starts a fresh 
   expect(ledger.firstHead(9)).toBeUndefined();
 });
 
-test("openFindingCount counts GitHub-open threads and the agent's own resolves once per key, not a reviewer's", () => {
+test("openFindingCount counts GitHub-open threads once per key; unconfirmedFindingCount adds the agent's own resolves", () => {
   const ledger = new RepairLedger({ staleTicks: 10 });
   const base = {
     key: "k",
@@ -348,7 +348,11 @@ test("openFindingCount counts GitHub-open threads and the agent's own resolves o
     // A second reviewer raising the same defect is one thing left to fix.
     { ...base, threadId: "d", author: "claude[bot]", class: "duplicate", resolution: "open" },
   ]);
-  expect(ledger.openFindingCount(9)).toBe(2);
+  // Convergence sees what the reviewer still holds open: k (twice) → 1. A
+  // self-resolve is not in it, or the count could never fall.
+  expect(ledger.openFindingCount(9)).toBe(1);
+  // Open at merge keeps the agent's own resolves: k and k2.
+  expect(ledger.unconfirmedFindingCount(9)).toBe(2);
 });
 
 test("a convergence rule parks the PR before the budget, naming the rule in the exhaustion", () => {

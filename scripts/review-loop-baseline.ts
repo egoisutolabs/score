@@ -20,7 +20,8 @@
 interface Review {
   readonly state: string;
   readonly commit_id: string;
-  readonly user: { readonly login: string };
+  /** null once the author's account is deleted. */
+  readonly user: { readonly login: string } | null;
 }
 interface Commit {
   readonly sha: string;
@@ -125,8 +126,11 @@ for (const n of await prNumbers()) {
   const commits = await api<Commit[]>(`repos/${repo}/pulls/${n}/commits`);
   const reviews = await api<Review[]>(`repos/${repo}/pulls/${n}/reviews`);
   const shas = commits.map((c) => c.sha);
-  const botReviews = reviews.filter((r) => r.state !== "PENDING" && isBot(r.user.login));
-  for (const r of botReviews) reviewers.set(r.user.login, (reviewers.get(r.user.login) ?? 0) + 1);
+  const botReviews = reviews.filter((r) => r.state !== "PENDING" && isBot(r.user?.login));
+  for (const r of botReviews) {
+    const login = r.user?.login ?? "unknown";
+    reviewers.set(login, (reviewers.get(login) ?? 0) + 1);
+  }
   const rounds = [...new Set(botReviews.map((r) => r.commit_id))].sort(
     (a, b) => (shas.indexOf(a) === -1 ? 999 : shas.indexOf(a)) - (shas.indexOf(b) === -1 ? 999 : shas.indexOf(b)),
   );
