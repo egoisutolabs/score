@@ -176,19 +176,58 @@ test("repair spawns shepherd-pr work in the exact existing PR worktree", async (
   expect(agents.spawnedWith).toEqual([{ harness: "claude", model: "opus-4.6" }]);
 });
 
-test("review-thread query failure retains shepherd's fail-open zero, and skips the ledger", async () => {
+test("review-thread query failure: shepherd's fail-open zero still decides the ping, but an otherwise clean PR is UNOBSERVED, not clean", async () => {
   const github = new RecordingHost();
   github.failThreads = true;
   const observed: number[] = [];
-  const result = await new RepairService(
+  const clean = await new RepairService(
     { ...options, onThreads: (number) => void observed.push(number) },
     withChange({ mergeable: "MERGEABLE" }),
     new RepairWorkspace(),
     new RepairAgents(),
     github,
   ).run();
-  expect(result[0]?.action).toBe("NOT_NEEDED");
+  // Not NOT_NEEDED: that would reset the ledger's budget on a query that saw nothing.
+  expect(clean[0]?.action).toBe("UNOBSERVED");
   expect(observed).toEqual([]);
+
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const seenDefects: unknown[] = [];
+  const conflicting = await new RepairService(
+    {
+      ...options,
+      shouldAct: (_number, defects) => {
+        seenDefects.push(defects.unresolvedThreads);
+        return true;
+      },
+    },
+    changes(),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(conflicting[0]?.action).toBe("PINGED");
+  expect(seenDefects).toEqual([0]);
+});
+
+test("a failed PR list reports onScanFailed and an empty result list, never a scan of nothing", async () => {
+  const failures: unknown[] = [];
+  const host: ChangeHost = {
+    ...changes(),
+    async observeRepairChanges() {
+      throw new Error("gh pr list died");
+    },
+  };
+  const result = await new RepairService(
+    { ...options, onScanFailed: (error) => void failures.push(error) },
+    host,
+    new RepairWorkspace(),
+    new RepairAgents(),
+    new RecordingHost(),
+  ).run();
+  expect(result).toEqual([]);
+  expect(failures.map(String)).toEqual(["Error: gh pr list died"]);
 });
 
 test("unresolved threads are counted from the observed threads and handed to the ledger first", async () => {
@@ -307,6 +346,21 @@ test("no ping while a check on the head commit is still running", async () => {
   expect(asked).toEqual([]);
 });
 
+test("a clean PR whose checks are still running is CHECKS_PENDING, not clean: the next review is being written", async () => {
+  const host = withChange({
+    mergeable: "MERGEABLE",
+    statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: null }],
+  });
+  const result = await new RepairService(
+    options,
+    host,
+    new RepairWorkspace(),
+    new RepairAgents(),
+    new RecordingHost(),
+  ).run();
+  expect(result[0]?.action).toBe("CHECKS_PENDING");
+});
+
 test("a completed check that failed still counts as a defect, not a pending wait", async () => {
   const agents = new RepairAgents();
   agents.sessions = ["score-issue-3"];
@@ -345,8 +399,40 @@ test("a spent budget posts the history comment, then the label, and pings nobody
     parked: { rule: "budget", detail: "2 wave(s) used the budget of 2" },
   });
   expect(github.calls).toEqual(["hasComment", "comment:9", "label:9:repair-exhausted"]);
-  expect(github.comments[0]).toContain("<!-- score:repair-exhausted -->");
+  expect(github.comments[0]).toContain("<!-- score:repair-exhausted 0@none -->");
   expect(agents.pinged).toEqual([]);
+});
+
+test("a second exhaustion after a human removed the label posts its own history comment", async () => {
+  const wave = (at: string) => ({
+    at,
+    tick: 0,
+    headSha: "aaa",
+    defects: { conflicting: true, unresolvedThreads: 0, failingChecks: 0 },
+    openFindings: 0,
+    diffSize: undefined,
+    promptVersion: "v1",
+  });
+  const github = new RecordingHost();
+  let exhaustion = { ...spent, waves: [wave("T1"), wave("T2")] };
+  const service = new RepairService(
+    { ...options, exhaustion: () => exhaustion },
+    changes(),
+    new RepairWorkspace(),
+    new RepairAgents(),
+    github,
+  );
+  await service.run();
+  expect(github.comments).toHaveLength(1);
+
+  // The label came off, the fresh budget was spent on two new waves: the
+  // human needs this history, not the stale one above it.
+  exhaustion = { ...spent, waves: [wave("T3"), wave("T4")] };
+  github.calls = [];
+  await service.run();
+  expect(github.calls).toEqual(["hasComment", "comment:9", "label:9:repair-exhausted"]);
+  expect(github.comments).toHaveLength(2);
+  expect(github.comments[1]).toContain("| 2 | T4 |");
 });
 
 test("death after the comment, before the label — next tick labels without a second comment (RETRIED)", async () => {

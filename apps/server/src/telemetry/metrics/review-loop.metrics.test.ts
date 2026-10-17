@@ -36,6 +36,16 @@ test("metrics segment PRs by the prompt version of their last wave and count the
     // Noise: a span and an unrelated event change nothing.
     { ...event("score.phase", undefined, {}), signal: "span", span_id: "s" } as TelemetryRecord,
     event("score.cleanup.decision", 9, { action: "NOT_FOUND" }),
+    // A dry-run pass sent nothing: its records are not loop behavior.
+    event("score.repair.wave", 10, { prompt_version: "v2", wave: 2, dry_run: true }),
+    event("score.repair.finding", 10, { class: "fix-failed", wave: 2, dry_run: true }),
+    event("score.repair.parked", 10, { rule: "budget", dry_run: true }),
+    event("score.repair.open_at_merge", 10, { open_findings: 5, dry_run: true }),
+    event("score.dispatch.decision", undefined, {
+      decision: "started",
+      briefing_version: "b1",
+      dry_run: true,
+    }),
   ];
   const metrics = reviewLoopMetrics(records);
   expect(metrics.dispatchesByBriefing).toEqual({ b1: 2 });

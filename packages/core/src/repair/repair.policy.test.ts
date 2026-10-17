@@ -1,7 +1,7 @@
 import {
   countChecks,
+  exhaustionMarker,
   REPAIR_EXHAUSTED_LABEL,
-  REPAIR_EXHAUSTED_MARKER,
   REPAIR_WAVE_STEPS,
   renderExhaustionComment,
   renderRepairPrompt,
@@ -109,7 +109,9 @@ test("the exhaustion comment opens with the marker and lists every wave", () => 
       },
     ],
   });
-  expect(body.startsWith(`${REPAIR_EXHAUSTED_MARKER}\n`)).toBe(true);
+  // The marker is scoped to this history: two waves, the last at 10:05.
+  expect(body.startsWith("<!-- score:repair-exhausted 2@2026-10-16T10:05:00Z -->\n")).toBe(true);
+  expect(exhaustionMarker({ waves: [] })).toBe("<!-- score:repair-exhausted 0@none -->");
   expect(body).toContain("PR #99");
   expect(body).toContain(
     "Rule: diff-growing — diff grew 10 → 20 → 30 lines over the last three waves.",

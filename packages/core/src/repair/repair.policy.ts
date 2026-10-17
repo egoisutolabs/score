@@ -65,10 +65,16 @@ const SUCCESSFUL_CONCLUSIONS: ReadonlySet<string> = new Set(["SUCCESS", "NEUTRAL
 export const REPAIR_EXHAUSTED_LABEL = "repair-exhausted";
 
 /**
- * Hidden first line of the one exhaustion comment. Repair looks for it before
+ * Hidden first line of an exhaustion comment. Repair looks for it before
  * commenting, so a death between the comment and the label never posts twice.
+ * It names the wave history it reports: a second exhaustion after a human
+ * removed the label starts from an empty history, so its waves (and their
+ * timestamps) differ and it earns its own comment instead of a bare label.
  */
-export const REPAIR_EXHAUSTED_MARKER = "<!-- score:repair-exhausted -->";
+export function exhaustionMarker(exhaustion: Pick<RepairExhaustion, "waves">): string {
+  const last = exhaustion.waves.at(-1);
+  return `<!-- score:repair-exhausted ${exhaustion.waves.length}@${last?.at ?? "none"} -->`;
+}
 
 // The wave and exhaustion shapes live in wave.interface.ts so the telemetry
 // mapper can import them type-only; re-exported here for existing imports.
@@ -94,7 +100,7 @@ export function renderExhaustionComment(
   exhaustion: RepairExhaustion,
 ): string {
   const lines = [
-    REPAIR_EXHAUSTED_MARKER,
+    exhaustionMarker(exhaustion),
     `Score stopped repairing PR #${pullRequestNumber} after ${exhaustion.waves.length} repair wave(s) (budget ${exhaustion.budget}). Rule: ${exhaustion.rule} — ${exhaustion.detail}.`,
     "",
     "| Wave | When | Head | Open findings | Diff | Sent to fix |",

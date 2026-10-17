@@ -49,6 +49,10 @@ test("enclosingSymbol understands Python, Go, and Rust declarations and skips co
   ).toBe("parse");
   // A bare `if (` line must not be mistaken for a method.
   expect(enclosingSymbol("  if (ready) {\n    go();\n  }\n", 2)).toBeUndefined();
+  // A call taking a callback is not a method declaration; a multi-line
+  // parameter list still names the method.
+  expect(enclosingSymbol("  useEffect(() => {\n    go();\n  });\n", 2)).toBeUndefined();
+  expect(enclosingSymbol("  save(\n    k: string,\n  ): void {\n    go();\n", 4)).toBe("save");
 });
 
 test("findingKey prefers the blame origin and falls back to the reviewed commit and line", () => {

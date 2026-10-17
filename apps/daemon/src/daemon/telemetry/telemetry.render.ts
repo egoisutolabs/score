@@ -13,7 +13,7 @@ import type { DispatchResult } from "@score/core/dispatch/dispatch-result.interf
 import type { LandingResult } from "@score/core/landing/change.interface";
 import type { MaintenanceTickResult } from "@score/core/maintenance/maintenance.service";
 import {
-  BRIEFING_VERSION,
+  briefingVersionFor,
   IMPLEMENTATION_PROMPT_VERSION,
   REPAIR_PROMPT_VERSION,
 } from "@score/core/prompts/index";
@@ -22,6 +22,7 @@ import type { RepairResult } from "@score/core/repair/repair-result.interface";
 import type { WaveRecord } from "@score/core/repair/wave.interface";
 import type { TelemetryEvent, TelemetrySubject } from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 
 /** Everything a pure mapper cannot know; the composition caller supplies it. */
 export interface TelemetryRenderContext {
@@ -30,6 +31,8 @@ export interface TelemetryRenderContext {
   readonly ts: string;
   /** The pass's flag — every record of a dry-run pass carries `dry_run: true`. */
   readonly dryRun: boolean;
+  /** The project's harness: the briefing an agent is sent differs by it, so its version does too. */
+  readonly harness: AgentConfig["harness"];
 }
 
 function decisionEvent(
@@ -93,6 +96,7 @@ const REPAIR_ACTIONS: ReadonlySet<string> = new Set([
   "SKIPPED",
   "WORKING",
   "CHECKS_PENDING",
+  "UNOBSERVED",
   "EXHAUSTED",
 ]);
 
@@ -130,7 +134,7 @@ export function renderDispatchTelemetry(
         { issue_number: issue },
         {
           decision: "started",
-          briefing_version: BRIEFING_VERSION,
+          briefing_version: briefingVersionFor(ctx.harness),
           implementation_prompt_version: IMPLEMENTATION_PROMPT_VERSION,
         },
       ),

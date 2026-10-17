@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
   BRIEFING_VERSION,
+  briefingVersionFor,
   IMPLEMENTATION_PROMPT_VERSION,
   promptVersion,
   REPAIR_PROMPT_VERSION,
@@ -34,6 +35,12 @@ test("every prompt has a distinct twelve-hex content version", () => {
   // Same text, same version; one character apart, a different one.
   expect(promptVersion("a")).toBe(promptVersion("a"));
   expect(promptVersion("a")).not.toBe(promptVersion("a "));
+});
+
+test("the briefing is versioned per harness: opencode's render has no Workflow section", () => {
+  expect(briefingVersionFor("claude")).toBe(BRIEFING_VERSION);
+  expect(briefingVersionFor("opencode")).toMatch(/^[0-9a-f]{12}$/);
+  expect(briefingVersionFor("opencode")).not.toBe(BRIEFING_VERSION);
 });
 
 test("the reviewer prompt copy matches the workflow GitHub actually runs", () => {

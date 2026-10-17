@@ -116,7 +116,9 @@ Answer with the JSON object only.`;
 async function judge(item: Item): Promise<Verdict> {
   const cacheDir = join(EVALS, "cache");
   await mkdir(cacheDir, { recursive: true });
-  const key = createHash("sha256").update(item.id).update(rubricHash).update(model).digest("hex").slice(0, 16);
+  // Keyed by what the judge actually reads, so a re-exported item whose hunk
+  // or text changed under the same id is judged again, not served stale.
+  const key = createHash("sha256").update(prompt(item)).update(model).digest("hex").slice(0, 16);
   const cached = join(cacheDir, `${key}.json`);
   if (existsSync(cached)) return JSON.parse(await readFile(cached, "utf8")) as Verdict;
   const proc = Bun.spawn(

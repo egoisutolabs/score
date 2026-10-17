@@ -16,8 +16,14 @@ const DECLARATION =
 // `const path = ...` inside a body is not the symbol a finding lives in.
 const BINDING =
   /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:function\b|class\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>)/;
-const METHOD =
-  /^\s+(?:(?:public|private|protected|static|readonly|override|async|get|set)\s+)*#?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(.*(?:\)\s*(?::\s*[^{=]+)?\s*\{\s*|\(\s*|,\s*)$/;
+// A method line is matched in two anchored halves rather than one regex: the
+// single pattern needed `.*` beside `\s*`, which is polynomial on a line of
+// many spaces (CodeQL), and review-cited files are not ours to trust.
+const METHOD_HEAD =
+  /^\s+(?:(?:public|private|protected|static|readonly|override|async|get|set)\s+)*#?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>\s*)?\(/;
+// After the last `)`: an optional return type, then the body's `{`. `=` is
+// excluded so `foo(bar, (x) => {` reads as a call with a callback, not a method.
+const METHOD_TAIL = /^\s*(?::[^{=]*)?\{\s*$/;
 const NOT_A_METHOD: ReadonlySet<string> = new Set([
   "if",
   "for",
@@ -45,10 +51,21 @@ export function enclosingSymbol(source: string, line: number): string | undefine
     const text = lines[index] ?? "";
     const declaration = DECLARATION.exec(text) ?? BINDING.exec(text);
     if (declaration) return declaration[1];
-    const method = METHOD.exec(text);
-    if (method?.[1] && !NOT_A_METHOD.has(method[1])) return method[1];
+    const method = methodName(text);
+    if (method !== undefined && !NOT_A_METHOD.has(method)) return method;
   }
   return undefined;
+}
+
+/** The method a line declares: `name(` with the line ending in `{`, or mid-parameter-list on `(` or `,`. */
+function methodName(text: string): string | undefined {
+  const head = METHOD_HEAD.exec(text);
+  if (!head?.[1]) return undefined;
+  const trimmed = text.trimEnd();
+  if (trimmed.endsWith("(") || trimmed.endsWith(",")) return head[1];
+  const close = text.lastIndexOf(")");
+  if (close < head[0].length) return undefined;
+  return METHOD_TAIL.test(text.slice(close + 1)) ? head[1] : undefined;
 }
 
 /** The identity two findings share when they are the same defect: where the code came from, and what it is in. */

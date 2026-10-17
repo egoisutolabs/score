@@ -145,7 +145,7 @@ test("the budget counts pings and spawns; once spent, exhaustion returns the wav
   });
 });
 
-test("a wait on pending checks keeps the wave count; a clean PR resets it", () => {
+test("a wait on pending checks or a failed thread query keeps the wave count; a clean PR resets it", () => {
   const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
   ledger.startPass(1, new Set(["score-issue-3"]));
@@ -153,6 +153,10 @@ test("a wait on pending checks keeps the wave count; a clean PR resets it", () =
   expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
 
   ledger.startPass(2, new Set(["score-issue-3"]));
+  ledger.finishPass([{ pullRequestNumber: 9, action: "UNOBSERVED", dryRun: false }]);
+  expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
+
+  ledger.startPass(3, new Set(["score-issue-3"]));
   ledger.finishPass([{ pullRequestNumber: 9, action: "NOT_NEEDED", dryRun: false }]);
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
@@ -240,7 +244,7 @@ test("a PR that goes clean keeps its findings and first head but starts a fresh 
   expect(ledger.firstHead(9)).toBeUndefined();
 });
 
-test("openFindingCount counts GitHub-open threads and the agent's own resolves, not a reviewer's", () => {
+test("openFindingCount counts GitHub-open threads and the agent's own resolves once per key, not a reviewer's", () => {
   const ledger = new RepairLedger({ staleTicks: 10 });
   const base = {
     key: "k",
@@ -256,8 +260,10 @@ test("openFindingCount counts GitHub-open threads and the agent's own resolves, 
   };
   ledger.recordFindings(9, [
     { ...base, threadId: "a", resolution: "open" },
-    { ...base, threadId: "b", resolution: "self-resolved" },
-    { ...base, threadId: "c", resolution: "reviewer-resolved" },
+    { ...base, key: "k2", threadId: "b", resolution: "self-resolved" },
+    { ...base, key: "k3", threadId: "c", resolution: "reviewer-resolved" },
+    // A second reviewer raising the same defect is one thing left to fix.
+    { ...base, threadId: "d", author: "claude[bot]", class: "duplicate", resolution: "open" },
   ]);
   expect(ledger.openFindingCount(9)).toBe(2);
 });

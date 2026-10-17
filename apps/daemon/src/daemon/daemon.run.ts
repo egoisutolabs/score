@@ -630,7 +630,7 @@ export async function runDaemonLoop(
       }
       sink = telemetryLog;
     }
-    return new PassTelemetry(sink, project, dryRun, log);
+    return new PassTelemetry(sink, project, dryRun, log, agent.harness);
   })();
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
@@ -809,6 +809,9 @@ export async function runDaemonLoop(
       }
     }
     const findings = new FindingTracker(git, git, ledger);
+    // Set by the service when `gh pr list` itself failed this pass; read and
+    // cleared by the repair phase below.
+    let scanFailure: unknown;
     const repair = new RepairService(
       {
         agent,
@@ -816,8 +819,12 @@ export async function runDaemonLoop(
         includeClean: false,
         onlyPullRequests: new Set<string>(),
         noSpawn: false,
-        shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
+        shouldAct: (number, defects, headSha, diffSize) =>
+          ledger.shouldAct(number, defects, headSha, diffSize),
         exhaustion: (number, labeled) => ledger.exhaustion(number, labeled),
+        onScanFailed: (error) => {
+          scanFailure = error;
+        },
         onThreads: async (number, threads) => {
           const known = new Set(ledger.findings(number).map((record) => record.threadId));
           const records = await findings.observe(number, threads);
@@ -889,17 +896,26 @@ export async function runDaemonLoop(
           );
           // The ledger still holds the PR this pass (repair forgets it next);
           // this is the "findings open at merge" figure the baseline counted.
+          // Its resolution state is from the previous repair pass, and the
+          // reviewer's last resolves — the ones that made the PR mergeable —
+          // usually land in that gap, so refresh from GitHub as of the merge.
+          // A failed query leaves the previous pass's figure, not none.
+          const merged = results.filter((result) => result.tag === "merged");
+          for (const result of merged) {
+            const threads = await github
+              .observeReviewThreads(result.pullRequestNumber)
+              .catch(() => undefined);
+            if (threads !== undefined) await findings.observe(result.pullRequestNumber, threads);
+          }
           telemetry?.decisions((ctx) =>
-            results
-              .filter((result) => result.tag === "merged")
-              .flatMap((result) =>
-                renderOpenAtMergeTelemetry(
-                  result.pullRequestNumber,
-                  ledger.openFindingCount(result.pullRequestNumber),
-                  ledger.findings(result.pullRequestNumber).length,
-                  ctx,
-                ),
+            merged.flatMap((result) =>
+              renderOpenAtMergeTelemetry(
+                result.pullRequestNumber,
+                ledger.openFindingCount(result.pullRequestNumber),
+                ledger.findings(result.pullRequestNumber).length,
+                ctx,
               ),
+            ),
           );
           pass.merged += results.filter(
             (result) => result.tag === "merged" || result.tag === "would-merge",
@@ -912,7 +928,14 @@ export async function runDaemonLoop(
         everyTicks: 1,
         run: async () => {
           ledger.startPass(currentTick, new Set(await agents.listSessions()));
+          scanFailure = undefined;
           const results = await repair.run(dryRun);
+          if (scanFailure !== undefined) {
+            // An empty list from a failed scan is not "every PR merged":
+            // finishing the pass on it would forget every budget and finding.
+            log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
+            return;
+          }
           ledger.finishPass(results);
           await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>

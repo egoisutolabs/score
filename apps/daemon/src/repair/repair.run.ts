@@ -23,6 +23,7 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
     NOT_NEEDED: 0,
     WORKING: 0,
     CHECKS_PENDING: 0,
+    UNOBSERVED: 0,
     EXHAUSTED: 0,
   };
   for (const result of results) {
@@ -48,6 +49,11 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
         level: "debug",
         text: `· #${result.pullRequestNumber} -> checks still running on the head commit; no ping`,
       });
+    } else if (result.action === "UNOBSERVED") {
+      lines.push({
+        level: "debug",
+        text: `· #${result.pullRequestNumber} -> review-thread query failed; not known clean, no ping`,
+      });
     } else if (result.action === "EXHAUSTED") {
       lines.push({
         level: "warn",
@@ -64,7 +70,7 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
   }
   lines.push({
     level: "info",
-    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} checks-pending=${counts.CHECKS_PENDING} exhausted=${counts.EXHAUSTED} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
+    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} checks-pending=${counts.CHECKS_PENDING} unobserved=${counts.UNOBSERVED} exhausted=${counts.EXHAUSTED} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
   });
   if (counts.SPAWNED > 0) {
     lines.push({

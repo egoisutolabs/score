@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { BRIEFING_VERSION, briefingVersionFor } from "@score/core/prompts/index";
 import type { TelemetryEvent } from "@score/core/telemetry/telemetry.interface";
 import { TELEMETRY_VERSION } from "@score/core/telemetry/telemetry.interface";
 import { recordViolations } from "@score/core/telemetry/telemetry.policy";
@@ -42,7 +43,7 @@ function assertTable<Input>(
   // Every row runs under both passes: dry-run records must be unmistakable,
   // real records must not claim dry_run.
   for (const dryRun of [false, true]) {
-    const ctx: TelemetryRenderContext = { project: "score", ts: TS, dryRun };
+    const ctx: TelemetryRenderContext = { project: "score", ts: TS, dryRun, harness: "claude" };
     for (const row of rows) {
       test(`${row.label} (dryRun: ${dryRun})`, () => {
         const records = render(row.input, ctx);
@@ -58,8 +59,27 @@ describe("dispatch results", () => assertTable(dispatchRows, renderDispatchTelem
 describe("landing results", () => assertTable(landingRows, renderLandingTelemetry));
 describe("repair results", () => assertTable(repairRows, renderRepairTelemetry));
 
+test("a dispatch start carries the briefing version of the harness it was sent to", () => {
+  const ctx: TelemetryRenderContext = {
+    project: "score",
+    ts: TS,
+    dryRun: false,
+    harness: "opencode",
+  };
+  const dispatch = dispatchRows[0];
+  if (!dispatch) throw new Error("fixture table is empty");
+  const [record] = renderDispatchTelemetry(dispatch.input, ctx);
+  expect(record?.attributes?.briefing_version).toBe(briefingVersionFor("opencode"));
+  expect(record?.attributes?.briefing_version).not.toBe(BRIEFING_VERSION);
+});
+
 test("a maintenance tick maps cleanup records before dispatch records", () => {
-  const ctx: TelemetryRenderContext = { project: "score", ts: TS, dryRun: false };
+  const ctx: TelemetryRenderContext = {
+    project: "score",
+    ts: TS,
+    dryRun: false,
+    harness: "claude",
+  };
   const cleanup = cleanupRows[0];
   const dispatch = dispatchRows[0];
   if (!cleanup || !dispatch) throw new Error("fixture tables are empty");
@@ -105,7 +125,12 @@ test("phase-folder imports are type-only result interfaces", async () => {
 });
 
 describe("review-loop records", () => {
-  const ctx: TelemetryRenderContext = { project: "score", ts: TS, dryRun: false };
+  const ctx: TelemetryRenderContext = {
+    project: "score",
+    ts: TS,
+    dryRun: false,
+    harness: "claude",
+  };
 
   test("a wave record carries the ledger's wave state on the PR subject", () => {
     const records = renderRepairWaveTelemetry(

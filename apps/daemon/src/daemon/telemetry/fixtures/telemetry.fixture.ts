@@ -323,6 +323,7 @@ const repairActions = [
   "SKIPPED",
   "WORKING",
   "CHECKS_PENDING",
+  "UNOBSERVED",
   "EXHAUSTED",
 ] as const;
 

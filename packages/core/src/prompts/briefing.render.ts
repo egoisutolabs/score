@@ -170,7 +170,22 @@ const CANONICAL_ISSUE: IssueObservation = {
 // Derived, never spelled: identity shapes have one source (INVARIANTS.md rule 2).
 const CANONICAL_IDENTITY: WorkIdentity = createWorkIdentity("/", CANONICAL_ISSUE, undefined);
 
-/** Content hash of the template, taken over a canonical render; the claude workflow section is included. */
-export const BRIEFING_VERSION = promptVersion(
-  renderBriefing(CANONICAL_ISSUE, CANONICAL_IDENTITY, { harness: "claude" }),
-);
+const versionsByHarness = new Map<AgentConfig["harness"], string>();
+
+/**
+ * Content hash of the template as this harness receives it, over a canonical
+ * render. The variants differ by the whole Workflow section, so telemetry
+ * segmented by version must name the one actually sent, or a fleet mixing
+ * harnesses compares unlike briefings.
+ */
+export function briefingVersionFor(harness: AgentConfig["harness"]): string {
+  let version = versionsByHarness.get(harness);
+  if (version === undefined) {
+    version = promptVersion(renderBriefing(CANONICAL_ISSUE, CANONICAL_IDENTITY, { harness }));
+    versionsByHarness.set(harness, version);
+  }
+  return version;
+}
+
+/** The claude variant — the one whose Defect Prevention excerpt the offline judge grades against. */
+export const BRIEFING_VERSION = briefingVersionFor("claude");

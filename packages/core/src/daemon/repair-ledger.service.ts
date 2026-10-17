@@ -134,11 +134,17 @@ export class RepairLedger implements FindingLedger {
     this.#entries.set(pullRequestNumber, { ...entry, findings: records });
   }
 
-  /** Threads the convergence rules count as open: GitHub-open, plus the agent's own resolves. */
+  /**
+   * Defects the convergence rules count as open: GitHub-open threads plus the
+   * agent's own resolves, counted once per finding key — two reviewers
+   * raising the same defect are one thing left to fix, not two.
+   */
   openFindingCount(pullRequestNumber: number): number {
-    return this.findings(pullRequestNumber).filter(
-      (record) => record.resolution !== "reviewer-resolved",
-    ).length;
+    return new Set(
+      this.findings(pullRequestNumber)
+        .filter((record) => record.resolution !== "reviewer-resolved")
+        .map((record) => record.key),
+    ).size;
   }
 
   /**
@@ -187,7 +193,8 @@ export class RepairLedger implements FindingLedger {
   /**
    * Call with the pass's results. A PR that went clean keeps its findings and
    * first head (history) but starts a fresh budget; a PR no longer reported
-   * (merged or closed) is forgotten entirely.
+   * (merged or closed) is forgotten entirely. A PR the pass could not judge
+   * (checks pending, thread query failed, agent still working) is held as is.
    */
   finishPass(results: readonly RepairResult[]): void {
     const seen = new Set<number>();
@@ -201,7 +208,13 @@ export class RepairLedger implements FindingLedger {
         }
         continue;
       }
-      if (result.action === "WORKING" || result.action === "CHECKS_PENDING") continue;
+      if (
+        result.action === "WORKING" ||
+        result.action === "CHECKS_PENDING" ||
+        result.action === "UNOBSERVED"
+      ) {
+        continue;
+      }
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
         if (entry.waves.length > 0 || entry.labeled) {
           this.#entries.set(result.pullRequestNumber, { ...entry, waves: [], labeled: false });

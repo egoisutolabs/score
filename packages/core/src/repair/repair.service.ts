@@ -5,9 +5,9 @@ import type { ReviewThreadObservation } from "@score/core/repair/findings/findin
 import type { RepairDefects, RepairExhaustion } from "@score/core/repair/repair.policy";
 import {
   countChecks,
+  exhaustionMarker,
   needsRepair,
   REPAIR_EXHAUSTED_LABEL,
-  REPAIR_EXHAUSTED_MARKER,
   renderExhaustionComment,
   renderRepairPrompt,
 } from "@score/core/repair/repair.policy";
@@ -41,11 +41,6 @@ export interface RepairServiceOptions {
    */
   exhaustion?(pullRequestNumber: number, labeled: boolean): RepairExhaustion | undefined;
   /**
-   * Landing's build-red handoff (epic decision 11): the gate-failure tail for
-   * this PR, if landing's merged-tree gate failed. Unset for the manual
-   * subcommand — its scan stays GitHub-facts-only.
-   */
-  /**
    * Every review thread observed for a PR this pass, before any decision.
    * The daemon routes it to the finding ledger; unset for the manual
    * subcommand. A thread query failure skips the call rather than reporting
@@ -55,6 +50,18 @@ export interface RepairServiceOptions {
     pullRequestNumber: number,
     threads: readonly ReviewThreadObservation[],
   ): Promise<void> | void;
+  /**
+   * The PR list itself failed, so the empty result list that follows is not a
+   * scan. The daemon's ledger forgets PRs a scan no longer reports; without
+   * this signal one failed `gh pr list` would read as "every PR merged" and
+   * hand each parked PR a fresh budget. Unset for the manual subcommand.
+   */
+  onScanFailed?(error: unknown): void;
+  /**
+   * Landing's build-red handoff (epic decision 11): the gate-failure tail for
+   * this PR, if landing's merged-tree gate failed. Unset for the manual
+   * subcommand — its scan stays GitHub-facts-only.
+   */
   buildRed?(pullRequestNumber: number): string | undefined;
 }
 
@@ -76,8 +83,13 @@ export class RepairService {
     // Legacy deliberately ignores an initial fetch failure.
     await this.workspace.fetchOrigin().catch(() => undefined);
 
-    // The shell's process-substitution quirk turns a PR-list failure into an empty scan.
-    for (const change of await this.changes.observeRepairChanges().catch(() => [])) {
+    // The shell's process-substitution quirk turns a PR-list failure into an
+    // empty scan; the result list keeps that shape, the callback says why.
+    const changes = await this.changes.observeRepairChanges().catch((error: unknown) => {
+      this.options.onScanFailed?.(error);
+      return [];
+    });
+    for (const change of changes) {
       if (
         this.options.onlyPullRequests.size > 0 &&
         !this.options.onlyPullRequests.has(String(change.number))
@@ -102,7 +114,19 @@ export class RepairService {
         ...(buildRed !== undefined && { buildRed }),
       };
       if (!this.options.includeClean && !needsRepair(defects)) {
-        results.push({ pullRequestNumber: change.number, action: "NOT_NEEDED", dryRun });
+        // A clean verdict resets the ledger's wave history, so it must be a
+        // real one. After the agent resolves its threads and pushes, every
+        // defect reads zero while the reviewer's check is still running — the
+        // next round is being written, not finished (analysis §1). And a
+        // failed thread query saw nothing: shepherd's fail-open zero still
+        // decides "no ping", but it is not a fact the ledger may act on.
+        const action =
+          checks.pending > 0
+            ? "CHECKS_PENDING"
+            : threads === undefined
+              ? "UNOBSERVED"
+              : "NOT_NEEDED";
+        results.push({ pullRequestNumber: change.number, action, dryRun });
         continue;
       }
       // The label outlives the in-memory ledger: a labeled PR stays parked
@@ -192,7 +216,7 @@ export class RepairService {
    * steps add the label without a second comment (INVARIANTS.md, RETRIED).
    */
   async #markExhausted(pullRequestNumber: number, exhaustion: RepairExhaustion): Promise<void> {
-    if (!(await this.host.hasComment(pullRequestNumber, REPAIR_EXHAUSTED_MARKER))) {
+    if (!(await this.host.hasComment(pullRequestNumber, exhaustionMarker(exhaustion)))) {
       await this.host.comment(
         pullRequestNumber,
         renderExhaustionComment(pullRequestNumber, exhaustion),

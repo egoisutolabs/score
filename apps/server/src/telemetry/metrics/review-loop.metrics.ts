@@ -68,6 +68,9 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
   for (const record of records) {
     if (record.signal !== "event") continue;
     const attributes = record.attributes ?? {};
+    // A dry-run pass observes findings and reports what it would send; no
+    // wave reached an agent, so none of it is loop behavior to measure.
+    if (attributes.dry_run === true) continue;
     const pr = record.subject?.pull_request_number;
     if (record.name === "score.dispatch.decision" && attributes.decision === "started") {
       const version = String(attributes.briefing_version ?? "none");
