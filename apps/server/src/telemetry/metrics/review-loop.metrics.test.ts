@@ -27,8 +27,10 @@ test("metrics segment PRs by the prompt version of their last wave and count the
     // included, counts under v1, the version that finished it.
     event("score.repair.finding", 9, { class: "first-round", wave: 0 }),
     event("score.repair.wave", 9, { prompt_version: "v0", wave: 1 }),
-    event("score.repair.finding", 9, { class: "regression-from-fix", wave: 1 }),
-    event("score.repair.finding", 9, { class: "missed-earlier", wave: 1 }),
+    event("score.repair.finding", 9, { class: "regression-from-fix", wave: 1, thread_id: "T1" }),
+    // Re-emitted after a daemon death before the ledger write: one finding, not two.
+    event("score.repair.finding", 9, { class: "regression-from-fix", wave: 1, thread_id: "T1" }),
+    event("score.repair.finding", 9, { class: "missed-earlier", wave: 1, thread_id: "T2" }),
     event("score.repair.wave", 9, { prompt_version: "v1", wave: 2 }),
     event("score.repair.open_at_merge", 9, { open_findings: 1, total_findings: 3 }),
     // PR 10: one wave on v2, parked by rule 3.

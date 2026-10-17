@@ -60,6 +60,9 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
     }
   }
   const dispatchesByBriefing: Record<string, number> = {};
+  // A finding record is appended before the ledger that remembers the thread
+  // is persisted; a daemon death in between re-emits it on restart.
+  const seenFindings = new Set<string>();
   const tally = (version: string): Tally => {
     let entry = tallies.get(version);
     if (!entry) {
@@ -98,6 +101,9 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
       continue;
     }
     if (record.name === "score.repair.finding") {
+      const identity = `${pr}:${String(attributes.thread_id ?? "")}`;
+      if (attributes.thread_id !== undefined && seenFindings.has(identity)) continue;
+      seenFindings.add(identity);
       entry.pullRequests.add(pr);
       entry.findings += 1;
       if (Number(attributes.wave ?? 0) >= 1) {

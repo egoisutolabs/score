@@ -52,8 +52,9 @@ const rounds = [...new Set(reviews.filter((r) => r.state !== "PENDING" && isBot(
   (a, b) => commits.indexOf(a) - commits.indexOf(b),
 );
 const firstHead = rounds[0];
+// An author GitHub no longer names (deleted account) is unknown, not a bot.
 const threads = [...(await github.observeReviewThreads(pr))]
-  .filter((t) => t.author === undefined || isBot(t.author))
+  .filter((t) => t.author !== undefined && isBot(t.author))
   .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
 class ReplayLedger implements FindingLedger {

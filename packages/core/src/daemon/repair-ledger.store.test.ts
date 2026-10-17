@@ -47,4 +47,17 @@ test("a malformed ledger file is an error, not an empty ledger", async () => {
   await expect(new RepairLedgerStore(path).read()).rejects.toThrow("entry for PR 9");
   await writeFile(path, '{"v":1,"pullRequests":{"9":{"waves":"two"}}}');
   await expect(new RepairLedgerStore(path).read()).rejects.toThrow("entry for PR 9");
+  // Shaped like an entry, but its waves are empty objects: not a spent budget.
+  const hollow = {
+    tick: 0,
+    headSha: "aaa",
+    defects: { conflicting: false, unresolvedThreads: 0, failingChecks: 0 },
+    sessionName: "",
+    waves: [{ defects: {} }, { defects: {} }, { defects: {} }, { defects: {} }],
+    labeled: false,
+    firstHead: undefined,
+    findings: [{}],
+  };
+  await writeFile(path, JSON.stringify({ v: 1, pullRequests: { 9: hollow } }));
+  await expect(new RepairLedgerStore(path).read()).rejects.toThrow("entry for PR 9");
 });

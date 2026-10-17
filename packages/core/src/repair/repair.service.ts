@@ -99,12 +99,19 @@ export class RepairService {
       const issueNumber = issueNumberFromBranch(change.headRefName);
       if (issueNumber === null) continue;
 
-      // shepherd-prs.sh treats a review-thread query failure as zero unresolved;
-      // the full threads replace the bare count so the finding ledger sees
-      // every thread the gate counts, from one query.
+      // The full threads replace shepherd's bare count so the finding ledger
+      // sees every thread the gate counts, from one query. A failed query saw
+      // nothing: shepherd read it as zero unresolved, but here that zero would
+      // reach the ledger as a clean verdict (budget reset) or as a changed
+      // defect set (a live agent re-pinged, a wave spent), so the PR waits a
+      // tick instead.
       const threads = await this.host.observeReviewThreads(change.number).catch(() => undefined);
-      if (threads !== undefined) await this.options.onThreads?.(change.number, threads);
-      const unresolvedThreads = threads?.filter((thread) => !thread.isResolved).length ?? 0;
+      if (threads === undefined) {
+        results.push({ pullRequestNumber: change.number, action: "UNOBSERVED", dryRun });
+        continue;
+      }
+      await this.options.onThreads?.(change.number, threads);
+      const unresolvedThreads = threads.filter((thread) => !thread.isResolved).length;
       const checks = countChecks(change.statusCheckRollup);
       const buildRed = this.options.buildRed?.(change.number);
       const defects: RepairDefects = {
@@ -117,22 +124,17 @@ export class RepairService {
         // A clean verdict resets the ledger's wave history, so it must be a
         // real one. After the agent resolves its threads and pushes, every
         // defect reads zero while the reviewer's check is still running — the
-        // next round is being written, not finished (analysis §1). And a
-        // failed thread query saw nothing: shepherd's fail-open zero still
-        // decides "no ping", but it is not a fact the ledger may act on.
-        const action =
-          checks.pending > 0
-            ? "CHECKS_PENDING"
-            : threads === undefined
-              ? "UNOBSERVED"
-              : "NOT_NEEDED";
+        // next round is being written, not finished (analysis §1).
+        const action = checks.pending > 0 ? "CHECKS_PENDING" : "NOT_NEEDED";
         results.push({ pullRequestNumber: change.number, action, dryRun });
         continue;
       }
       // The label outlives the in-memory ledger: a labeled PR stays parked
-      // across daemon restarts until a human removes the label.
+      // across daemon restarts until a human removes the label. It parks the
+      // daemon's loop only: the manual subcommand (no budget, no `exhaustion`)
+      // is a human acting, which is what the label asked for.
       const labeled = change.labels.some((label) => label.name === REPAIR_EXHAUSTED_LABEL);
-      if (labeled) {
+      if (labeled && this.options.exhaustion !== undefined) {
         results.push({
           pullRequestNumber: change.number,
           action: "EXHAUSTED",

@@ -58,15 +58,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The fields the ledger dereferences on an entry; a wrong shape there is the crash the read guards against. */
+const RESOLUTIONS: ReadonlySet<unknown> = new Set(["open", "self-resolved", "reviewer-resolved"]);
+
+function isDefects(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.conflicting === "boolean" &&
+    typeof value.unresolvedThreads === "number" &&
+    typeof value.failingChecks === "number" &&
+    (value.buildRed === undefined || typeof value.buildRed === "string")
+  );
+}
+
+/** What the convergence rules and the exhaustion comment read from a wave. */
+function isWave(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.at === "string" &&
+    typeof value.tick === "number" &&
+    (value.headSha === undefined || typeof value.headSha === "string") &&
+    isDefects(value.defects) &&
+    typeof value.openFindings === "number" &&
+    (value.diffSize === undefined || typeof value.diffSize === "number") &&
+    typeof value.promptVersion === "string"
+  );
+}
+
+/** What the tracker, the classifier, and the convergence rules read from a finding. */
+function isFinding(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.threadId === "string" &&
+    typeof value.key === "string" &&
+    typeof value.path === "string" &&
+    typeof value.class === "string" &&
+    typeof value.wave === "number" &&
+    typeof value.fromLastFix === "boolean" &&
+    RESOLUTIONS.has(value.resolution) &&
+    (value.real === undefined || typeof value.real === "number")
+  );
+}
+
+/**
+ * The fields the ledger dereferences on an entry, and the shapes its rules
+ * read inside waves and findings: four `{}` waves would otherwise restore as
+ * a spent budget and park a PR on nothing.
+ */
 function isLedgerEntry(value: unknown): value is RepairLedgerEntry {
   if (!isRecord(value)) return false;
   return (
     Array.isArray(value.waves) &&
-    value.waves.every((wave) => isRecord(wave) && isRecord(wave.defects)) &&
+    value.waves.every(isWave) &&
     Array.isArray(value.findings) &&
-    value.findings.every(isRecord) &&
-    isRecord(value.defects) &&
+    value.findings.every(isFinding) &&
+    isDefects(value.defects) &&
     typeof value.sessionName === "string" &&
     typeof value.labeled === "boolean" &&
     typeof value.tick === "number" &&

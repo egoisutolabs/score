@@ -176,7 +176,7 @@ test("repair spawns shepherd-pr work in the exact existing PR worktree", async (
   expect(agents.spawnedWith).toEqual([{ harness: "claude", model: "opus-4.6" }]);
 });
 
-test("review-thread query failure: shepherd's fail-open zero still decides the ping, but an otherwise clean PR is UNOBSERVED, not clean", async () => {
+test("review-thread query failure is UNOBSERVED: neither a clean verdict nor a fabricated zero reaches the ledger", async () => {
   const github = new RecordingHost();
   github.failThreads = true;
   const observed: number[] = [];
@@ -191,14 +191,16 @@ test("review-thread query failure: shepherd's fail-open zero still decides the p
   expect(clean[0]?.action).toBe("UNOBSERVED");
   expect(observed).toEqual([]);
 
+  // Conflicting too: a zero thread count here would read as a changed defect
+  // set and re-ping a live agent, so the PR waits a tick instead.
   const agents = new RepairAgents();
   agents.sessions = ["score-issue-3"];
-  const seenDefects: unknown[] = [];
+  const asked: number[] = [];
   const conflicting = await new RepairService(
     {
       ...options,
-      shouldAct: (_number, defects) => {
-        seenDefects.push(defects.unresolvedThreads);
+      shouldAct: (number) => {
+        asked.push(number);
         return true;
       },
     },
@@ -207,8 +209,9 @@ test("review-thread query failure: shepherd's fail-open zero still decides the p
     agents,
     github,
   ).run();
-  expect(conflicting[0]?.action).toBe("PINGED");
-  expect(seenDefects).toEqual([0]);
+  expect(conflicting[0]?.action).toBe("UNOBSERVED");
+  expect(asked).toEqual([]);
+  expect(agents.pinged).toEqual([]);
 });
 
 test("a failed PR list reports onScanFailed and an empty result list, never a scan of nothing", async () => {
@@ -508,6 +511,21 @@ test("a PR already carrying the label is parked: no ping, no mutation, no ledger
   expect(agents.pinged).toEqual([]);
   expect(github.calls).toEqual([]);
   expect(asked).toEqual([]);
+});
+
+test("the manual subcommand (no budget) pings a labeled PR: the operator running it is the human the label waits for", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  const result = await new RepairService(
+    options,
+    withChange({ labels: [{ name: "repair-exhausted" }] }),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(result[0]?.action).toBe("PINGED");
+  expect(github.calls).toEqual([]);
 });
 
 test("a dry run reports EXHAUSTED without commenting or labeling", async () => {
