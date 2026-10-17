@@ -235,15 +235,24 @@ export class GitHubService implements WorkSource, ChangeHost, RepairHost {
   }
 
   async hasComment(pullRequestNumber: number, marker: string): Promise<boolean> {
-    const view = objectValue(
-      await this.#json(["pr", "view", String(pullRequestNumber), "--json", "comments"]),
-      "github.pullRequest",
+    // `gh pr view --json comments` returns the first 100 comments only, and
+    // the marker is the newest one: on a long PR it would never be seen and a
+    // death between comment and label would post a second comment per retry.
+    // The REST connection paginates; --slurp yields one array per page.
+    const pages = arrayValue(
+      await this.#json([
+        "api",
+        `repos/${this.options.repository}/issues/${pullRequestNumber}/comments?per_page=100`,
+        "--paginate",
+        "--slurp",
+      ]),
+      "github.issueComments",
     );
-    return arrayValue(view.comments ?? [], "github.pullRequest.comments").some((comment, index) =>
-      stringValue(
-        objectValue(comment, `github.pullRequest.comments[${index}]`).body ?? "",
-        `github.pullRequest.comments[${index}].body`,
-      ).includes(marker),
+    return pages.some((page, pageIndex) =>
+      arrayValue(page, `github.issueComments[${pageIndex}]`).some((comment, index) => {
+        const path = `github.issueComments[${pageIndex}][${index}]`;
+        return stringValue(objectValue(comment, path).body ?? "", `${path}.body`).includes(marker);
+      }),
     );
   }
 

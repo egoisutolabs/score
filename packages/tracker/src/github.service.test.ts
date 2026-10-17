@@ -238,17 +238,24 @@ test("addLabel: death after `label create`, before `pr edit` — the retry re-cr
 test("hasComment finds the marker anywhere in the PR conversation, and only there", async () => {
   const runner = new RecordingRunner();
   runner.responses = [
-    JSON.stringify({ comments: [{ body: "lgtm" }, { body: "<!-- m -->\nparked" }] }),
-    JSON.stringify({ comments: [{ body: "unrelated" }] }),
-    JSON.stringify({}),
+    // The marker on a second page: a first-100-only view would miss it.
+    JSON.stringify([[{ body: "lgtm" }], [{ body: "<!-- m -->\nparked" }]]),
+    JSON.stringify([[{ body: "unrelated" }]]),
+    JSON.stringify([[]]),
   ];
   const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
 
   expect(await github.hasComment(9, "<!-- m -->")).toBe(true);
   expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
-  // A PR view without a comments array reads as no comment, not a crash.
+  // A PR without comments reads as no comment, not a crash.
   expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
-  expect(runner.commands[0]).toEqual(["gh", "pr", "view", "9", "--json", "comments"]);
+  expect(runner.commands[0]).toEqual([
+    "gh",
+    "api",
+    "repos/o/r/issues/9/comments?per_page=100",
+    "--paginate",
+    "--slurp",
+  ]);
 });
 
 test("comment posts the body as one argument, never through a shell", async () => {

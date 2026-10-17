@@ -74,6 +74,8 @@ import {
 } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
+/** Landing's phase period in ticks; the repair ledger's settle hold is padded by it. */
+const LANDING_EVERY_TICKS = 2;
 const VALUE_FLAGS = ["--project", "--config"] as const;
 
 export interface DaemonArguments {
@@ -795,9 +797,19 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    // The same window landing settles a clean head for: a review posted
-    // inside it meets the budget the earlier waves spent, not a fresh one.
-    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget, settleMs });
+    // The window landing settles a clean head for, so a review posted inside
+    // it meets the budget the earlier waves spent, not a fresh one — padded by
+    // landing's phase period: repair runs every tick and landing every
+    // LANDING_EVERY_TICKS, so repair can see a head clean up to one landing
+    // period before landing starts its own clock, and an unpadded hold would
+    // expire while landing is still waiting. Padding by the period puts the
+    // reset no earlier than the landing pass that may merge.
+    const ledger = new RepairLedger({
+      staleTicks,
+      namespace,
+      roundBudget,
+      settleMs: settleMs + tickIntervalMs * LANDING_EVERY_TICKS,
+    });
     // Managed only: unmanaged discovery mode has no project dir to persist
     // into, so its budgets reset with the process as before.
     const ledgerStore =
@@ -903,7 +915,7 @@ export async function runDaemonLoop(
       },
       {
         name: "landing",
-        everyTicks: 2,
+        everyTicks: LANDING_EVERY_TICKS,
         run: async () => {
           if (landingBlocked) {
             log.warn(

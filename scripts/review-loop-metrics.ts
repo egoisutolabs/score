@@ -24,17 +24,29 @@ const segments = (await readdir(dir).catch(() => [] as string[]))
   .filter((name) => name.endsWith(".jsonl") && name.slice(0, 10) >= since)
   .sort();
 const records: TelemetryRecord[] = [];
+let unparseable = 0;
 for (const name of segments) {
-  for (const line of (await readFile(join(dir, name), "utf8")).split("\n")) {
+  const text = await readFile(join(dir, name), "utf8");
+  const lines = text.split("\n");
+  // Only a final fragment without its newline is the append-only log's normal
+  // state mid-write; a newline-terminated line that does not parse is a lost
+  // record, which the canonical reader reports and this table must too.
+  const tail = text.endsWith("\n") ? -1 : lines.length - 1;
+  for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue;
     try {
       records.push(JSON.parse(line) as TelemetryRecord);
     } catch {
-      // A torn tail line is the append-only log's normal state mid-write.
+      if (index === tail) continue;
+      unparseable += 1;
+      console.error(`unparseable line ${index + 1} in ${name}`);
     }
   }
 }
 console.log(`${records.length} records from ${segments.length} segment(s) in ${dir}`);
+if (unparseable > 0) {
+  console.log(`WARNING: ${unparseable} unparseable line(s) skipped; the figures below are a floor`);
+}
 // Recovery writes a gap record for appends that were lost; a table over a
 // log with gaps is incomplete, and must say so rather than look authoritative.
 const gaps = records.filter((record) => record.name === GAP_RECORD_NAME);
