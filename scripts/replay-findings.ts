@@ -8,8 +8,9 @@
  * Waves are reconstructed from reviewer rounds: a thread's wave is the number
  * of bot review rounds completed before its reviewed commit. Resolution state
  * is GitHub's final state, so "fix-failed" is an upper bound here (live, a
- * self-resolve is only known once it happened). Needs `gh` and a checkout
- * holding the PR's commits. Read-only.
+ * self-resolve is only known once it happened) and the per-wave open count
+ * is a floor (a thread resolved after the wave reads as resolved during it).
+ * Needs `gh` and a checkout holding the PR's commits. Read-only.
  */
 import { ExecRunner } from "../packages/core/src/adapters/fixtures/staged-merge.fixture";
 import { GitService } from "../packages/core/src/adapters/git.service";
@@ -87,11 +88,19 @@ class ReplayLedger implements FindingLedger {
 const ledger = new ReplayLedger();
 const tracker = new FindingTracker(git, ledger);
 const byWave = new Map<number, ReviewThreadObservation[]>();
+let unplaced = 0;
 for (const t of threads) {
   const idx = commits.indexOf(t.originalCommit ?? "");
+  // A thread on a commit the PR no longer has (force-pushed away) cannot be
+  // placed in a wave; counting it as wave zero would call it first-round.
+  if (idx === -1) {
+    unplaced += 1;
+    continue;
+  }
   const wave = rounds.filter((r) => commits.indexOf(r) < idx).length;
   byWave.set(wave, [...(byWave.get(wave) ?? []), t]);
 }
+if (unplaced > 0) console.error(`${unplaced} thread(s) cite commits the PR no longer has; skipped`);
 // Diff size at each round's head, as repair would have seen it when it pinged.
 const base = ((await gh(["pr", "view", String(pr), "-R", repo, "--json", "baseRefOid"])) as { baseRefOid: string })
   .baseRefOid;
@@ -128,8 +137,10 @@ for (let wave = 0; wave <= lastWave; wave += 1) {
       tick: wave,
       headSha: head,
       defects: DEFECTS,
-      // Distinct keys, as RepairLedger.openFindingCount counts them.
-      openFindings: new Set(recs.filter((r) => r.resolution !== "reviewer-resolved").map((r) => r.key)).size,
+      // Distinct reviewer-open keys, as RepairLedger.openFindingCount counts
+      // them. The replay sees final resolution state, so on a merged PR this
+      // is a floor and findings-flat seldom fires here (see the header).
+      openFindings: new Set(recs.filter((r) => r.resolution === "open").map((r) => r.key)).size,
       diffSize: await diffSizeAt(head),
     });
   }

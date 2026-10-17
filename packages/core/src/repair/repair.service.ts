@@ -62,7 +62,7 @@ export interface RepairServiceOptions {
    * this PR, if landing's merged-tree gate failed. Unset for the manual
    * subcommand — its scan stays GitHub-facts-only.
    */
-  buildRed?(pullRequestNumber: number): string | undefined;
+  buildRed?(pullRequestNumber: number, headSha: string | undefined): string | undefined;
 }
 
 /** One-shot port of shepherd-prs.sh. Repair never owns merge authority. */
@@ -113,7 +113,9 @@ export class RepairService {
       await this.options.onThreads?.(change.number, threads);
       const unresolvedThreads = threads.filter((thread) => !thread.isResolved).length;
       const checks = countChecks(change.statusCheckRollup);
-      const buildRed = this.options.buildRed?.(change.number);
+      // With the head: landing gated a specific commit, and repair runs more
+      // often than landing, so the head repair sees may already be a newer one.
+      const buildRed = this.options.buildRed?.(change.number, change.headSha);
       const defects: RepairDefects = {
         conflicting: change.mergeable === "CONFLICTING",
         unresolvedThreads,

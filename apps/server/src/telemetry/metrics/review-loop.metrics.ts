@@ -34,7 +34,8 @@ interface Tally {
   findings: number;
   lateFindings: number;
   lateRegressions: number;
-  parkedByRule: Record<string, number>;
+  /** PRs, not park events: a PR granted a fresh budget and parked again is one PR that failed to converge. */
+  parkedByRule: Map<string, Set<number>>;
   merged: Set<number>;
   openAtMerge: number;
 }
@@ -73,7 +74,7 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
         findings: 0,
         lateFindings: 0,
         lateRegressions: 0,
-        parkedByRule: {},
+        parkedByRule: new Map(),
         merged: new Set(),
         openAtMerge: 0,
       };
@@ -116,7 +117,9 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
       // must not report a merged PR against a denominator of zero.
       entry.pullRequests.add(pr);
       const rule = String(attributes.rule ?? "unknown");
-      entry.parkedByRule[rule] = (entry.parkedByRule[rule] ?? 0) + 1;
+      const parked = entry.parkedByRule.get(rule) ?? new Set<number>();
+      parked.add(pr);
+      entry.parkedByRule.set(rule, parked);
     } else if (record.name === "score.repair.open_at_merge") {
       entry.pullRequests.add(pr);
       entry.merged.add(pr);
@@ -131,7 +134,9 @@ export function reviewLoopMetrics(records: readonly TelemetryRecord[]): ReviewLo
       findings: entry.findings,
       lateFindings: entry.lateFindings,
       lateRegressions: entry.lateRegressions,
-      parkedByRule: entry.parkedByRule,
+      parkedByRule: Object.fromEntries(
+        [...entry.parkedByRule].map(([rule, parked]) => [rule, parked.size]),
+      ),
       mergedPullRequests: entry.merged.size,
       openAtMerge: entry.openAtMerge,
     })),

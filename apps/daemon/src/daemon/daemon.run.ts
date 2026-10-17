@@ -846,7 +846,21 @@ export async function runDaemonLoop(
           scanFailure = error;
         },
         onThreads: recordThreads,
-        buildRed: (number) => gateVerdicts.get(number)?.note,
+        // Landing runs every second tick and repair every tick, so repair can
+        // see a head landing has not: a verdict on an older head is not this
+        // head's defect, and with a round budget sending it would cost a wave.
+        buildRed: (number, headSha) => {
+          const verdict = gateVerdicts.get(number);
+          if (verdict === undefined) return undefined;
+          if (
+            verdict.headSha !== undefined &&
+            headSha !== undefined &&
+            verdict.headSha !== headSha
+          ) {
+            return undefined;
+          }
+          return verdict.note;
+        },
       },
       github,
       git,

@@ -37,6 +37,8 @@ test("metrics segment PRs by the prompt version of their last wave and count the
     event("score.repair.wave", 10, { prompt_version: "v2", wave: 1 }),
     event("score.repair.finding", 10, { class: "fix-failed", wave: 1 }),
     event("score.repair.parked", 10, { rule: "regression-from-fix" }),
+    // Parked again after a human granted a fresh budget: still one PR.
+    event("score.repair.parked", 10, { rule: "regression-from-fix" }),
     // PRs 11 and 12: only a merge, only a park, in the window (a `since`
     // cutoff hid their waves). Each still counts as a PR of its segment.
     event("score.repair.open_at_merge", 11, { open_findings: 0, total_findings: 0 }),

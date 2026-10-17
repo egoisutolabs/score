@@ -215,7 +215,11 @@ the baseline's 22 of 38, must fall to the latency tail past 15 minutes.
 ## Phase 1 step 5: convergence gate
 
 Evidence: the PR 99 replay, with diff size per round head measured by
-`git diff --shortstat` against the PR base:
+`git diff --shortstat` against the PR base. The open-finding column counts
+threads not resolved by a reviewer, since GitHub's final state cannot say
+which were still open at each round; live, the ledger counts only threads
+the reviewer still holds open, so these figures are a ceiling on what the
+loop would have seen:
 
 | Round | Diff lines | Open findings after the round |
 | --- | --- | --- |

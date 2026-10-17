@@ -274,8 +274,9 @@ test("a GitHub-clean PR with a landing build-red verdict is repaired, tail in th
   const result = await new RepairService(
     {
       ...options,
-      buildRed: (pullRequestNumber) =>
-        pullRequestNumber === 9 ? "daemon:check — TS2345 boom" : undefined,
+      // The head rides along so the daemon can refuse a verdict on an older one.
+      buildRed: (pullRequestNumber, headSha) =>
+        pullRequestNumber === 9 && headSha === undefined ? "daemon:check — TS2345 boom" : undefined,
       shouldAct: (_number, defects) => {
         seenDefects.push(defects);
         return true;
