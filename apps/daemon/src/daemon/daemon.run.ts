@@ -21,7 +21,7 @@ import {
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
-import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
+import { LANDING_READY_TAGS, meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
@@ -75,8 +75,6 @@ import {
 } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
-/** Landing's phase period in ticks; the repair ledger's settle hold is padded by it. */
-const LANDING_EVERY_TICKS = 2;
 const VALUE_FLAGS = ["--project", "--config"] as const;
 
 export interface DaemonArguments {
@@ -798,19 +796,10 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    // The window landing settles a clean head for, so a review posted inside
-    // it meets the budget the earlier waves spent, not a fresh one — padded by
-    // landing's phase period: repair runs every tick and landing every
-    // LANDING_EVERY_TICKS, so repair can see a head clean up to one landing
-    // period before landing starts its own clock, and an unpadded hold would
-    // expire while landing is still waiting. Padding by the period puts the
-    // reset no earlier than the landing pass that may merge.
-    const ledger = new RepairLedger({
-      staleTicks,
-      namespace,
-      roundBudget,
-      settleMs: settleMs + tickIntervalMs * LANDING_EVERY_TICKS,
-    });
+    // Budget resets follow landing's readiness verdicts (finishPass's pass
+    // context below), not a clock of repair's own: any fixed window drifts
+    // from landing's settle, soak, schedule and outages.
+    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget });
     // Managed only: unmanaged discovery mode has no project dir to persist
     // into, so its budgets reset with the process as before.
     const ledgerStore =
@@ -898,14 +887,11 @@ export async function runDaemonLoop(
     // failed), landing must not run: it would see a clean tree, commit a new
     // merge on top, and build — or even push — the chain D1 forbids.
     let landingBlocked = false;
-    // Whether landing's last due pass ran to completion. Suppressed or thrown
-    // (runPass carries on to repair after a phase error), it observed no head,
-    // so the repair ledger's clean clock must not count that pass.
-    let landingRan = false;
-    // The PRs that pass noted heads for: a draft or a hold-labeled PR is not
-    // a landing candidate, so landing is not settling it either, and the
-    // repair ledger must not count its clean passes toward a reset.
-    let landingObserved: ReadonlySet<number> = new Set();
+    // PR → head that landing's last completed pass found ready. Cleared when
+    // a pass starts, so a suppressed or thrown pass (runPass carries on to
+    // repair after a phase error) reads as "nothing ready", and a PR landing
+    // never reaches (a draft, a hold label) is simply absent.
+    let landingReady: ReadonlyMap<number, string | undefined> = new Map();
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -926,9 +912,9 @@ export async function runDaemonLoop(
       },
       {
         name: "landing",
-        everyTicks: LANDING_EVERY_TICKS,
+        everyTicks: 2,
         run: async () => {
-          landingRan = false;
+          landingReady = new Map();
           if (landingBlocked) {
             log.warn(
               "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
@@ -971,8 +957,11 @@ export async function runDaemonLoop(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
           pass.soaking += results.filter((result) => result.tag === "soaking").length;
-          landingObserved = new Set(results.map((result) => result.pullRequestNumber));
-          landingRan = true;
+          landingReady = new Map(
+            results
+              .filter((result) => LANDING_READY_TAGS.has(result.tag))
+              .map((result) => [result.pullRequestNumber, result.headSha]),
+          );
         },
       },
       {
@@ -988,7 +977,7 @@ export async function runDaemonLoop(
             log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
             return;
           }
-          ledger.finishPass(results, { landingIdle: !landingRan, landingObserved });
+          ledger.finishPass(results, { landingReady });
           await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => {

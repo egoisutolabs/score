@@ -166,14 +166,8 @@ test("a wait on pending checks or a failed thread query keeps the wave count; a 
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
 
-test("with a settle window, a clean PR keeps its waves until it has stayed clean that long", () => {
-  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
-  const ledger = new RepairLedger({
-    staleTicks: 10,
-    roundBudget: 1,
-    settleMs: 10 * 60_000,
-    now: () => new Date(clock.now).toISOString(),
-  });
+test("with landing in the loop, a clean PR keeps its waves until landing finds its head ready; then a fresh budget, history kept", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
   const clean: RepairResult = {
     pullRequestNumber: 9,
     action: "NOT_NEEDED",
@@ -182,151 +176,39 @@ test("with a settle window, a clean PR keeps its waves until it has stayed clean
   };
   pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
 
-  // Checks reported, nothing wrong — but Codex posts no check, so its review
-  // of this head may still be coming: the budget stands.
-  ledger.startPass(1, new Set());
-  ledger.finishPass([clean]);
-  clock.now += 9 * 60_000;
-  ledger.startPass(2, new Set());
-  ledger.finishPass([clean]);
+  // Checks reported, nothing wrong — but Codex posts no check, and landing is
+  // still settling, soaking or sitting out: a review posted now meets the
+  // budget the earlier wave spent, however many passes that takes.
+  for (let tick = 1; tick <= 3; tick += 1) {
+    ledger.startPass(tick, new Set());
+    ledger.finishPass([clean], { landingReady: new Map() });
+  }
   expect(ledger.waveCount(9)).toBe(1);
   expect(ledger.exhaustion(9, false)).toMatchObject({ budget: 1 });
 
-  // A push restarts the clock: pending checks, then clean again from zero.
-  ledger.startPass(3, new Set());
-  ledger.finishPass([{ pullRequestNumber: 9, action: "CHECKS_PENDING", dryRun: false }]);
-  clock.now += 5 * 60_000;
+  // Landing found the head ready (merged, or would have): fresh budget, history kept.
   ledger.startPass(4, new Set());
-  ledger.finishPass([clean]);
-  clock.now += 9 * 60_000;
-  ledger.startPass(5, new Set());
-  ledger.finishPass([clean]);
-  expect(ledger.waveCount(9)).toBe(1);
-
-  // A push whose checks finished between passes never showed as pending: the
-  // new head on a clean result restarts the clock all the same.
-  ledger.startPass(6, new Set());
-  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
-  clock.now += 9 * 60_000;
-  ledger.startPass(7, new Set());
-  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
-  expect(ledger.waveCount(9)).toBe(1);
-
-  // Clean for the whole window on one head: fresh budget, history kept.
-  clock.now += 60_000;
-  ledger.startPass(8, new Set());
-  ledger.finishPass([{ ...clean, headSha: "bbb" }]);
+  ledger.finishPass([clean], { landingReady: new Map([[9, "aaa"]]) });
   expect(ledger.waveCount(9)).toBe(0);
   expect(ledger.firstHead(9)).toBe("aaa");
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
 
-test("while landing sits out, the clean clock neither starts nor advances; it starts when landing is back", () => {
-  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
-  const ledger = new RepairLedger({
-    staleTicks: 10,
-    roundBudget: 1,
-    settleMs: 10 * 60_000,
-    now: () => new Date(clock.now).toISOString(),
-  });
+test("readiness is per head: landing's verdict on the old head does not reset the budget of a new one", () => {
+  const ledger = new RepairLedger({ staleTicks: 10, roundBudget: 1 });
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
   const clean: RepairResult = {
     pullRequestNumber: 9,
     action: "NOT_NEEDED",
     dryRun: false,
-    headSha: "aaa",
+    headSha: "bbb",
   };
-  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
-
-  // Landing suppressed for an hour of clean passes: no settle it could be
-  // timing, so the budget stands however long this lasts.
-  for (let tick = 1; tick <= 6; tick += 1) {
-    clock.now += 10 * 60_000;
-    ledger.startPass(tick, new Set());
-    ledger.finishPass([clean], { landingIdle: true });
-  }
-  expect(ledger.waveCount(9)).toBe(1);
-
-  // Landing back: its clock and this one start together, from now.
-  ledger.startPass(7, new Set());
-  ledger.finishPass([clean]);
-  clock.now += 9 * 60_000;
-  ledger.startPass(8, new Set());
-  ledger.finishPass([clean]);
-  expect(ledger.waveCount(9)).toBe(1);
-  clock.now += 60_000;
-  ledger.startPass(9, new Set());
-  ledger.finishPass([clean]);
-  expect(ledger.waveCount(9)).toBe(0);
-});
-
-test("a PR landing's pass did not note (a draft, a hold label) is held like an idle pass", () => {
-  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
-  const ledger = new RepairLedger({
-    staleTicks: 10,
-    roundBudget: 1,
-    settleMs: 10 * 60_000,
-    now: () => new Date(clock.now).toISOString(),
-  });
-  const clean: RepairResult = {
-    pullRequestNumber: 9,
-    action: "NOT_NEEDED",
-    dryRun: false,
-    headSha: "aaa",
-  };
-  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
-
-  // Landing ran, but filtered PR 9 out: nothing is settling its head.
-  for (let tick = 1; tick <= 3; tick += 1) {
-    clock.now += 10 * 60_000;
-    ledger.startPass(tick, new Set());
-    ledger.finishPass([clean], { landingObserved: new Set([4]) });
-  }
-  expect(ledger.waveCount(9)).toBe(1);
-
-  // Landable again: landing notes it, and the window runs from here.
-  ledger.startPass(4, new Set());
-  ledger.finishPass([clean], { landingObserved: new Set([4, 9]) });
-  clock.now += 10 * 60_000;
-  ledger.startPass(5, new Set());
-  ledger.finishPass([clean], { landingObserved: new Set([4, 9]) });
-  expect(ledger.waveCount(9)).toBe(0);
-});
-
-test("a restart inside the settle window starts it over, as landing's in-memory clock does", () => {
-  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
-  const options = {
-    staleTicks: 10,
-    roundBudget: 1,
-    settleMs: 10 * 60_000,
-    now: () => new Date(clock.now).toISOString(),
-  };
-  const ledger = new RepairLedger(options);
-  const clean: RepairResult = {
-    pullRequestNumber: 9,
-    action: "NOT_NEEDED",
-    dryRun: false,
-    headSha: "aaa",
-  };
-  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
   ledger.startPass(1, new Set());
-  ledger.finishPass([clean]);
-  clock.now += 9 * 60_000;
-
-  // One minute short of the window at the restart: a restored clock would
-  // reset the budget on the next pass while landing waits ten more minutes.
-  const restored = new RepairLedger(options);
-  restored.restore(JSON.parse(JSON.stringify(ledger.snapshot())));
-  clock.now += 2 * 60_000;
-  restored.startPass(0, new Set());
-  restored.finishPass([clean]);
-  clock.now += 9 * 60_000;
-  restored.startPass(1, new Set());
-  restored.finishPass([clean]);
-  expect(restored.waveCount(9)).toBe(1);
-  clock.now += 60_000;
-  restored.startPass(2, new Set());
-  restored.finishPass([clean]);
-  expect(restored.waveCount(9)).toBe(0);
+  ledger.finishPass([clean], { landingReady: new Map([[9, "aaa"]]) });
+  expect(ledger.waveCount(9)).toBe(1);
+  ledger.startPass(2, new Set());
+  ledger.finishPass([clean], { landingReady: new Map([[9, "bbb"]]) });
+  expect(ledger.waveCount(9)).toBe(0);
 });
 
 test("an exhausted PR stays parked while labeled; removing the label grants a fresh budget", () => {

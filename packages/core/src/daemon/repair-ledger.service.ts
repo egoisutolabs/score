@@ -17,10 +17,6 @@ export interface RepairLedgerEntry {
   /** Head when the first wave was sent; blame after it is a regression from a fix. */
   readonly firstHead: string | undefined;
   readonly findings: readonly FindingRecord[];
-  /** When the PR was first seen clean with its checks reported; absent while anything is wrong or pending. */
-  readonly cleanSince?: string;
-  /** The head that clock is for: a push whose checks finished between passes still restarts it. */
-  readonly cleanHead?: string;
 }
 
 /** The on-disk shape; additive changes only, bump `v` for anything else. */
@@ -39,9 +35,8 @@ const NO_DEFECTS: RepairDefects = { conflicting: false, unresolvedThreads: 0, fa
  * with the wave the old record was seen at.
  */
 function freshBudget(entry: RepairLedgerEntry): RepairLedgerEntry {
-  const { cleanSince: _, cleanHead: __, ...rest } = entry;
   return {
-    ...rest,
+    ...entry,
     waves: [],
     labeled: false,
     findings: entry.findings.map((record) =>
@@ -61,19 +56,14 @@ function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
 
 export interface RepairPassContext {
   /**
-   * Landing's last due pass did not run to completion (suppressed while an
-   * unreconciled commit sits ahead of origin, or it threw), so no head it
-   * would settle is being timed: the clean clock neither starts nor advances
-   * until landing runs again.
+   * PR → head of every PR landing's last completed pass found ready: merged,
+   * or soaked green and held only by --no-merge or --dry-run, or merged with
+   * the push awaiting re-landing. With it, a clean PR's budget resets only
+   * once landing has reached that verdict on its current head, so a review
+   * posted while landing settles, soaks or sits out shares the waves already
+   * spent. Omitted (the manual subcommand, tests), a clean PR resets at once.
    */
-  readonly landingIdle?: boolean;
-  /**
-   * The PRs landing's last completed pass noted heads for. A PR outside it
-   * (a draft, a hold label) is not being settled by landing either, so its
-   * clock is held the same way; omitted, landing's view is unknown and the
-   * clock runs on repair's own observations.
-   */
-  readonly landingObserved?: ReadonlySet<number>;
+  readonly landingReady?: ReadonlyMap<number, string | undefined>;
 }
 
 export interface RepairLedgerOptions {
@@ -85,14 +75,6 @@ export interface RepairLedgerOptions {
   readonly namespace?: string;
   /** Pings or spawns a PR may receive before repair parks it for a human. */
   readonly roundBudget?: number;
-  /**
-   * How long a PR must stay clean, checks reported, before its wave history
-   * resets. Codex posts no check run, so "every check reported and nothing
-   * is wrong" does not mean the review round is over (analysis §2.5): a
-   * finding it posts inside landing's settle window must meet the budget
-   * the earlier waves spent, not a fresh one. Zero resets at once.
-   */
-  readonly settleMs?: number;
   readonly now?: () => string;
 }
 
@@ -122,7 +104,6 @@ export class RepairLedger implements FindingLedger {
       staleTicks: options.staleTicks,
       namespace: options.namespace ?? "",
       roundBudget: options.roundBudget ?? Number.POSITIVE_INFINITY,
-      settleMs: options.settleMs ?? 0,
       now: options.now ?? (() => new Date().toISOString()),
     };
   }
@@ -140,18 +121,22 @@ export class RepairLedger implements FindingLedger {
    * Ticks restart at zero with the process, so a restored entry's tick is
    * clamped to zero: a live, unchanged agent is left alone for one more
    * staleTicks window rather than for the whole gap the old tick would imply.
-   *
-   * The clean clock restarts too: landing keeps its settle clock in memory, so
-   * after a restart it waits a whole window again, and a clock restored from
-   * before the restart would reset the budget while landing still waits.
    */
   restore(snapshot: RepairLedgerSnapshot): void {
     this.#entries = new Map(
-      Object.entries(snapshot.pullRequests).map(([number, entry]) => {
-        const { cleanSince: _, cleanHead: __, ...rest } = entry;
-        return [Number(number), { ...rest, tick: 0 }];
-      }),
+      Object.entries(snapshot.pullRequests).map(([number, entry]) => [
+        Number(number),
+        { ...entry, tick: 0 },
+      ]),
     );
+  }
+
+  /** Whether landing has finished waiting on the head this result is about; without landing's view, at once. */
+  #landingReady(pass: RepairPassContext, result: RepairResult): boolean {
+    if (pass.landingReady === undefined) return true;
+    if (!pass.landingReady.has(result.pullRequestNumber)) return false;
+    const head = pass.landingReady.get(result.pullRequestNumber);
+    return head === undefined || result.headSha === undefined || head === result.headSha;
   }
 
   /** Call once before each repair pass with the tick and the live tmux sessions. */
@@ -265,8 +250,9 @@ export class RepairLedger implements FindingLedger {
 
   /**
    * Call with the pass's results. A PR that went clean keeps its findings and
-   * first head (history) but starts a fresh budget once it has stayed clean
-   * for settleMs; a PR no longer reported (merged or closed) is forgotten
+   * first head (history) but starts a fresh budget — once landing has found
+   * its head ready when landing is in the loop (pass.landingReady), at once
+   * otherwise; a PR no longer reported (merged or closed) is forgotten
    * entirely. A PR the pass could not judge (checks pending, thread query
    * failed, agent still working) or could not reach (defective, but no
    * session and no worktree to send to) is held as is.
@@ -275,28 +261,7 @@ export class RepairLedger implements FindingLedger {
     const seen = new Set<number>();
     for (const result of results) {
       seen.add(result.pullRequestNumber);
-      let entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
-      // Anything but a clean pass on the same head restarts the clean clock: a
-      // push usually shows as pending checks first, but a head whose checks
-      // finished between two passes shows only as a new sha on a clean result.
-      // So does a pass landing sat out: its own clock has not started, and a
-      // window counted here alone would reset the budget before landing's
-      // settle, which the settle exists to cover.
-      const newHead =
-        result.headSha !== undefined &&
-        entry.cleanHead !== undefined &&
-        result.headSha !== entry.cleanHead;
-      const unsettled =
-        pass.landingIdle === true ||
-        (pass.landingObserved !== undefined && !pass.landingObserved.has(result.pullRequestNumber));
-      if (
-        (result.action !== "NOT_NEEDED" || newHead || unsettled) &&
-        entry.cleanSince !== undefined
-      ) {
-        const { cleanSince: _, cleanHead: __, ...rest } = entry;
-        entry = rest;
-        this.#entries.set(result.pullRequestNumber, entry);
-      }
+      const entry = this.#entries.get(result.pullRequestNumber) ?? this.#blank();
       if (result.action === "EXHAUSTED") {
         // Seen or put on: either way the label now governs this PR.
         if (!result.dryRun) {
@@ -313,21 +278,13 @@ export class RepairLedger implements FindingLedger {
         continue;
       }
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
-        if (unsettled && this.#options.settleMs > 0) continue;
         if (entry.waves.length > 0 || entry.labeled) {
-          const now = this.#options.now();
-          const cleanSince = entry.cleanSince ?? now;
-          if (
-            this.#options.settleMs > 0 &&
-            Date.parse(now) - Date.parse(cleanSince) < this.#options.settleMs
-          ) {
-            this.#entries.set(result.pullRequestNumber, {
-              ...entry,
-              cleanSince,
-              ...(result.headSha !== undefined && { cleanHead: result.headSha }),
-            });
-            continue;
-          }
+          // Codex posts no check run, so "every check reported and nothing is
+          // wrong" does not end the review round (analysis §2.5): a finding
+          // posted while landing still settles, soaks or sits out must meet
+          // the budget the earlier waves spent. Landing's own verdict on this
+          // head is the one clock that cannot drift from landing.
+          if (!this.#landingReady(pass, result)) continue;
           this.#entries.set(result.pullRequestNumber, freshBudget(entry));
         }
         continue;
