@@ -1,6 +1,20 @@
 import { expect, test } from "vitest";
 import type { FindingRecord, ReviewThreadObservation } from "./finding.interface";
-import { classifyFinding, enclosingSymbol, findingKey, resolutionOf } from "./finding.policy";
+import {
+  classifyFinding,
+  enclosingSymbol,
+  findingKey,
+  isReviewerBot,
+  resolutionOf,
+} from "./finding.policy";
+
+test("a finding is a thread a bot reviewer opened; a human's or an unnamed author's is not", () => {
+  expect(isReviewerBot("chatgpt-codex-connector[bot]")).toBe(true);
+  expect(isReviewerBot("claude")).toBe(true);
+  expect(isReviewerBot("coderabbitai")).toBe(true);
+  expect(isReviewerBot("gendev1")).toBe(false);
+  expect(isReviewerBot(undefined)).toBe(false);
+});
 
 const TS_SOURCE = `import x from "y";
 

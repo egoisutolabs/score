@@ -514,6 +514,21 @@ test("a PR already carrying the label is parked: no ping, no mutation, no ledger
   expect(asked).toEqual([]);
 });
 
+test("the label is matched case-insensitively: a renamed `Repair-Exhausted` still parks the PR", async () => {
+  const agents = new RepairAgents();
+  agents.sessions = ["score-issue-3"];
+  const github = new RecordingHost();
+  const result = await new RepairService(
+    { ...options, exhaustion: () => undefined },
+    withChange({ labels: [{ name: "Repair-Exhausted" }] }),
+    new RepairWorkspace(),
+    agents,
+    github,
+  ).run();
+  expect(result[0]?.action).toBe("EXHAUSTED");
+  expect(agents.pinged).toEqual([]);
+});
+
 test("the manual subcommand (no budget) pings a labeled PR: the operator running it is the human the label waits for", async () => {
   const agents = new RepairAgents();
   agents.sessions = ["score-issue-3"];

@@ -27,6 +27,7 @@ import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
 import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
+import { isReviewerBot } from "@score/core/repair/findings/finding.policy";
 import { FindingTracker } from "@score/core/repair/findings/finding-tracker.service";
 import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
@@ -828,13 +829,18 @@ export async function runDaemonLoop(
     // Threads into the ledger, and a finding record for each thread seen for
     // the first time — from repair's scan and from landing's merge refresh
     // alike, so a thread opened and resolved between repair ticks still
-    // reaches the metrics once.
+    // reaches the metrics once. Bot-opened threads only: the repair defects
+    // still count every unresolved thread, but the ledger and the metrics
+    // measure reviewer findings against the baseline's definition.
     const recordThreads = async (
       number: number,
       threads: readonly ReviewThreadObservation[],
     ): Promise<void> => {
       const known = new Set(ledger.findings(number).map((record) => record.threadId));
-      const records = await findings.observe(number, threads);
+      const records = await findings.observe(
+        number,
+        threads.filter((thread) => isReviewerBot(thread.author)),
+      );
       telemetry?.decisions((ctx) =>
         records
           .filter((record) => !known.has(record.threadId))
@@ -974,7 +980,7 @@ export async function runDaemonLoop(
             log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
             return;
           }
-          ledger.finishPass(results);
+          ledger.finishPass(results, { landingIdle: landingBlocked });
           await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => {

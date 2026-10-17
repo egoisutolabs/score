@@ -167,21 +167,31 @@ const CANONICAL_ISSUE: IssueObservation = {
   url: "https://github.com/owner/repo/issues/0",
   comments: [],
 };
+// The Notes from Prior Work section renders only for an issue with comments:
+// a second canonical render with one empty comment puts its static text
+// under the version too, so an edit confined to it changes the version.
+const CANONICAL_COMMENTED_ISSUE: IssueObservation = {
+  ...CANONICAL_ISSUE,
+  comments: [{ author: { login: "" }, body: "" }],
+};
 // Derived, never spelled: identity shapes have one source (INVARIANTS.md rule 2).
 const CANONICAL_IDENTITY: WorkIdentity = createWorkIdentity("/", CANONICAL_ISSUE, undefined);
 
 const versionsByHarness = new Map<AgentConfig["harness"], string>();
 
 /**
- * Content hash of the template as this harness receives it, over a canonical
- * render. The variants differ by the whole Workflow section, so telemetry
- * segmented by version must name the one actually sent, or a fleet mixing
- * harnesses compares unlike briefings.
+ * Content hash of the template as this harness receives it, over canonical
+ * renders of both variants (without and with prior-work notes). The harness
+ * variants differ by the whole Workflow section, so telemetry segmented by
+ * version must name the one actually sent, or a fleet mixing harnesses
+ * compares unlike briefings.
  */
 export function briefingVersionFor(harness: AgentConfig["harness"]): string {
   let version = versionsByHarness.get(harness);
   if (version === undefined) {
-    version = promptVersion(renderBriefing(CANONICAL_ISSUE, CANONICAL_IDENTITY, { harness }));
+    version = promptVersion(
+      `${renderBriefing(CANONICAL_ISSUE, CANONICAL_IDENTITY, { harness })}\n${renderBriefing(CANONICAL_COMMENTED_ISSUE, CANONICAL_IDENTITY, { harness })}`,
+    );
     versionsByHarness.set(harness, version);
   }
   return version;

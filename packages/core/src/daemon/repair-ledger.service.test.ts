@@ -221,6 +221,44 @@ test("with a settle window, a clean PR keeps its waves until it has stayed clean
   expect(ledger.exhaustion(9, false)).toBeUndefined();
 });
 
+test("while landing sits out, the clean clock neither starts nor advances; it starts when landing is back", () => {
+  const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
+  const ledger = new RepairLedger({
+    staleTicks: 10,
+    roundBudget: 1,
+    settleMs: 10 * 60_000,
+    now: () => new Date(clock.now).toISOString(),
+  });
+  const clean: RepairResult = {
+    pullRequestNumber: 9,
+    action: "NOT_NEEDED",
+    dryRun: false,
+    headSha: "aaa",
+  };
+  pass(ledger, 0, ["score-issue-3"], BROKEN, "aaa", () => pinged("score-issue-3"));
+
+  // Landing suppressed for an hour of clean passes: no settle it could be
+  // timing, so the budget stands however long this lasts.
+  for (let tick = 1; tick <= 6; tick += 1) {
+    clock.now += 10 * 60_000;
+    ledger.startPass(tick, new Set());
+    ledger.finishPass([clean], { landingIdle: true });
+  }
+  expect(ledger.waveCount(9)).toBe(1);
+
+  // Landing back: its clock and this one start together, from now.
+  ledger.startPass(7, new Set());
+  ledger.finishPass([clean]);
+  clock.now += 9 * 60_000;
+  ledger.startPass(8, new Set());
+  ledger.finishPass([clean]);
+  expect(ledger.waveCount(9)).toBe(1);
+  clock.now += 60_000;
+  ledger.startPass(9, new Set());
+  ledger.finishPass([clean]);
+  expect(ledger.waveCount(9)).toBe(0);
+});
+
 test("a restart inside the settle window starts it over, as landing's in-memory clock does", () => {
   const clock = { now: Date.parse("2026-10-17T10:00:00Z") };
   const options = {

@@ -59,6 +59,15 @@ function sameDefects(a: RepairDefects, b: RepairDefects): boolean {
   );
 }
 
+export interface RepairPassContext {
+  /**
+   * Landing did not run alongside this pass (suppressed while an unreconciled
+   * commit sits ahead of origin), so no head it would settle is being timed:
+   * the clean clock neither starts nor advances until landing runs again.
+   */
+  readonly landingIdle?: boolean;
+}
+
 export interface RepairLedgerOptions {
   /** Ticks after which a silent, unchanged agent is pinged again. */
   readonly staleTicks: number;
@@ -254,7 +263,7 @@ export class RepairLedger implements FindingLedger {
    * failed, agent still working) or could not reach (defective, but no
    * session and no worktree to send to) is held as is.
    */
-  finishPass(results: readonly RepairResult[]): void {
+  finishPass(results: readonly RepairResult[], pass: RepairPassContext = {}): void {
     const seen = new Set<number>();
     for (const result of results) {
       seen.add(result.pullRequestNumber);
@@ -262,11 +271,17 @@ export class RepairLedger implements FindingLedger {
       // Anything but a clean pass on the same head restarts the clean clock: a
       // push usually shows as pending checks first, but a head whose checks
       // finished between two passes shows only as a new sha on a clean result.
+      // So does a pass landing sat out: its own clock has not started, and a
+      // window counted here alone would reset the budget before landing's
+      // settle, which the settle exists to cover.
       const newHead =
         result.headSha !== undefined &&
         entry.cleanHead !== undefined &&
         result.headSha !== entry.cleanHead;
-      if ((result.action !== "NOT_NEEDED" || newHead) && entry.cleanSince !== undefined) {
+      if (
+        (result.action !== "NOT_NEEDED" || newHead || pass.landingIdle === true) &&
+        entry.cleanSince !== undefined
+      ) {
         const { cleanSince: _, cleanHead: __, ...rest } = entry;
         entry = rest;
         this.#entries.set(result.pullRequestNumber, entry);
@@ -287,6 +302,7 @@ export class RepairLedger implements FindingLedger {
         continue;
       }
       if (result.action !== "PINGED" && result.action !== "SPAWNED") {
+        if (pass.landingIdle === true && this.#options.settleMs > 0) continue;
         if (entry.waves.length > 0 || entry.labeled) {
           const now = this.#options.now();
           const cleanSince = entry.cleanSince ?? now;

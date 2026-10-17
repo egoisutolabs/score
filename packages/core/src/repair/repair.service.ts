@@ -143,7 +143,12 @@ export class RepairService {
       // across daemon restarts until a human removes the label. It parks the
       // daemon's loop only: the manual subcommand (no budget, no `exhaustion`)
       // is a human acting, which is what the label asked for.
-      const labeled = change.labels.some((label) => label.name === REPAIR_EXHAUSTED_LABEL);
+      // Case-insensitive like landing's skip labels: GitHub lets a label be
+      // renamed `Repair-Exhausted` in place, and an exact miss would read as
+      // a human removing it — a fresh budget for a PR still parked.
+      const labeled = change.labels.some(
+        (label) => label.name.toLowerCase() === REPAIR_EXHAUSTED_LABEL,
+      );
       if (labeled && this.options.exhaustion !== undefined) {
         report({ action: "EXHAUSTED", target: REPAIR_EXHAUSTED_LABEL });
         continue;
