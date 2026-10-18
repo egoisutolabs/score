@@ -29,7 +29,10 @@ import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.servi
 import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import { isReviewerBot } from "@score/core/repair/findings/finding.policy";
 import { FindingTracker } from "@score/core/repair/findings/finding-tracker.service";
-import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
+import {
+  REPAIR_EXHAUSTED_LABEL,
+  sessionSuffixForNamespace,
+} from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
 import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import {
@@ -648,10 +651,18 @@ export async function runDaemonLoop(
   // and the 25 findings opened after round four were fix-induced regressions
   // (docs/review-loop-baseline.md). Past that, a human decides.
   const roundBudget = positiveTuning("REPAIR_ROUND_BUDGET", 4);
-  const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
-    .split(",")
-    .map((label) => label.trim().toLowerCase())
-    .filter(Boolean);
+  // The exhaustion label is always a skip label, whatever SKIP_LABELS says: a
+  // PR that spent its round budget either had unclear requirements or bad
+  // code, and neither should land on its own because the checks turned green.
+  const skipLabels = [
+    ...new Set([
+      ...(tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
+        .split(",")
+        .map((label) => label.trim().toLowerCase())
+        .filter(Boolean),
+      REPAIR_EXHAUSTED_LABEL,
+    ]),
+  ];
 
   log.info(
     `daemon ${runtime.repository}${parsed.project ? ` | project ${parsed.project}` : ""} | tick ${Math.round(tickIntervalMs / 1_000)}s | max ${maxParallelIssues} | max-merges ${maxMerges} | soak ${soakTicks} ticks${dryRun ? " | dry-run" : ""}${noMerge ? " | no-merge" : ""}`,
@@ -978,7 +989,10 @@ export async function runDaemonLoop(
             return;
           }
           ledger.finishPass(results, { landingReady });
-          await ledgerStore?.write(ledger.snapshot());
+          // A dry run touches no session and no PR, and leaves the ledger file
+          // as the last real run wrote it too; its in-memory ledger still
+          // evolves so later ticks of the same dry run read as a run would.
+          if (!dryRun) await ledgerStore?.write(ledger.snapshot());
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => {
               if (result.action === "EXHAUSTED") return renderParkedTelemetry(result, ctx);

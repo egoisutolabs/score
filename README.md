@@ -75,7 +75,7 @@ agent is respawned in place to finish the preserved work.
 | `REPAIR_ROUND_BUDGET` | `4` | Repair waves a PR may receive before it is parked under `repair-exhausted` for a human. |
 | `MAX_PARALLEL` | `1` | Issues in flight at once. |
 | `MAX_MERGES` | `5` | Merges per landing tick. |
-| `SKIP_LABELS` | `hold,wip,do-not-merge` | Labels landing refuses to merge. |
+| `SKIP_LABELS` | `hold,wip,do-not-merge` | Labels landing refuses to merge; `repair-exhausted` is always one. |
 | `WORKTREE_ROOT` | `~/wt` | Parent of the per-repo worktree directory. |
 | `EPIC_LABEL_PREFIX` | `epic:` | Label prefix marking dispatchable issues. |
 | `AGENT_CMD` | `claude` | Command repair spawns in a worktree. |
