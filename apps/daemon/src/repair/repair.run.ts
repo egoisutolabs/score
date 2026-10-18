@@ -16,7 +16,16 @@ import { GitHubService } from "@score/tracker/github.service";
 /** Legacy shepherd-prs output: per-PR action lines, summary counts, attach hint. */
 export function renderRepairRun(results: readonly RepairResult[]): readonly LogLine[] {
   const lines: LogLine[] = [];
-  const counts = { PINGED: 0, SPAWNED: 0, SKIPPED: 0, NOT_NEEDED: 0, WORKING: 0 };
+  const counts = {
+    PINGED: 0,
+    SPAWNED: 0,
+    SKIPPED: 0,
+    NOT_NEEDED: 0,
+    WORKING: 0,
+    CHECKS_PENDING: 0,
+    UNOBSERVED: 0,
+    EXHAUSTED: 0,
+  };
   for (const result of results) {
     counts[result.action] += 1;
     const dryRun = result.dryRun ? "(dry-run) " : "";
@@ -35,6 +44,21 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
         level: "debug",
         text: `· #${result.pullRequestNumber} -> agent still working; left alone`,
       });
+    } else if (result.action === "CHECKS_PENDING") {
+      lines.push({
+        level: "debug",
+        text: `· #${result.pullRequestNumber} -> checks still running on the head commit; no ping`,
+      });
+    } else if (result.action === "UNOBSERVED") {
+      lines.push({
+        level: "warn",
+        text: `· #${result.pullRequestNumber} -> ${result.note ?? "review-thread query failed"}; not known clean, no ping`,
+      });
+    } else if (result.action === "EXHAUSTED") {
+      lines.push({
+        level: "warn",
+        text: `· #${result.pullRequestNumber} -> round budget spent; parked under ${result.target} for a human`,
+      });
     } else if (result.action === "SKIPPED") {
       lines.push({
         level: "debug",
@@ -46,7 +70,7 @@ export function renderRepairRun(results: readonly RepairResult[]): readonly LogL
   }
   lines.push({
     level: "info",
-    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
+    text: `summary: pinged=${counts.PINGED} spawned=${counts.SPAWNED} working=${counts.WORKING} checks-pending=${counts.CHECKS_PENDING} unobserved=${counts.UNOBSERVED} exhausted=${counts.EXHAUSTED} skipped=${counts.SKIPPED} clean-skipped=${counts.NOT_NEEDED}`,
   });
   if (counts.SPAWNED > 0) {
     lines.push({
@@ -90,11 +114,18 @@ export async function runRepair(args: readonly string[]): Promise<void> {
     github,
     git,
     tmux,
+    github,
   );
   const results = await service.run(parsed.dryRun);
   log.lines(renderRepairRun(results));
   if (parsed.dryRun) log.info("dry run — no sessions were touched.");
   log.debug(JSON.stringify(results));
+  // The daemon waits a tick for a PR it could not judge; this one-shot has no
+  // next tick, so a pass that judged nothing for some PR is not a success.
+  if (results.some((result) => result.action === "UNOBSERVED")) {
+    log.warn("some PRs could not be judged this run; rerun to repair them");
+    process.exitCode = 1;
+  }
 }
 
 function parseRepairArguments(args: readonly string[]) {

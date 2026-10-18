@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import type { WorkIdentity, WorktreeObservation } from "@score/core/dispatch/work.interface";
+import type { BlameSource } from "@score/core/repair/findings/finding.interface";
 import type {
   LandingWorkspace,
   PrimaryCheckoutObservation,
@@ -58,7 +59,7 @@ export interface CommitObservation {
 }
 
 /** Local Git adapter; callers remain responsible for policy and role authorization. */
-export class GitService implements WorktreeProvisioner, LandingWorkspace {
+export class GitService implements WorktreeProvisioner, LandingWorkspace, BlameSource {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
   /** Cached rev-parse --absolute-git-dir; the checkout's git dir never moves. */
@@ -298,6 +299,37 @@ export class GitService implements WorktreeProvisioner, LandingWorkspace {
       // %B carries git's own trailing newline(s); strip only those.
       message: body.join("\n").replace(/\n+$/, ""),
     };
+  }
+
+  // BlameSource (repair/findings): read-only lookups on the fetched history.
+  // Both tolerate a missing path or line by answering undefined, because a
+  // reviewer can cite a file a later commit deleted.
+
+  async blameOrigin(commit: string, path: string, line: number): Promise<string | undefined> {
+    const result = await this.#run([
+      "blame",
+      "--porcelain",
+      "-L",
+      `${line},${line}`,
+      commit,
+      "--",
+      path,
+    ]);
+    if (result.exitCode !== 0) return undefined;
+    const sha = result.stdout.split(/\s/, 1)[0] ?? "";
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
+  }
+
+  async fileAt(commit: string, path: string): Promise<string | undefined> {
+    const result = await this.#run(["show", `${commit}:${path}`]);
+    return result.exitCode === 0 ? result.stdout : undefined;
+  }
+
+  async ancestry(ancestor: string, descendant: string): Promise<boolean | undefined> {
+    // merge-base --is-ancestor answers with its exit code: 0 yes, 1 no;
+    // anything else is git failing to answer at all.
+    const { exitCode } = await this.#run(["merge-base", "--is-ancestor", ancestor, descendant]);
+    return exitCode === 0 ? true : exitCode === 1 ? false : undefined;
   }
 
   /** True when `ancestor` is an ancestor of (or equal to) `descendant`. */

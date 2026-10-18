@@ -1,5 +1,6 @@
 import { issueSessionSuffixPattern } from "@score/core/dispatch/dispatch.identity";
-import { VERIFY_COMMAND } from "@score/core/verify";
+import type { ChangeCheck } from "@score/core/landing/change.interface";
+import type { RepairExhaustion } from "@score/core/repair/wave.interface";
 
 /**
  * The unmanaged template, legacy anchor quirk included — the shape and its
@@ -37,11 +38,79 @@ export function needsRepair(defects: RepairDefects): boolean {
   );
 }
 
-/** Repair prompt names every defect class while explicitly withholding merge authority. */
-export function renderRepairPrompt(pullRequestNumber: number, buildRed?: string): string {
-  const gateNote =
-    buildRed === undefined
-      ? ""
-      : ` Note: this PR also fails the local merged-tree build gate, which GitHub CI cannot see — after merging origin/main, fix this failure too: ${buildRed}.`;
-  return `Follow-up on your PR #${pullRequestNumber}: it needs cleanup before it can land. Please do all of: (1) git fetch origin && merge origin/main into this branch, resolving every conflict correctly per the code's intent; (2) address any unresolved review threads — list them with gh api graphql reviewThreads where isResolved is false, fix each in code, then resolve via resolveReviewThread; (3) check failing CI with \`gh pr checks ${pullRequestNumber}\` and \`gh run view --log-failed\`, then fix the root cause; (4) run verification: ${VERIFY_COMMAND} at the repository root; (5) commit and push. Do NOT merge the PR — just make it green and conflict-free, then report.${gateNote}`;
+// The repair prompt itself lives with the other prompts; re-exported so the
+// deep imports that predate the prompts folder keep working.
+export { REPAIR_WAVE_STEPS, renderRepairPrompt } from "@score/core/prompts/repair.render";
+
+/** Counts a head commit's checks the way landing's precondition does, without importing landing. */
+export function countChecks(rollup: readonly ChangeCheck[]): {
+  readonly failing: number;
+  readonly pending: number;
+} {
+  let failing = 0;
+  let pending = 0;
+  for (const check of rollup) {
+    if ("status" in check) {
+      if (check.status !== "COMPLETED") pending += 1;
+      else if (!SUCCESSFUL_CONCLUSIONS.has(check.conclusion ?? "")) failing += 1;
+    } else if (check.state === "PENDING" || check.state === "EXPECTED") pending += 1;
+    else if (check.state !== "SUCCESS") failing += 1;
+  }
+  return { failing, pending };
+}
+
+const SUCCESSFUL_CONCLUSIONS: ReadonlySet<string> = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+/** The label a PR carries once its round budget is spent; removing it grants a fresh budget. */
+export const REPAIR_EXHAUSTED_LABEL = "repair-exhausted";
+
+/**
+ * Hidden first line of an exhaustion comment. Repair looks for it before
+ * commenting, so a death between the comment and the label never posts twice.
+ * It names the wave history it reports: a second exhaustion after a human
+ * removed the label starts from an empty history, so its waves (and their
+ * timestamps) differ and it earns its own comment instead of a bare label.
+ */
+export function exhaustionMarker(exhaustion: Pick<RepairExhaustion, "waves">): string {
+  const last = exhaustion.waves.at(-1);
+  return `<!-- score:repair-exhausted ${exhaustion.waves.length}@${last?.at ?? "none"} -->`;
+}
+
+// The wave and exhaustion shapes live in wave.interface.ts so the telemetry
+// mapper can import them type-only; re-exported here for existing imports.
+export type { RepairExhaustion, WaveRecord } from "@score/core/repair/wave.interface";
+
+function describeDefects(defects: RepairDefects): string {
+  const parts: string[] = [];
+  if (defects.conflicting) parts.push("conflicts");
+  if (defects.unresolvedThreads > 0)
+    parts.push(`${defects.unresolvedThreads} unresolved thread(s)`);
+  if (defects.failingChecks > 0) parts.push(`${defects.failingChecks} failing check(s)`);
+  if (defects.buildRed !== undefined) parts.push("merged-tree build red");
+  return parts.join(", ") || "none recorded";
+}
+
+/**
+ * The single comment repair leaves when a PR's budget is spent. The wave
+ * history is what a human needs to decide between finishing by hand, granting
+ * another budget (remove the label), or closing — the daemon never closes.
+ */
+export function renderExhaustionComment(
+  pullRequestNumber: number,
+  exhaustion: RepairExhaustion,
+): string {
+  const lines = [
+    exhaustionMarker(exhaustion),
+    `Score stopped repairing PR #${pullRequestNumber} after ${exhaustion.waves.length} repair wave(s) (budget ${exhaustion.budget}). Rule: ${exhaustion.rule} — ${exhaustion.detail}.`,
+    "",
+    "| Wave | When | Head | Open findings | Diff | Sent to fix |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...exhaustion.waves.map(
+      (wave, index) =>
+        `| ${index + 1} | ${wave.at} | ${wave.headSha?.slice(0, 7) ?? "unknown"} | ${wave.openFindings} | ${wave.diffSize ?? "?"} | ${describeDefects(wave.defects)} |`,
+    ),
+    "",
+    `No more pings until a human acts. Remove the \`${REPAIR_EXHAUSTED_LABEL}\` label to grant a fresh budget.`,
+  ];
+  return lines.join("\n");
 }

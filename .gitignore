@@ -40,3 +40,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 #graphify
 graphify-out/
 
+
+# review-loop judge cache (per item verdicts; re-run to rebuild)
+evals/review-loop/cache/

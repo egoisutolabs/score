@@ -59,6 +59,7 @@ test("template mentions every config field", () => {
     "harness",
     "model",
     "auto_merge",
+    "review_settle_ms",
   ]) {
     expect(CONFIG_TEMPLATE).toContain(`"${field}"`);
   }

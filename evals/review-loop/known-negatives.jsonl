@@ -1,0 +1,10 @@
+{"id":"neg-1","path":"src/a.ts","line":3,"hunk":"@@ -1,3 +1,4 @@\n export function load(path: string) {\n+  const resolved = resolve(path);\n   return read(resolved);\n }","body":"Nit: consider naming this `resolvedPath` for clarity."}
+{"id":"neg-2","path":"src/b.ts","line":2,"hunk":"@@ -1,2 +1,3 @@\n const x = 1;\n+const y = x + 1;\n export { y };","body":"Could you add a comment explaining why y is derived from x?"}
+{"id":"neg-3","path":"src/c.ts","line":5,"hunk":"@@ -3,3 +3,4 @@\n   if (items.length === 0) return [];\n+  const first = items[0];\n   return [first];","body":"Potential undefined access on items[0]."}
+{"id":"neg-4","path":"src/d.ts","line":1,"hunk":"@@ -1,1 +1,2 @@\n+import { join } from \"node:path\";\n import { x } from \"./x\";","body":"Prefer sorting imports alphabetically."}
+{"id":"neg-5","path":"README.md","line":4,"hunk":"@@ -2,3 +2,4 @@\n # Tool\n+Run `make verify` before opening a PR.\n ","body":"This sentence could be shorter."}
+{"id":"neg-6","path":"src/e.ts","line":2,"hunk":"@@ -1,2 +1,3 @@\n export async function save(data: Data) {\n+  await writeFile(tmp, JSON.stringify(data));\n   await rename(tmp, target);","body":"Nice use of tmp + rename for atomic writes."}
+{"id":"neg-7","path":"src/f.ts","line":3,"hunk":"@@ -1,3 +1,4 @@\n function total(values: number[]) {\n+  if (values.length === 0) return 0;\n   return values.reduce((a, b) => a + b, 0);\n }","body":"Division by zero when values is empty."}
+{"id":"neg-8","path":"src/g.ts","line":2,"hunk":"@@ -1,2 +1,3 @@\n export const LIMIT = 100;\n+export const RETRY = 3;\n ","body":"Should these be configurable in the future?"}
+{"id":"neg-9","path":"src/h.test.ts","line":3,"hunk":"@@ -1,3 +1,5 @@\n test(\"rejects empty\", () => {\n+  expect(() => parse(\"\")).toThrow(\"empty\");\n+  expect(parse(\"a\")).toEqual([\"a\"]);\n });","body":"Consider splitting into two tests for readability."}
+{"id":"neg-10","path":"src/i.ts","line":2,"hunk":"@@ -1,2 +1,3 @@\n export function id<T>(value: T): T {\n+  return value;\n }","body":"This function might be slow for large inputs."}

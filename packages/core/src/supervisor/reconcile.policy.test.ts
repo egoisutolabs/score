@@ -13,6 +13,7 @@ function project(key: string, overrides: Partial<ResolvedProject> = {}): Resolve
     maxParallel: 1,
     agent: { harness: "claude", model: "claude-sonnet-5" },
     autoMerge: true,
+    reviewSettleMs: 900_000,
     logRetentionDays: 30,
     configHash: `hash-${key}`,
     ...overrides,

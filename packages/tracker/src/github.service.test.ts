@@ -87,7 +87,7 @@ test("repair observation does not request landing-only fields", async () => {
   expect(observed?.mergeable).toBe("A_FUTURE_VALUE");
   expect(observed?.headSha).toBe("cafe1234");
   expect(runner.commands[0]?.at(-1)).toBe(
-    "number,headRefName,headRefOid,mergeable,statusCheckRollup",
+    "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup,additions,deletions",
   );
 });
 
@@ -187,4 +187,189 @@ test("a repair observation without headRefOid stays undefined instead of throwin
   const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
 
   expect((await github.observeRepairChanges())[0]?.headSha).toBeUndefined();
+});
+
+test("addLabel creates the label idempotently before adding it to the PR", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = ["", ""];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await github.addLabel(9, "repair-exhausted");
+
+  expect(runner.commands.map((command) => command.slice(0, 4))).toEqual([
+    ["gh", "label", "create", "repair-exhausted"],
+    ["gh", "pr", "edit", "9"],
+  ]);
+  expect(runner.commands[0]).toContain("--force");
+  expect(runner.commands[1]?.slice(-2)).toEqual(["--add-label", "repair-exhausted"]);
+});
+
+test("addLabel: death after `label create`, before `pr edit` — the retry re-creates (an upsert) and attaches once (RETRIED)", async () => {
+  class DyingRunner extends RecordingRunner {
+    dieOnEdit = true;
+    override async run(command: readonly string[], options: RunCommandOptions) {
+      const result = await super.run(command, options);
+      if (this.dieOnEdit && command[1] === "pr" && command[2] === "edit") {
+        return { ...result, exitCode: 1, stderr: "connection reset" };
+      }
+      return result;
+    }
+  }
+  const runner = new DyingRunner();
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await expect(github.addLabel(9, "repair-exhausted")).rejects.toThrow();
+  expect(runner.commands.map((command) => command[1])).toEqual(["label", "pr"]);
+
+  // Next tick: `label create --force` is an upsert, so re-running it over the
+  // label the first attempt created changes nothing; the attach then lands.
+  runner.dieOnEdit = false;
+  await github.addLabel(9, "repair-exhausted");
+  expect(runner.commands.map((command) => command.slice(1, 3))).toEqual([
+    ["label", "create"],
+    ["pr", "edit"],
+    ["label", "create"],
+    ["pr", "edit"],
+  ]);
+  expect(runner.commands.filter((command) => command[2] === "edit")).toHaveLength(2);
+  expect(runner.commands[2]).toContain("--force");
+});
+
+test("hasComment finds the marker anywhere in the PR conversation, and only there", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    // The marker on a second page: a first-100-only view would miss it.
+    JSON.stringify([[{ body: "lgtm" }], [{ body: "<!-- m -->\nparked" }]]),
+    JSON.stringify([[{ body: "unrelated" }]]),
+    JSON.stringify([[]]),
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(true);
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
+  // A PR without comments reads as no comment, not a crash.
+  expect(await github.hasComment(9, "<!-- m -->")).toBe(false);
+  expect(runner.commands[0]).toEqual([
+    "gh",
+    "api",
+    "repos/o/r/issues/9/comments?per_page=100",
+    "--paginate",
+    "--slurp",
+  ]);
+});
+
+test("comment posts the body as one argument, never through a shell", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [""];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  await github.comment(9, "line one\n`code` $(not run)");
+
+  expect(runner.commands[0]).toEqual([
+    "gh",
+    "pr",
+    "comment",
+    "9",
+    "--body",
+    "line one\n`code` $(not run)",
+  ]);
+});
+
+test("observeReviewThreads follows pagination and reduces each thread to its root comment's facts", async () => {
+  const runner = new RecordingRunner();
+  const node = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    isResolved: false,
+    path: "src/a.ts",
+    originalLine: 12,
+    resolvedBy: null,
+    comments: {
+      nodes: [
+        {
+          createdAt: "2026-10-16T00:00:00Z",
+          author: { login: "chatgpt-codex-connector" },
+          originalCommit: { oid: "abc" },
+        },
+      ],
+    },
+    ...extra,
+  });
+  runner.responses = [
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: true, endCursor: "c1" },
+              nodes: [node("T1")],
+            },
+          },
+        },
+      },
+    }),
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                node("T2", {
+                  isResolved: true,
+                  resolvedBy: { login: "gendev1" },
+                  originalLine: null,
+                  comments: { nodes: [{ createdAt: "x", author: null, originalCommit: null }] },
+                }),
+              ],
+            },
+          },
+        },
+      },
+    }),
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+
+  const threads = await github.observeReviewThreads(9);
+
+  expect(threads).toEqual([
+    {
+      id: "T1",
+      path: "src/a.ts",
+      originalLine: 12,
+      originalCommit: "abc",
+      author: "chatgpt-codex-connector",
+      createdAt: "2026-10-16T00:00:00Z",
+      isResolved: false,
+      resolvedBy: undefined,
+    },
+    {
+      id: "T2",
+      path: "src/a.ts",
+      originalLine: null,
+      originalCommit: undefined,
+      author: undefined,
+      createdAt: "x",
+      isResolved: true,
+      resolvedBy: "gendev1",
+    },
+  ]);
+  expect(runner.commands[1]).toContain("cursor=c1");
+});
+
+test("observeReviewThreads throws on a page failure instead of returning a partial list", async () => {
+  const runner = new RecordingRunner();
+  runner.responses = [
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] },
+          },
+        },
+      },
+    }),
+    "not json",
+  ];
+  const github = new GitHubService(runner, { repositoryPath: "/repo", repository: "o/r" });
+  await expect(github.observeReviewThreads(9)).rejects.toThrow("invalid JSON");
 });

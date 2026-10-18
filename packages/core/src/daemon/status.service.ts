@@ -38,15 +38,24 @@ export function gateFailureFrom(results: readonly LandingResult[]): string | nul
   return results.some((result) => GREEN_GATE_TAGS.has(result.tag)) ? null : undefined;
 }
 
+/** A merged-tree gate failure, and the head whose merge failed it. */
+export interface GateVerdict {
+  readonly headSha: string | undefined;
+  readonly note: string;
+}
+
 /**
  * Per-PR build-red verdicts landing hands to repair (epic decision 11).
  * Same standing semantics as gateFailureFrom: build-red sets, a green gate run
  * clears, a tick where gates never ran (skipped/conflict/checks-pending) keeps
  * the last verdict, and a PR absent from the candidates (closed, merged,
- * label-skipped) is forgotten.
+ * label-skipped) is forgotten. A verdict is about one head: once landing
+ * reports a different head for the PR, in any state, the old verdict is gone
+ * — keeping it would send repair after a fix nobody has gated yet, and with
+ * a round budget that costs a wave.
  */
 export function applyGateVerdicts(
-  verdicts: Map<number, string>,
+  verdicts: Map<number, GateVerdict>,
   results: readonly LandingResult[],
 ): void {
   const live = new Set(results.map((result) => result.pullRequestNumber));
@@ -54,8 +63,20 @@ export function applyGateVerdicts(
     if (!live.has(number)) verdicts.delete(number);
   }
   for (const result of results) {
-    if (result.tag === "build-red") verdicts.set(result.pullRequestNumber, result.note);
-    else if (GREEN_GATE_TAGS.has(result.tag)) verdicts.delete(result.pullRequestNumber);
+    const standing = verdicts.get(result.pullRequestNumber);
+    if (
+      standing !== undefined &&
+      result.headSha !== undefined &&
+      standing.headSha !== undefined &&
+      standing.headSha !== result.headSha
+    ) {
+      verdicts.delete(result.pullRequestNumber);
+    }
+    if (result.tag === "build-red") {
+      verdicts.set(result.pullRequestNumber, { headSha: result.headSha, note: result.note });
+    } else if (GREEN_GATE_TAGS.has(result.tag)) {
+      verdicts.delete(result.pullRequestNumber);
+    }
   }
 }
 

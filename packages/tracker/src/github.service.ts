@@ -7,6 +7,8 @@ import type {
   RepairPullRequestObservation,
 } from "@score/core/landing/change.interface";
 import type { ChangeHost } from "@score/core/landing/change-host.interface";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
+import type { RepairHost } from "@score/core/repair/repair-host.interface";
 import { requireSuccess } from "@score/shared/adapters/command-runner.service";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import {
@@ -21,7 +23,9 @@ import {
   parseGithubIssues,
   parseGithubPullRequests,
   parseRepositoryName,
+  parseReviewThreadPage,
   parseUnresolvedThreadPage,
+  type ReviewThreadObservationPage,
   type ReviewThreadPage,
 } from "@score/tracker/github-parsers";
 
@@ -49,7 +53,7 @@ export interface GitHubMergeHistory {
 }
 
 /** Validated GitHub observation adapter; it does not make scheduling or landing decisions. */
-export class GitHubService implements WorkSource, ChangeHost {
+export class GitHubService implements WorkSource, ChangeHost, RepairHost {
   readonly #executable: string;
   readonly #timeoutMs: number | undefined;
 
@@ -127,7 +131,7 @@ export class GitHubService implements WorkSource, ChangeHost {
   async observeRepairChanges(): Promise<readonly RepairPullRequestObservation[]> {
     const raw = await this.#listComplete(
       ["pr", "list", "--state", "open"],
-      "number,headRefName,headRefOid,mergeable,statusCheckRollup",
+      "number,headRefName,headRefOid,mergeable,labels,statusCheckRollup,additions,deletions",
       100,
       "github.repairPullRequests",
     );
@@ -141,6 +145,7 @@ export class GitHubService implements WorkSource, ChangeHost {
           headRefName: value.headRefName,
           headRefOid: value.headRefOid,
           mergeable: value.mergeable,
+          labels: value.labels,
           statusCheckRollup: value.statusCheckRollup,
         },
       ])[0];
@@ -150,9 +155,109 @@ export class GitHubService implements WorkSource, ChangeHost {
         headRefName: parsed.headRefName,
         headSha: parsed.headSha,
         mergeable: parsed.mergeable,
+        labels: parsed.labels,
         statusCheckRollup: parsed.statusCheckRollup,
+        ...(typeof value.additions === "number" &&
+        Number.isInteger(value.additions) &&
+        value.additions >= 0
+          ? { additions: value.additions }
+          : {}),
+        ...(typeof value.deletions === "number" &&
+        Number.isInteger(value.deletions) &&
+        value.deletions >= 0
+          ? { deletions: value.deletions }
+          : {}),
       };
     });
+  }
+
+  // RepairHost. The thread observation is the full-fidelity sibling of
+  // unresolvedThreadCount (landing keeps the cheap one). The mutations are the
+  // only ones Score performs on GitHub itself; repair sequences them
+  // (INVARIANTS.md).
+
+  async observeReviewThreads(
+    pullRequestNumber: number,
+  ): Promise<readonly ReviewThreadObservation[]> {
+    const [owner, name] = this.options.repository.split("/");
+    if (!owner || !name) throw new Error("repository must use owner/name form");
+    const query =
+      "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$num){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id isResolved path originalLine resolvedBy{login}comments(first:1){nodes{createdAt author{login}originalCommit{oid}}}}}}}}";
+    const threads: ReviewThreadObservation[] = [];
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    do {
+      const page: ReviewThreadObservationPage = parseReviewThreadPage(
+        await this.#json([
+          "api",
+          "graphql",
+          "-f",
+          `query=${query}`,
+          "-F",
+          `owner=${owner}`,
+          "-F",
+          `repo=${name}`,
+          "-F",
+          `num=${pullRequestNumber}`,
+          ...(cursor === null ? [] : ["-f", `cursor=${cursor}`]),
+        ]),
+      );
+      // Same guard as unresolvedThreadCount: a cursor that does not advance
+      // would loop forever and may repeat nodes, so it is malformed evidence.
+      if (page.endCursor !== null && seenCursors.has(page.endCursor)) {
+        throw new Error(`github.graphql.reviewThreads cursor did not advance (${page.endCursor})`);
+      }
+      threads.push(...page.threads);
+      cursor = page.endCursor;
+      if (cursor !== null) seenCursors.add(cursor);
+    } while (cursor !== null);
+    return threads;
+  }
+
+  async addLabel(pullRequestNumber: number, label: string): Promise<void> {
+    // `gh pr edit --add-label` fails on a label the repository has never seen;
+    // --force makes create an update when it already exists.
+    requireSuccess(
+      await this.#run([
+        "label",
+        "create",
+        label,
+        "--force",
+        "--description",
+        "Score repair round budget spent; a human decides",
+        "--color",
+        "B60205",
+      ]),
+    );
+    requireSuccess(
+      await this.#run(["pr", "edit", String(pullRequestNumber), "--add-label", label]),
+    );
+  }
+
+  async hasComment(pullRequestNumber: number, marker: string): Promise<boolean> {
+    // `gh pr view --json comments` returns the first 100 comments only, and
+    // the marker is the newest one: on a long PR it would never be seen and a
+    // death between comment and label would post a second comment per retry.
+    // The REST connection paginates; --slurp yields one array per page.
+    const pages = arrayValue(
+      await this.#json([
+        "api",
+        `repos/${this.options.repository}/issues/${pullRequestNumber}/comments?per_page=100`,
+        "--paginate",
+        "--slurp",
+      ]),
+      "github.issueComments",
+    );
+    return pages.some((page, pageIndex) =>
+      arrayValue(page, `github.issueComments[${pageIndex}]`).some((comment, index) => {
+        const path = `github.issueComments[${pageIndex}][${index}]`;
+        return stringValue(objectValue(comment, path).body ?? "", `${path}.body`).includes(marker);
+      }),
+    );
+  }
+
+  async comment(pullRequestNumber: number, body: string): Promise<void> {
+    requireSuccess(await this.#run(["pr", "comment", String(pullRequestNumber), "--body", body]));
   }
 
   async observeMergedOwnedChanges(): Promise<readonly PullRequestIdentity[]> {

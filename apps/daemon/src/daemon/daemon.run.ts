@@ -12,19 +12,27 @@ import type { DaemonPhase } from "@score/core/daemon/daemon.service";
 import { DaemonService } from "@score/core/daemon/daemon.service";
 import { PassCachedChangeHost } from "@score/core/daemon/observations.service";
 import { RepairLedger } from "@score/core/daemon/repair-ledger.service";
+import { RepairLedgerStore } from "@score/core/daemon/repair-ledger.store";
 import {
   applyGateVerdicts,
+  type GateVerdict,
   gateFailureFrom,
   StatusWriter,
 } from "@score/core/daemon/status.service";
 import { DispatchService } from "@score/core/dispatch/dispatch.service";
 import { TaskBriefingService } from "@score/core/dispatch/task-briefing.service";
-import { meaningfulStatusLines } from "@score/core/landing/landing.policy";
+import { LANDING_READY_TAGS, meaningfulStatusLines } from "@score/core/landing/landing.policy";
 import { renderLandingTick } from "@score/core/landing/landing.render";
 import { LandingService } from "@score/core/landing/landing.service";
 import { renderMaintenanceTick } from "@score/core/maintenance/maintenance.render";
 import { LegacyWorkflowService } from "@score/core/maintenance/maintenance.service";
-import { sessionSuffixForNamespace } from "@score/core/repair/repair.policy";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
+import { isReviewerBot } from "@score/core/repair/findings/finding.policy";
+import { FindingTracker } from "@score/core/repair/findings/finding-tracker.service";
+import {
+  REPAIR_EXHAUSTED_LABEL,
+  sessionSuffixForNamespace,
+} from "@score/core/repair/repair.policy";
 import { RepairService } from "@score/core/repair/repair.service";
 import { TelemetryLogService } from "@score/core/telemetry/telemetry-log.service";
 import {
@@ -35,8 +43,15 @@ import {
 import { agentConfigFromCommand } from "@score/shared/agent-command";
 import type { CommandRunner } from "@score/shared/command-runner.interface";
 import type { AgentConfig, ResolvedProject } from "@score/shared/config/config.interface";
-import { logsDir, promptsDir, statusPath, telemetryDir } from "@score/shared/config/layout";
+import {
+  logsDir,
+  promptsDir,
+  repairLedgerPath,
+  statusPath,
+  telemetryDir,
+} from "@score/shared/config/layout";
 import { PROJECT_KEY_PATTERN } from "@score/shared/config/load";
+import { DEFAULT_REVIEW_SETTLE_MS } from "@score/shared/config/resolve";
 import { readResolvedProject } from "@score/shared/config/resolved";
 import type { FileLogger } from "@score/shared/file-log";
 import { createFileLogger } from "@score/shared/file-log";
@@ -53,9 +68,13 @@ import { renderRepairRun } from "../repair/repair.run";
 import { proveLandingAuthorship } from "./recovery.policy";
 import {
   PassTelemetry,
+  renderFindingTelemetry,
   renderLandingTelemetry,
   renderMaintenanceTickTelemetry,
+  renderOpenAtMergeTelemetry,
+  renderParkedTelemetry,
   renderRepairTelemetry,
+  renderRepairWaveTelemetry,
 } from "./telemetry";
 
 const KNOWN_FLAGS = ["--once", "--dry-run", "--verbose", "--no-merge", "--managed"] as const;
@@ -116,6 +135,8 @@ export interface DaemonBootstrap {
   readonly workspaceRoot: string;
   readonly tickIntervalMs: number;
   readonly maxParallelIssues: number;
+  /** Managed: resolved config; unmanaged: REVIEW_SETTLE_MS. See LandingServiceOptions.settleMs. */
+  readonly reviewSettleMs: number;
   readonly noMerge: boolean;
   readonly managed: boolean;
   readonly agent: AgentConfig;
@@ -148,6 +169,7 @@ export async function bootstrapDaemon(
       ),
       tickIntervalMs: positiveEnvironment("TICK_INTERVAL_MS", 60_000),
       maxParallelIssues: positiveEnvironment("MAX_PARALLEL", 1),
+      reviewSettleMs: positiveEnvironment("REVIEW_SETTLE_MS", DEFAULT_REVIEW_SETTLE_MS),
       noMerge: parsed.noMerge,
       managed: false,
       agent: agentConfigFromCommand(process.env.AGENT_CMD),
@@ -165,6 +187,7 @@ export async function bootstrapDaemon(
     workspaceRoot: project.worktreeLocation,
     tickIntervalMs: project.tickIntervalMs,
     maxParallelIssues: project.maxParallel,
+    reviewSettleMs: project.reviewSettleMs,
     noMerge: parsed.noMerge || !project.autoMerge,
     managed: true,
     agent: project.agent,
@@ -579,6 +602,7 @@ export async function runDaemonLoop(
     workspaceRoot,
     tickIntervalMs,
     maxParallelIssues,
+    reviewSettleMs,
     noMerge,
     managed,
     agent,
@@ -612,7 +636,7 @@ export async function runDaemonLoop(
       }
       sink = telemetryLog;
     }
-    return new PassTelemetry(sink, project, dryRun, log);
+    return new PassTelemetry(sink, project, dryRun, log, agent.harness);
   })();
   // Managed daemons read tuning from resolved.json only; the rest of the env
   // knobs fall back to their built-in defaults instead of the shell.
@@ -621,11 +645,24 @@ export async function runDaemonLoop(
     managed ? fallback : positiveEnvironment(name, fallback);
   const maxMerges = positiveTuning("MAX_MERGES", 5);
   const soakTicks = positiveTuning("SOAK_TICKS", 2);
+  const settleMs = reviewSettleMs;
   const staleTicks = positiveTuning("REPAIR_STALE_TICKS", 10);
-  const skipLabels = (tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
-    .split(",")
-    .map((label) => label.trim().toLowerCase())
-    .filter(Boolean);
+  // Four: in the baseline, 9 of 14 PRs with findings landed within four rounds,
+  // and the 25 findings opened after round four were fix-induced regressions
+  // (docs/review-loop-baseline.md). Past that, a human decides.
+  const roundBudget = positiveTuning("REPAIR_ROUND_BUDGET", 4);
+  // The exhaustion label is always a skip label, whatever SKIP_LABELS says: a
+  // PR that spent its round budget either had unclear requirements or bad
+  // code, and neither should land on its own because the checks turned green.
+  const skipLabels = [
+    ...new Set([
+      ...(tuning("SKIP_LABELS") || "hold,wip,do-not-merge")
+        .split(",")
+        .map((label) => label.trim().toLowerCase())
+        .filter(Boolean),
+      REPAIR_EXHAUSTED_LABEL,
+    ]),
+  ];
 
   log.info(
     `daemon ${runtime.repository}${parsed.project ? ` | project ${parsed.project}` : ""} | tick ${Math.round(tickIntervalMs / 1_000)}s | max ${maxParallelIssues} | max-merges ${maxMerges} | soak ${soakTicks} ticks${dryRun ? " | dry-run" : ""}${noMerge ? " | no-merge" : ""}`,
@@ -762,6 +799,7 @@ export async function runDaemonLoop(
         noMerge,
         maxMerges,
         soakTicks,
+        settleMs,
         skipLabels,
         onlyIssueBranches: tuning("ONLY_ISSUE_BRANCHES") === "1",
       },
@@ -769,7 +807,49 @@ export async function runDaemonLoop(
       git,
       runner,
     );
-    const ledger = new RepairLedger(staleTicks, namespace);
+    // Budget resets follow landing's readiness verdicts (finishPass's pass
+    // context below), not a clock of repair's own: any fixed window drifts
+    // from landing's settle, soak, schedule and outages.
+    const ledger = new RepairLedger({ staleTicks, namespace, roundBudget });
+    // Managed only: unmanaged discovery mode has no project dir to persist
+    // into, so its budgets reset with the process as before.
+    const ledgerStore =
+      managed && parsed.project !== undefined
+        ? new RepairLedgerStore(repairLedgerPath(parsed.project))
+        : undefined;
+    if (ledgerStore) {
+      try {
+        const saved = await ledgerStore.read();
+        if (saved) ledger.restore(saved);
+      } catch (error) {
+        log.warn(`repair ledger not restored, starting empty: ${String(error)}`);
+      }
+    }
+    const findings = new FindingTracker(git, ledger);
+    // Threads into the ledger, and a finding record for each thread seen for
+    // the first time — from repair's scan and from landing's merge refresh
+    // alike, so a thread opened and resolved between repair ticks still
+    // reaches the metrics once. Bot-opened threads only: the repair defects
+    // still count every unresolved thread, but the ledger and the metrics
+    // measure reviewer findings against the baseline's definition.
+    const recordThreads = async (
+      number: number,
+      threads: readonly ReviewThreadObservation[],
+    ): Promise<void> => {
+      const known = new Set(ledger.findings(number).map((record) => record.threadId));
+      const records = await findings.observe(
+        number,
+        threads.filter((thread) => isReviewerBot(thread.author)),
+      );
+      telemetry?.decisions((ctx) =>
+        records
+          .filter((record) => !known.has(record.threadId))
+          .flatMap((record) => renderFindingTelemetry(number, record, ctx)),
+      );
+    };
+    // Set by the service when `gh pr list` itself failed this pass; read and
+    // cleared by the repair phase below.
+    let scanFailure: unknown;
     const repair = new RepairService(
       {
         agent,
@@ -777,12 +857,30 @@ export async function runDaemonLoop(
         includeClean: false,
         onlyPullRequests: new Set<string>(),
         noSpawn: false,
-        shouldAct: (number, defects, headSha) => ledger.shouldAct(number, defects, headSha),
-        buildRed: (number) => gateVerdicts.get(number),
+        shouldAct: (number, defects, headSha, diffSize) =>
+          ledger.shouldAct(number, defects, headSha, diffSize),
+        exhaustion: (number, labeled) => ledger.exhaustion(number, labeled),
+        onScanFailed: (error) => {
+          scanFailure = error;
+        },
+        onThreads: recordThreads,
+        // Landing runs every second tick and repair every tick, so repair can
+        // see a head landing has not: a verdict on an older head is not this
+        // head's defect, and with a round budget sending it would cost a wave.
+        // Either head unknown fails closed for the same reason: a verdict
+        // repair cannot tie to the head it is looking at is not proven stale,
+        // but it is not proven current either, and a wave is the cost.
+        buildRed: (number, headSha) => {
+          const verdict = gateVerdicts.get(number);
+          if (verdict === undefined) return undefined;
+          if (headSha === undefined || verdict.headSha !== headSha) return undefined;
+          return verdict.note;
+        },
       },
       github,
       git,
       agents,
+      github,
     );
 
     const pass = { cleaned: 0, started: 0, merged: 0, soaking: 0, repaired: 0, working: 0 };
@@ -792,7 +890,7 @@ export async function runDaemonLoop(
     let lastGateFailure: string | null = null;
     // Landing → repair build-red handoff (epic decision 11): repair's own scan
     // sees only GitHub facts, so landing's merged-tree verdicts ride this map.
-    const gateVerdicts = new Map<number, string>();
+    const gateVerdicts = new Map<number, GateVerdict>();
     let passError: string | null = null;
     let stopping = false;
     // Set per pass by the D1 reconciliation below. While an unreconciled
@@ -800,6 +898,11 @@ export async function runDaemonLoop(
     // failed), landing must not run: it would see a clean tree, commit a new
     // merge on top, and build — or even push — the chain D1 forbids.
     let landingBlocked = false;
+    // PR → head that landing's last completed pass found ready. Cleared when
+    // a pass starts, so a suppressed or thrown pass (runPass carries on to
+    // repair after a phase error) reads as "nothing ready", and a PR landing
+    // never reaches (a draft, a hold label) is simply absent.
+    let landingReady: ReadonlyMap<number, string | undefined> = new Map();
     const phases: readonly DaemonPhase[] = [
       {
         // Cleanup before dispatch is the legacy invariant: free capacity first.
@@ -822,6 +925,7 @@ export async function runDaemonLoop(
         name: "landing",
         everyTicks: 2,
         run: async () => {
+          landingReady = new Map();
           if (landingBlocked) {
             log.warn(
               "landing suppressed this pass: an unreconciled commit is ahead of origin on the default branch",
@@ -837,10 +941,38 @@ export async function runDaemonLoop(
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => renderLandingTelemetry(result, ctx)),
           );
+          // The ledger still holds the PR this pass (repair forgets it next);
+          // this is the "findings open at merge" figure the baseline counted.
+          // Its resolution state is from the previous repair pass, and the
+          // reviewer's last resolves — the ones that made the PR mergeable —
+          // usually land in that gap, so refresh from GitHub as of the merge.
+          // A failed query leaves the previous pass's figure, not none.
+          const merged = results.filter((result) => result.tag === "merged");
+          for (const result of merged) {
+            const threads = await github
+              .observeReviewThreads(result.pullRequestNumber)
+              .catch(() => undefined);
+            if (threads !== undefined) await recordThreads(result.pullRequestNumber, threads);
+          }
+          telemetry?.decisions((ctx) =>
+            merged.flatMap((result) =>
+              renderOpenAtMergeTelemetry(
+                result.pullRequestNumber,
+                ledger.unconfirmedFindingCount(result.pullRequestNumber),
+                ledger.findings(result.pullRequestNumber).length,
+                ctx,
+              ),
+            ),
+          );
           pass.merged += results.filter(
             (result) => result.tag === "merged" || result.tag === "would-merge",
           ).length;
           pass.soaking += results.filter((result) => result.tag === "soaking").length;
+          landingReady = new Map(
+            results
+              .filter((result) => LANDING_READY_TAGS.has(result.tag))
+              .map((result) => [result.pullRequestNumber, result.headSha]),
+          );
         },
       },
       {
@@ -848,14 +980,45 @@ export async function runDaemonLoop(
         everyTicks: 1,
         run: async () => {
           ledger.startPass(currentTick, new Set(await agents.listSessions()));
+          scanFailure = undefined;
           const results = await repair.run(dryRun);
-          ledger.finishPass(results);
+          if (scanFailure !== undefined) {
+            // An empty list from a failed scan is not "every PR merged":
+            // finishing the pass on it would forget every budget and finding.
+            log.warn(`repair: PR scan failed, ledger held as is: ${String(scanFailure)}`);
+            return;
+          }
+          ledger.finishPass(results, { landingReady });
+          // A dry run touches no session and no PR, and leaves the ledger file
+          // as the last real run wrote it too; its in-memory ledger still
+          // evolves so later ticks of the same dry run read as a run would.
+          if (!dryRun) await ledgerStore?.write(ledger.snapshot());
+          telemetry?.decisions((ctx) =>
+            results.flatMap((result) => {
+              if (result.action === "EXHAUSTED") return renderParkedTelemetry(result, ctx);
+              if (result.action !== "PINGED" && result.action !== "SPAWNED") return [];
+              const wave = ledger.lastWave(result.pullRequestNumber);
+              return wave === undefined
+                ? []
+                : renderRepairWaveTelemetry(
+                    result.pullRequestNumber,
+                    ledger.waveCount(result.pullRequestNumber),
+                    wave,
+                    ctx,
+                  );
+            }),
+          );
           const acted = results.filter(
             (result) => result.action === "PINGED" || result.action === "SPAWNED",
           ).length;
+          // The pass that parked a PR is as loud as a ping: an operator reading
+          // the log must see why repair stopped, not "none need fixing".
+          const parked = results.some(
+            (result) => result.action === "EXHAUSTED" && result.parked !== undefined,
+          );
           // renderRepairRun always prints a summary line; at one tick apiece that
           // is noise, so a tick with nothing to fix stays at debug.
-          if (acted > 0) log.lines(renderRepairRun(results));
+          if (acted > 0 || parked) log.lines(renderRepairRun(results));
           else log.debug(`repair: ${results.length} PRs scanned, none need fixing`);
           telemetry?.decisions((ctx) =>
             results.flatMap((result) => renderRepairTelemetry(result, ctx)),

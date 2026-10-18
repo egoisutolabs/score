@@ -35,6 +35,7 @@ test("defaults apply: tick 60000, max_parallel 1, auto_merge true, retention 30"
   expect(resolved?.tickIntervalMs).toBe(60_000);
   expect(resolved?.maxParallel).toBe(1);
   expect(resolved?.autoMerge).toBe(true);
+  expect(resolved?.reviewSettleMs).toBe(900_000);
   expect(resolved?.logRetentionDays).toBe(30);
 });
 
@@ -47,6 +48,7 @@ test("explicit values override defaults", () => {
             tick_interval_ms: 5000,
             max_parallel: 3,
             auto_merge: false,
+            review_settle_ms: 1,
             agent: { harness: "claude", model: "claude-opus-4-8" },
           },
         }),
@@ -57,6 +59,7 @@ test("explicit values override defaults", () => {
   expect(resolved?.tickIntervalMs).toBe(5000);
   expect(resolved?.maxParallel).toBe(3);
   expect(resolved?.autoMerge).toBe(false);
+  expect(resolved?.reviewSettleMs).toBe(1);
   expect(resolved?.logRetentionDays).toBe(7);
   expect(resolved?.agent.model).toBe("claude-opus-4-8");
 });

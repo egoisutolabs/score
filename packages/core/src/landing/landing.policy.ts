@@ -2,11 +2,25 @@ import { isIssueBranch } from "@score/core/dispatch/dispatch.identity";
 import type {
   BuildGate,
   LandingResult,
+  LandingTag,
   PullRequestObservation,
 } from "@score/core/landing/change.interface";
 import { VERIFY_ARGV } from "@score/core/verify";
 
 const SUCCESSFUL_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+/**
+ * Verdicts where landing has finished waiting on a head: it merged, or soaked
+ * green and was held only by --no-merge or --dry-run, or committed the merge
+ * and awaits its re-landing. Repair's budget resets key off these, so a
+ * review that arrives while landing still settles or soaks shares the waves.
+ */
+export const LANDING_READY_TAGS: ReadonlySet<LandingTag> = new Set<LandingTag>([
+  "merged",
+  "ready",
+  "would-merge",
+  "push-failed",
+]);
 
 export interface LandingCandidatePolicy {
   readonly skipLabels: readonly string[];

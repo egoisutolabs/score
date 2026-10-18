@@ -4,6 +4,7 @@ import type {
   PullRequestObservation,
   StatusContext,
 } from "@score/core/landing/change.interface";
+import type { ReviewThreadObservation } from "@score/core/repair/findings/finding.interface";
 import type { UnknownRecord } from "@score/shared/validation";
 import {
   arrayValue,
@@ -201,4 +202,67 @@ function urlValue(value: unknown, path: string): string {
     throw new Error(`${path} must be a valid URL`);
   }
   return parsed;
+}
+
+export interface ReviewThreadObservationPage {
+  readonly threads: readonly ReviewThreadObservation[];
+  /** Non-null means the connection was truncated; the caller must continue from here. */
+  readonly endCursor: string | null;
+}
+
+/** One page of full review threads for repair's finding ledger; same fail-closed pagination as the count. */
+export function parseReviewThreadPage(value: unknown): ReviewThreadObservationPage {
+  const root = optionalObject(value);
+  const data = optionalObject(root?.data);
+  const repository = optionalObject(data?.repository);
+  const pullRequest = optionalObject(repository?.pullRequest);
+  const reviewThreads = optionalObject(pullRequest?.reviewThreads);
+  if (reviewThreads?.nodes === undefined || reviewThreads.nodes === null)
+    return { threads: [], endCursor: null };
+  const threads = arrayValue(reviewThreads.nodes, "github.graphql.reviewThreads.nodes").map(
+    (node, index) => {
+      const path = `github.graphql.reviewThreads.nodes[${index}]`;
+      const thread = objectValue(node, path);
+      const comments = optionalArray(
+        optionalObject(thread.comments)?.nodes,
+        `${path}.comments.nodes`,
+      );
+      const root =
+        comments[0] === undefined ? null : objectValue(comments[0], `${path}.comments.nodes[0]`);
+      const author = optionalObject(root?.author);
+      const originalCommit = optionalObject(root?.originalCommit);
+      const resolvedBy = optionalObject(thread.resolvedBy);
+      return {
+        id: stringValue(thread.id, `${path}.id`),
+        path: stringValue(thread.path, `${path}.path`),
+        originalLine:
+          thread.originalLine === null || thread.originalLine === undefined
+            ? null
+            : positiveIntegerValue(thread.originalLine, `${path}.originalLine`),
+        originalCommit:
+          originalCommit === null
+            ? undefined
+            : stringValue(originalCommit.oid, `${path}.originalCommit.oid`),
+        author: author === null ? undefined : stringValue(author.login, `${path}.author.login`),
+        createdAt:
+          root === null ? "" : stringValue(root.createdAt, `${path}.comments.nodes[0].createdAt`),
+        isResolved: booleanValue(thread.isResolved, `${path}.isResolved`),
+        resolvedBy:
+          resolvedBy === null
+            ? undefined
+            : stringValue(resolvedBy.login, `${path}.resolvedBy.login`),
+      };
+    },
+  );
+  const pageInfo = objectValue(reviewThreads.pageInfo, "github.graphql.reviewThreads.pageInfo");
+  const hasNextPage = booleanValue(
+    pageInfo.hasNextPage,
+    "github.graphql.reviewThreads.pageInfo.hasNextPage",
+  );
+  return {
+    threads,
+    endCursor: hasNextPage
+      ? stringValue(pageInfo.endCursor, "github.graphql.reviewThreads.pageInfo.endCursor")
+      : null,
+  };
 }

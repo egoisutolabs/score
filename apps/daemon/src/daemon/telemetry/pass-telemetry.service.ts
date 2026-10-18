@@ -9,6 +9,7 @@ import {
   GAP_RECORD_NAME,
   type TelemetryLogService,
 } from "@score/core/telemetry/telemetry-log.service";
+import type { AgentConfig } from "@score/shared/config/config.interface";
 import type { Logger } from "@score/shared/log";
 import type { TelemetryRenderContext } from "./telemetry.render";
 
@@ -39,6 +40,7 @@ export class PassTelemetry {
     private readonly project: string,
     private readonly dryRun: boolean,
     private readonly log: Logger,
+    private readonly harness: AgentConfig["harness"],
   ) {}
 
   /** Opens the pass's root span; nothing is appended until closeTick. */
@@ -77,6 +79,7 @@ export class PassTelemetry {
       project: this.project,
       ts: new Date().toISOString(),
       dryRun: this.dryRun,
+      harness: this.harness,
     };
     let records: readonly TelemetryEvent[];
     // The mapper is pure, but a throw here must degrade like a failed append

@@ -18,6 +18,7 @@ const project: ResolvedProject = {
   maxParallel: 1,
   agent: { harness: "claude", model: "claude-sonnet-5" },
   autoMerge: true,
+  reviewSettleMs: 900_000,
   logRetentionDays: 30,
   configHash: "abc",
 };

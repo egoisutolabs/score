@@ -36,10 +36,15 @@ export interface PullRequestIdentity {
 export interface RepairPullRequestObservation {
   readonly number: number;
   readonly headRefName: string;
+  /** Repair reads only its own exhaustion label here; landing owns skip labels. */
+  readonly labels: readonly Label[];
   /** Lets a caller tell "the agent pushed something" from "nothing moved". */
   readonly headSha?: string;
   readonly mergeable: string;
   readonly statusCheckRollup: readonly ChangeCheck[];
+  /** PR-wide line counts, for the diff-growth convergence rule; undefined when the list omitted them. */
+  readonly additions?: number;
+  readonly deletions?: number;
 }
 
 export interface BuildStep {
@@ -64,6 +69,7 @@ export type LandingTag =
   | "checks-red"
   | "checks-pending"
   | "unresolved"
+  | "settling"
   | "build-red"
   | "soaking"
   | "ready"
@@ -75,4 +81,6 @@ export interface LandingResult {
   readonly tag: LandingTag;
   readonly note: string;
   readonly keepTimer?: boolean;
+  /** The head this verdict is about, when the observation carried one; a gate verdict is only ever about one head. */
+  readonly headSha?: string;
 }

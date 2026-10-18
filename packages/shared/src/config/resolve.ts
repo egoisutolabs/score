@@ -6,6 +6,8 @@ import type { ResolvedProject, ScoreConfig } from "@score/shared/config/config.i
 export const DEFAULT_TICK_INTERVAL_MS = 60_000;
 export const DEFAULT_MAX_PARALLEL = 1;
 export const DEFAULT_AUTO_MERGE = true;
+// Fifteen minutes covers 95% of observed Codex review latency (docs/review-loop-baseline.md).
+export const DEFAULT_REVIEW_SETTLE_MS = 15 * 60_000;
 export const DEFAULT_LOG_RETENTION_DAYS = 30;
 
 export function expandTilde(path: string): string {
@@ -29,6 +31,7 @@ export function resolveProjects(config: ScoreConfig): ResolvedProject[] {
       maxParallel: project.config.max_parallel ?? DEFAULT_MAX_PARALLEL,
       agent: { harness: project.config.agent.harness, model: project.config.agent.model },
       autoMerge: project.config.auto_merge ?? DEFAULT_AUTO_MERGE,
+      reviewSettleMs: project.config.review_settle_ms ?? DEFAULT_REVIEW_SETTLE_MS,
       logRetentionDays,
     };
     resolved.push({ ...bare, configHash: configHash(bare) });
